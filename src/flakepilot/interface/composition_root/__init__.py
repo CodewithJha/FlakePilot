@@ -9,16 +9,29 @@ from importlib.metadata import version
 
 from fastapi import FastAPI
 
-from flakepilot.interface.composition_root.settings import Settings, SettingsError
+from flakepilot.interface.composition_root.database import (
+    CONNECT_TIMEOUT,
+    PoolFactory,
+    ReadinessCheck,
+    close_pool,
+    create_pool,
+    ping,
+)
+from flakepilot.interface.composition_root.settings import (
+    Secret,
+    Settings,
+    SettingsError,
+)
 from flakepilot.interface.http import errors, health
 from flakepilot.interface.http.request_context import (
     RequestContextMiddleware,
     request_id_var,
 )
 
-__all__ = ["Settings", "SettingsError", "create_app"]
+__all__ = ["Secret", "Settings", "SettingsError", "create_app"]
 
 _HANDLER_NAME = "flakepilot-json"
+_logger = logging.getLogger("flakepilot.database")
 
 
 class JsonFormatter(logging.Formatter):
@@ -56,16 +69,39 @@ def configure_logging(level: str) -> None:
     root.setLevel(level)
 
 
-def create_app(settings: Settings) -> FastAPI:
+def _startup_failure(exc: Exception) -> RuntimeError:
+    _logger.error("database unavailable at startup: %s", type(exc).__name__)
+    return RuntimeError("database unavailable at startup")
+
+
+def create_app(settings: Settings, pool_factory: PoolFactory = create_pool) -> FastAPI:
+    """Build the app. No I/O happens until the server runs the lifespan.
+
+    Startup fails fast: the pool is created and checked with one bounded `SELECT 1`;
+    on failure the pool is closed and startup raises (driver details are not chained).
+    """
     configure_logging(settings.log_level)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        try:
+            pool = await pool_factory(settings.database_url.reveal())
+        except Exception as exc:  # noqa: BLE001 - driver errors may carry connection details
+            raise _startup_failure(exc) from None
+        try:
+            await ping(pool, CONNECT_TIMEOUT)
+        except BaseException as exc:
+            await close_pool(pool)
+            if isinstance(exc, Exception):
+                raise _startup_failure(exc) from None
+            raise
+        app.state.readiness_probe = ReadinessCheck(pool)
         app.state.ready = True
         try:
             yield
         finally:
             app.state.ready = False
+            await close_pool(pool)
 
     # Interactive docs are off: they load third-party scripts from a CDN.
     # The code-first schema stays available at /openapi.json (ADR-007).

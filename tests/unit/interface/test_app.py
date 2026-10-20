@@ -3,62 +3,30 @@ import importlib.metadata
 import json
 import subprocess
 import sys
-import uuid
 from typing import Any
 
 import pytest
-from fastapi import FastAPI
-from starlette.types import Message
+from support import (
+    FAKE_DSN,
+    FAKE_PASSWORD,
+    SETTINGS,
+    FakePool,
+    FakePoolFactory,
+    Response,
+    get,
+    is_uuid,
+    request,
+)
 
-from flakepilot.interface.composition_root import Settings, create_app
-
-Response = tuple[int, dict[str, str], Any]
-
-
-async def request(
-    app: FastAPI, method: str, target: str, headers: list[tuple[str, str]] | None = None
-) -> Response:
-    """Drive the ASGI app directly (httpx, needed by TestClient, pulls in MPL-2.0 certifi)."""
-    path, _, query = target.partition("?")
-    scope = {
-        "type": "http",
-        "asgi": {"version": "3.0"},
-        "http_version": "1.1",
-        "method": method,
-        "scheme": "http",
-        "path": path,
-        "raw_path": path.encode(),
-        "query_string": query.encode(),
-        "root_path": "",
-        "headers": [(k.lower().encode(), v.encode()) for k, v in headers or []],
-        "client": ("127.0.0.1", 50000),
-        "server": ("testserver", 80),
-    }
-    sent: list[Message] = []
-
-    async def receive() -> Message:
-        return {"type": "http.request", "body": b"", "more_body": False}
-
-    async def send(message: Message) -> None:
-        sent.append(message)
-
-    await app(scope, receive, send)
-    start = next(m for m in sent if m["type"] == "http.response.start")
-    body = b"".join(
-        m.get("body", b"") for m in sent if m["type"] == "http.response.body"
-    )
-    response_headers = {k.decode(): v.decode() for k, v in start["headers"]}
-    return start["status"], response_headers, json.loads(body)
+from flakepilot.interface.composition_root import create_app
 
 
-def get(
-    app: FastAPI, target: str, headers: list[tuple[str, str]] | None = None
-) -> Response:
-    return asyncio.run(request(app, "GET", target, headers))
+def logs(stderr: str) -> list[dict[str, Any]]:
+    return [json.loads(line) for line in stderr.splitlines()]
 
 
-def is_uuid(value: str) -> bool:
-    return str(uuid.UUID(value)) == value
+def request_log(stderr: str) -> dict[str, Any]:
+    return next(entry for entry in logs(stderr) if entry["logger"] == "flakepilot.http")
 
 
 def test_import_has_no_side_effects() -> None:
@@ -72,8 +40,16 @@ def test_import_has_no_side_effects() -> None:
     subprocess.run([sys.executable, "-c", code], check=True)
 
 
+def test_creating_the_app_does_no_database_work() -> None:
+    factory = FakePoolFactory()
+    app = create_app(SETTINGS, factory)
+    assert get(app, "/health/ready")[0] == 503
+    assert factory.dsns == []
+    assert factory.pool.acquires == 0
+
+
 def test_only_health_and_openapi_routes_are_registered() -> None:
-    app = create_app(Settings())
+    app = create_app(SETTINGS)
     assert set(app.openapi()["paths"]) == {"/health/live", "/health/ready"}
     assert [getattr(r, "path", None) for r in app.routes if hasattr(r, "path")] == [
         "/openapi.json"
@@ -83,45 +59,96 @@ def test_only_health_and_openapi_routes_are_registered() -> None:
     assert get(app, "/redoc")[0] == 404
 
 
-def test_liveness_and_readiness_follow_the_lifespan() -> None:
-    app = create_app(Settings())
-
-    async def scenario() -> list[Response]:
-        before = await request(app, "GET", "/health/ready")
-        async with app.router.lifespan_context(app):
-            during = [
-                await request(app, "GET", "/health/ready"),
-                await request(app, "GET", "/health/live"),
-            ]
-        after = await request(app, "GET", "/health/ready")
-        return [before, *during, after]
-
-    before, ready, live, after = asyncio.run(scenario())
-    assert (before[0], before[2]) == (503, {"status": "not_ready"})
-    assert (ready[0], ready[2]) == (200, {"status": "ready"})
-    assert (live[0], live[2]) == (200, {"status": "ok"})
-    assert (after[0], after[2]) == (503, {"status": "not_ready"})
-    assert get(app, "/health/live")[0] == 200
-
-
-def request_log(stderr: str) -> dict[str, Any]:
-    return next(
-        entry
-        for entry in map(json.loads, stderr.splitlines())
-        if entry["logger"] == "flakepilot.http"
-    )
-
-
 def test_openapi_version_is_the_package_version() -> None:
-    app = create_app(Settings())
+    app = create_app(SETTINGS)
     _, _, schema = get(app, "/openapi.json")
     assert schema["info"]["version"] == importlib.metadata.version("flakepilot")
+
+
+def test_startup_connects_and_readiness_follows_lifespan_and_database() -> None:
+    factory = FakePoolFactory()
+    pool = factory.pool
+    app = create_app(SETTINGS, factory)
+
+    async def scenario() -> dict[str, Response]:
+        seen = {"before": await request(app, "GET", "/health/ready")}
+        async with app.router.lifespan_context(app):
+            assert factory.dsns == [FAKE_DSN]
+            assert pool.acquires == 1  # the startup check
+            seen["ready"] = await request(app, "GET", "/health/ready")
+            pool.up = False
+            seen["db_down"] = await request(app, "GET", "/health/ready")
+            seen["live_db_down"] = await request(app, "GET", "/health/live")
+            pool.up = True
+            seen["recovered"] = await request(app, "GET", "/health/ready")
+        acquires_at_shutdown = pool.acquires
+        seen["after"] = await request(app, "GET", "/health/ready")
+        assert pool.acquires == acquires_at_shutdown  # no probing once shut down
+        return seen
+
+    seen = asyncio.run(scenario())
+    not_ready = (503, {"status": "not_ready"})
+    assert (seen["before"][0], seen["before"][2]) == not_ready
+    assert (seen["ready"][0], seen["ready"][2]) == (200, {"status": "ready"})
+    assert (seen["db_down"][0], seen["db_down"][2]) == not_ready
+    assert (seen["live_db_down"][0], seen["live_db_down"][2]) == (200, {"status": "ok"})
+    assert (seen["recovered"][0], seen["recovered"][2]) == (200, {"status": "ready"})
+    assert (seen["after"][0], seen["after"][2]) == not_ready
+    assert pool.closed
+
+
+def test_failed_readiness_check_is_logged_without_connection_details(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    factory = FakePoolFactory()
+    app = create_app(SETTINGS, factory)
+
+    async def scenario() -> Response:
+        async with app.router.lifespan_context(app):
+            factory.pool.up = False
+            return await request(app, "GET", "/health/ready")
+
+    status, headers, body = asyncio.run(scenario())
+    assert status == 503
+    err = capsys.readouterr().err
+    check = next(e for e in logs(err) if e["logger"] == "flakepilot.database")
+    assert check["message"] == "database check failed: ConnectionRefusedError"
+    assert check["request_id"] == headers["x-request-id"]
+    assert FAKE_PASSWORD not in err + json.dumps(body)
+
+
+@pytest.mark.parametrize("fails_at", ["factory", "check"])
+def test_startup_failure_closes_the_pool_and_hides_driver_details(
+    fails_at: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    pool = FakePool()
+    pool.up = False
+
+    async def failing_factory(dsn: str) -> FakePool:
+        raise OSError(f"cannot reach {dsn}")
+
+    factory = failing_factory if fails_at == "factory" else FakePoolFactory(pool)
+    app = create_app(SETTINGS, factory)
+
+    async def start() -> None:
+        async with app.router.lifespan_context(app):
+            pass
+
+    with pytest.raises(RuntimeError) as excinfo:
+        asyncio.run(start())
+    assert str(excinfo.value) == "database unavailable at startup"
+    assert excinfo.value.__cause__ is None and excinfo.value.__suppress_context__
+    assert pool.closed == (fails_at == "check")
+    assert not app.state.ready
+    err = capsys.readouterr().err
+    assert "database unavailable at startup" in err
+    assert FAKE_PASSWORD not in err
 
 
 def test_valid_inbound_request_id_is_logged_as_client_request_id_only(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    app = create_app(Settings())
+    app = create_app(SETTINGS)
     status, headers, _ = get(app, "/health/live", [("X-Request-ID", "ci-run_42.a")])
     assert status == 200
     assert is_uuid(headers["x-request-id"])
@@ -144,7 +171,7 @@ def test_valid_inbound_request_id_is_logged_as_client_request_id_only(
 def test_missing_or_invalid_inbound_request_id_is_ignored(
     inbound: list[tuple[str, str]], capsys: pytest.CaptureFixture[str]
 ) -> None:
-    app = create_app(Settings())
+    app = create_app(SETTINGS)
     _, headers, _ = get(app, "/health/live", inbound)
     assert is_uuid(headers["x-request-id"])
 
@@ -154,7 +181,7 @@ def test_missing_or_invalid_inbound_request_id_is_ignored(
 
 
 def test_unknown_route_and_wrong_method_use_the_error_shape() -> None:
-    app = create_app(Settings())
+    app = create_app(SETTINGS)
 
     status, headers, body = get(app, "/nope")
     assert status == 404
@@ -174,7 +201,7 @@ def test_unknown_route_and_wrong_method_use_the_error_shape() -> None:
 
 
 def test_validation_error_reports_fields_without_echoing_input() -> None:
-    app = create_app(Settings())
+    app = create_app(SETTINGS)
 
     @app.get("/test-only/items")
     async def items(limit: int) -> dict[str, int]:
@@ -196,7 +223,7 @@ def test_validation_error_reports_fields_without_echoing_input() -> None:
 def test_unhandled_exception_is_generic_for_clients_and_logged_for_operators(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    app = create_app(Settings())
+    app = create_app(SETTINGS)
 
     @app.get("/test-only/boom")
     async def boom() -> None:
@@ -213,17 +240,15 @@ def test_unhandled_exception_is_generic_for_clients_and_logged_for_operators(
         }
     }
 
-    logs = [json.loads(line) for line in capsys.readouterr().err.splitlines()]
-    error = next(entry for entry in logs if entry["message"] == "unhandled exception")
+    entries = logs(capsys.readouterr().err)
+    error = next(e for e in entries if e["message"] == "unhandled exception")
     assert error["request_id"] == request_id
     assert error["level"] == "ERROR"
     assert "sensitive internal detail" in error["exception"]
     access = next(
-        entry
-        for entry in logs
-        if entry["logger"] == "flakepilot.http" and entry is not error
+        e for e in entries if e["logger"] == "flakepilot.http" and e is not error
     )
     assert access["message"] == "GET /test-only/boom 500"
     assert access["request_id"] == request_id
     assert set(access) == {"timestamp", "level", "logger", "message", "request_id"}
-    assert "abc123" not in json.dumps(logs)
+    assert "abc123" not in json.dumps(entries)

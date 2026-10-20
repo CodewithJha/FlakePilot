@@ -7,6 +7,7 @@ requires-python = ">=3.12,<3.13"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 dependencies = [
+    "asyncpg>=0.32.0",
     "fastapi>=0.153.0",
     "uvicorn>=0.54.0",
 ]
@@ -30,6 +31,11 @@ extend-select = ["B", "I", "UP"]
 [tool.mypy]
 strict = true
 files = ["src", "tests"]
+
+# Untyped third-party imports (ADR-010 TQ-3): asyncpg ships no type information.
+[[tool.mypy.overrides]]
+module = ["asyncpg", "asyncpg.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -97,6 +103,12 @@ name = "Only the composition root imports infrastructure"
 type = "protected"
 protected_modules = ["flakepilot.*.infrastructure"]
 allowed_importers = ["flakepilot.interface.composition_root"]
+
+[[tool.importlinter.contracts]]
+name = "Only infrastructure layers and the composition root import the database driver"
+type = "protected"
+protected_modules = ["asyncpg"]
+allowed_importers = ["flakepilot.*.infrastructure", "flakepilot.interface.composition_root"]
 
 [[tool.importlinter.contracts]]
 name = "Interface never calls integrations"

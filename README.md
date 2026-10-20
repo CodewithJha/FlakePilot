@@ -16,7 +16,7 @@ uv sync --locked
 uv run python -m flakepilot.interface.composition_root
 ```
 
-Settings come from environment variables only (see [`.env.example`](.env.example)); invalid values stop startup with a message naming the variable. Probes: `GET /health/live`, `GET /health/ready`.
+Settings come from environment variables only (see [`.env.example`](.env.example)); invalid values stop startup with a message naming the variable. `FLAKEPILOT_DATABASE_URL` (`postgresql://USER:PASSWORD@HOST:5432/DBNAME`) is required. If PostgreSQL is unreachable at startup the process exits with code 3, so deployments must use a restart policy or wait on a database health check (to be implemented in the Docker deployment stage). Probes: `GET /health/live`, `GET /health/ready` (includes a bounded database check).
 
 ## Quality gates
 
@@ -37,4 +37,4 @@ uv run pip-licenses --python .venv-runtime/bin/python
 
 - `pip-licenses` checks installed Python packages only. Shipped container images need the separate licence review in [ADR-007](docs/adr/ADR-007-implementation-stack-and-licensing.md) item 5.
 - The dev-environment licence gate has one owner-approved exception (pathspec 1.1.1, MPL-2.0, dev-only via mypy), recorded in `pyproject.toml` next to `[tool.pip-licenses]`. The runtime-environment gate allows no exceptions.
-- Tests marked `integration` need PostgreSQL and are skipped unless `FLAKEPILOT_TEST_DATABASE_URL` is set.
+- Tests marked `integration` need PostgreSQL and are skipped unless `FLAKEPILOT_TEST_DATABASE_URL` is set. When `CI` is set (GitHub Actions), a missing URL fails the run instead; CI provides a PostgreSQL service.
