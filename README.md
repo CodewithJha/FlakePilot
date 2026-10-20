@@ -10,6 +10,14 @@ Requires [uv](https://docs.astral.sh/uv/). uv uses its managed CPython 3.12 (`.p
 uv sync --locked
 ```
 
+## Run the API
+
+```sh
+uv run python -m flakepilot.interface.composition_root
+```
+
+Settings come from environment variables only (see [`.env.example`](.env.example)); invalid values stop startup with a message naming the variable. Probes: `GET /health/live`, `GET /health/ready`.
+
 ## Quality gates
 
 The same commands run in CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)). Toolchain and policy: [ADR-010](docs/adr/ADR-010-engineering-toolchain-and-quality-gates.md).
