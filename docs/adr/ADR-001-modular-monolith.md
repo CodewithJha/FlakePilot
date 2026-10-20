@@ -35,5 +35,5 @@ FlakePilot has 11 product domains (PRODUCT-SCOPE §8) with tight workflow coupli
 ## Consequences
 
 - **Positive:** simple consistency. One build to test, ship, and self-host. Boundaries enforced by tooling rather than by the network.
-- **Negative:** one runtime failure domain for the control plane. Scaling is per process role, not per domain. Boundary discipline depends on automated checks being in place from the first code (deferred tooling, required now).
-- **Follow-ups:** choose the language/framework with boundary-check tooling. Choose the durable job runtime and the persistence technology (all deferred, [SYSTEM-ARCHITECTURE §10](../architecture/SYSTEM-ARCHITECTURE.md#10-unresolved-and-deferred-decisions)).
+- **Negative:** one runtime failure domain for the control plane. Scaling is per process role, not per domain. Boundary discipline depends on automated checks being in place from the first code (import-linter, ADR-007; CI gate, ADR-010).
+- **Follow-ups:** language, framework and boundary tooling decided in ADR-007 and ADR-010; job runtime in ADR-006; persistence in ADR-005.

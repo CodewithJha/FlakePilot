@@ -48,4 +48,4 @@ Rules in detail: [DEPENDENCY-RULES](../architecture/DEPENDENCY-RULES.md). It isn
 
 - **Positive:** testable, deterministic core rules. Mechanically checked AI isolation. Providers swappable without touching domain code.
 - **Negative:** some indirection: ORCH relays candidate text, and approval requests carry the creator ID. Interface-layer composition is needed for screens that mix domains. Boundary tooling must exist before feature code.
-- **Follow-ups:** pick boundary-check tooling with the language choice (deferred).
+- **Follow-ups:** boundary-check tooling is import-linter ([ADR-007](ADR-007-implementation-stack-and-licensing.md)), enforced as a CI gate ([ADR-010](ADR-010-engineering-toolchain-and-quality-gates.md)).

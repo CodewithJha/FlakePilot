@@ -15,6 +15,7 @@ The ADR index, plus the Stage 1.4 technology decision inventory. ADRs are number
 | [ADR-007](ADR-007-implementation-stack-and-licensing.md) | Implementation stack, UI and API approach, licensing, and quality gates | Accepted |
 | [ADR-008](ADR-008-deployment-and-trust-model.md) | Initial deployment model, execution trust model, and sandbox class | Accepted |
 | [ADR-009](ADR-009-initial-provider-adapters.md) | Initial provider adapters and telemetry export | Accepted |
+| [ADR-010](ADR-010-engineering-toolchain-and-quality-gates.md) | Engineering toolchain, repository conventions, and CI quality gates | Accepted |
 
 ## Stage 1.4 decision inventory (2026-10-20)
 
@@ -72,6 +73,7 @@ Deployment: self-hosted with documented Docker-based deployment, portable, hoste
 | FQ-11 | Sign-in uses the same GitHub App as the repo installation | ADR-009 |
 | FQ-12 | Push ingestion only in v1 | ADR-009 |
 | FQ-13 | Option (a): permissive-only covers FlakePilot's code and Python dependencies. OS packages, browsers, and media tools in shipped images are unmodified third-party components with their licence notices. A licence review of each image's contents, including required notices and source availability, must pass before any image is released | ADR-007 |
+| TQ-1 to TQ-6 | Licence checker pip-licenses; full locked environment for the gate, runtime-only for notices; mypy `--strict` everywhere with recorded overrides; context-name subpackages under `src/flakepilot/`; CI on Python 3.12 only; ADR-010 accepted. Also owner-chosen: Python 3.12, uv with a committed `uv.lock`, GitHub Actions, Ruff, mypy | ADR-010 |
 
 ## Remaining owner questions
 

@@ -169,6 +169,6 @@ PRODUCT-SCOPE P1 and §5: AI must not influence classification, verification out
 
 ## 7. Enforcement
 
-- **Automated boundary checks are required.** Builds must fail on a forbidden import between layers or domains, or on a matrix edge not in §3.1. The tooling depends on the language choice (deferred). The requirement doesn't.
+- **Automated boundary checks are required.** Builds must fail on a forbidden import between layers or domains, or on a matrix edge not in §3.1. The tool is import-linter ([ADR-007](../adr/ADR-007-implementation-stack-and-licensing.md)), run as a CI merge gate ([ADR-010](../adr/ADR-010-engineering-toolchain-and-quality-gates.md)).
 - **Every port has a conformance suite** run against every adapter, plus fakes for tests ([ADR-003](../adr/ADR-003-provider-adapters.md)).
 - **Changing the matrix** (adding an edge or a domain) requires an ADR that re-runs the §3.3 and §5 checks.
