@@ -18,6 +18,7 @@ from sqlalchemy.engine import Connection
 
 from flakepilot.audit.infrastructure.tables import metadata as aud_metadata
 from flakepilot.diagnosis.infrastructure.tables import metadata as diag_metadata
+from flakepilot.execution.infrastructure.tables import metadata as exec_metadata
 from flakepilot.identity.infrastructure.tables import metadata as iam_metadata
 from flakepilot.integrations.infrastructure.secret_store import (
     metadata as secret_store_metadata,
@@ -25,6 +26,7 @@ from flakepilot.integrations.infrastructure.secret_store import (
 from flakepilot.interface.composition_root.database import create_engine
 from flakepilot.interface.composition_root.settings import Settings, SettingsError
 from flakepilot.orchestration.infrastructure.tables import metadata as orch_metadata
+from flakepilot.repository.infrastructure.tables import metadata as repo_metadata
 from flakepilot.test_intelligence.infrastructure.tables import metadata as ti_metadata
 
 target_metadata = [
@@ -34,6 +36,8 @@ target_metadata = [
     diag_metadata,
     orch_metadata,
     aud_metadata,
+    repo_metadata,
+    exec_metadata,
 ]
 _SCHEMAS = {metadata.schema for metadata in target_metadata}
 _OPTIONS: dict[str, Any] = {

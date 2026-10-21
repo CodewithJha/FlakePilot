@@ -55,7 +55,7 @@ events = Table(
     Column("payload", JSONB, nullable=False),
     _time("recorded_at"),
     CheckConstraint(
-        "source IN ('iam', 'ti', 'diag')",
+        "source IN ('iam', 'ti', 'diag', 'exec')",
         name="source",
     ),
     CheckConstraint("schema_version = 1", name="schema_version"),

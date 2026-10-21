@@ -8,6 +8,8 @@ from flakepilot.integrations.application.ports import (
     CodeHost,
     CodeHostError,
     commit_sha_ok,
+    github_name_ok,
+    github_owner_ok,
 )
 
 
@@ -43,6 +45,13 @@ class PinnedRevision:
 
 class RepoDirectory(Protocol):
     async def get(self, repo_id: str) -> RepoBinding | None: ...
+
+
+def new_binding(*, org_id: str, owner: str, name: str) -> RepoBinding:
+    """A GitHub repository this deployment will accept. The id is ours, not GitHub's."""
+    if not (_uuid(org_id) and github_owner_ok(owner) and github_name_ok(name)):
+        raise SourceError("invalid_repository")
+    return RepoBinding(org_id, str(uuid.uuid4()), owner, name)
 
 
 def _uuid(value: str) -> bool:

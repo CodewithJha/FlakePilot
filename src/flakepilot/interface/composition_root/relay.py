@@ -1,4 +1,4 @@
-"""Deliver iam, ti, and diag outbox rows to AUD. Polling is sufficient.
+"""Deliver iam, ti, diag, and exec outbox rows to AUD. Polling is sufficient.
 
 Each event is claimed with `FOR UPDATE SKIP LOCKED` and finished in that same
 transaction: AUD's insert and `published_at` commit together, or neither does.
@@ -19,6 +19,7 @@ from sqlalchemy.sql import func
 from flakepilot.audit.application.log import AuditRecord
 from flakepilot.audit.infrastructure.store import SqlAuditStore
 from flakepilot.diagnosis.infrastructure.tables import outbox as diag_outbox
+from flakepilot.execution.infrastructure.tables import outbox as exec_outbox
 from flakepilot.identity.infrastructure.tables import outbox as iam_outbox
 from flakepilot.interface.composition_root.database import transaction
 from flakepilot.shared_kernel.events import (
@@ -38,6 +39,7 @@ SOURCES = (
     ("iam", iam_outbox),
     ("ti", ti_outbox),
     ("diag", diag_outbox),
+    ("exec", exec_outbox),
 )
 
 

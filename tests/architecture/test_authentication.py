@@ -3,11 +3,13 @@ from pathlib import Path
 
 from flakepilot.audit.infrastructure.tables import metadata as aud_metadata
 from flakepilot.diagnosis.infrastructure.tables import metadata as diag_metadata
+from flakepilot.execution.infrastructure.tables import metadata as exec_metadata
 from flakepilot.identity.infrastructure.tables import metadata as iam_metadata
 from flakepilot.integrations.infrastructure.secret_store import (
     metadata as secret_store_metadata,
 )
 from flakepilot.orchestration.infrastructure.tables import metadata as orch_metadata
+from flakepilot.repository.infrastructure.tables import metadata as repo_metadata
 from flakepilot.test_intelligence.infrastructure.tables import metadata as ti_metadata
 
 SRC = Path(__file__).resolve().parents[2] / "src" / "flakepilot"
@@ -71,6 +73,8 @@ def test_every_context_uses_the_same_constraint_naming_convention() -> None:
         == diag_metadata.naming_convention
         == orch_metadata.naming_convention
         == aud_metadata.naming_convention
+        == repo_metadata.naming_convention
+        == exec_metadata.naming_convention
     )
 
 
