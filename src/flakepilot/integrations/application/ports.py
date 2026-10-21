@@ -181,3 +181,107 @@ class AiAssistPort(Protocol):
     def describe(self) -> AiCapabilities: ...
 
     async def submit(self, request: AiRequest) -> AiResponse: ...
+
+
+_SHA = re.compile(r"[0-9a-f]{40}")
+_OWNER = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})")
+_REPO_NAME = re.compile(r"[A-Za-z0-9._-]{1,100}")
+
+
+def commit_sha_ok(value: str) -> bool:
+    """40 lowercase hex digits. Any other shape is not a pinned commit."""
+    return _SHA.fullmatch(value) is not None
+
+
+def github_owner_ok(value: str) -> bool:
+    return _OWNER.fullmatch(value) is not None
+
+
+def github_name_ok(value: str) -> bool:
+    return (
+        _REPO_NAME.fullmatch(value) is not None
+        and ".." not in value
+        and not value.startswith(".")
+        and "/" not in value
+    )
+
+
+class CodeHostError(Exception):
+    """The code host did not confirm the commit. `reason` is a short code.
+
+    `unavailable` means this process could not get a trustworthy answer. The
+    claimed SHA is still unverified either way.
+    """
+
+    def __init__(self, reason: str, *, unavailable: bool = False) -> None:
+        self.reason = reason if _CODE.fullmatch(reason) else "invalid_error"
+        self.unavailable = unavailable
+        super().__init__(self.reason)
+
+
+class CodeHost(Protocol):
+    """Read-only commit pin and source fetch. Tokens never appear in the result."""
+
+    async def confirm_commit(
+        self, *, owner: str, name: str, claimed_sha: str
+    ) -> str: ...
+
+    async def fetch_archive(self, *, owner: str, name: str, sha: str) -> bytes: ...
+
+
+@dataclass(frozen=True)
+class SandboxFile:
+    """One capped output. `kind` is `result` or `screenshot`. Bytes are untrusted."""
+
+    kind: str
+    data: bytes
+
+    def __post_init__(self) -> None:
+        if self.kind not in ("result", "screenshot"):
+            raise ValueError("sandbox file kind is result or screenshot")
+        if not isinstance(self.data, bytes):
+            raise TypeError("sandbox file data is bytes")
+
+
+@dataclass(frozen=True)
+class SandboxReport:
+    """What the runtime client observed. Not an execution outcome.
+
+    `status` is `finished`, `infra`, `timed_out`, `cancelled`, or `closed`.
+    `reason` is a short code. `files` are untrusted bytes, possibly empty.
+    """
+
+    status: str
+    reason: str
+    files: tuple[SandboxFile, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.status not in ("finished", "infra", "timed_out", "cancelled", "closed"):
+            raise ValueError("sandbox status is not a known runtime status")
+        if _CODE.fullmatch(self.reason) is None:
+            raise ValueError("sandbox reason must be a short code")
+
+
+class CancelFlag(Protocol):
+    def requested(self) -> bool: ...
+
+
+class Sandbox(Protocol):
+    """Provision, run the approved command, collect, teardown. Idempotent teardown.
+
+    The adapter chooses the command. `selector` and `sha` are data. A missing
+    runtime returns a report; it does not run the command on the host.
+    """
+
+    async def run(
+        self,
+        *,
+        execution_id: str,
+        selector: str,
+        sha: str,
+        source_zip: bytes,
+        wall_seconds: int,
+        memory_mb: int,
+        pids: int,
+        cancel: CancelFlag | None = None,
+    ) -> SandboxReport: ...
