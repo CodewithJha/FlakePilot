@@ -23,12 +23,19 @@ from support import (
     request,
 )
 
+from flakepilot.identity.application.authorization import (
+    PermissionDenied,
+    ResourceNotFound,
+)
 from flakepilot.interface.composition_root import create_app
+from flakepilot.interface.http.errors import Unauthenticated
 from flakepilot.interface.http.request_context import (
+    FORBIDDEN,
     HTTP_ERROR,
     INTERNAL_ERROR,
     METHOD_NOT_ALLOWED,
     NOT_FOUND,
+    UNAUTHENTICATED,
     VALIDATION_ERROR,
 )
 
@@ -330,6 +337,35 @@ def test_every_error_code_has_its_status_and_request_id() -> None:
         assert (got, body["error"]["code"]) == (status, code), path
         assert body["error"]["request_id"] == headers["x-request-id"], path
         assert is_uuid(headers["x-request-id"])
+
+
+@pytest.mark.parametrize(
+    ("error", "status", "code"),
+    [
+        (Unauthenticated, 401, UNAUTHENTICATED),
+        (PermissionDenied, 403, FORBIDDEN),
+        (ResourceNotFound, 404, NOT_FOUND),
+    ],
+)
+def test_access_errors_map_to_stable_codes_without_leaking_ids(
+    error: type[Exception], status: int, code: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    app = create_app(SETTINGS)
+
+    @app.get("/test-only/protected")
+    async def protected() -> None:
+        raise error("org-SENTINEL-41 principal-SENTINEL-42")
+
+    got, headers, body = get(app, "/test-only/protected")
+    assert (got, body["error"]["code"]) == (status, code)
+    assert body["error"]["request_id"] == headers["x-request-id"]
+    if error is ResourceNotFound:  # indistinguishable from a route that does not exist
+        _, _, unknown = get(app, "/no-such-route")
+        assert {**body["error"], "request_id": None} == {
+            **unknown["error"],
+            "request_id": None,
+        }
+    assert "SENTINEL" not in json.dumps(body) + capsys.readouterr().err
 
 
 SENTINEL = "SENTINEL-zq81"

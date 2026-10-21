@@ -18,7 +18,9 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 # Stable error codes, with the HTTP status each is sent with.
-NOT_FOUND = "not_found"  # 404: no such route
+UNAUTHENTICATED = "unauthenticated"  # 401: no verified principal
+FORBIDDEN = "forbidden"  # 403: resource visible, action not permitted
+NOT_FOUND = "not_found"  # 404: no such route, or a resource the principal cannot see
 METHOD_NOT_ALLOWED = "method_not_allowed"  # 405, with an Allow header
 VALIDATION_ERROR = "validation_error"  # 422: request failed schema validation
 HTTP_ERROR = "http_error"  # any other HTTPException status

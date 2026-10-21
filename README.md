@@ -20,7 +20,7 @@ Settings come from environment variables only (see [`.env.example`](.env.example
 
 Database timeouts are constants in `src/flakepilot/interface/composition_root/database.py` (local-development defaults: 30s per statement, 60s idle in a transaction, 5s to connect or get a pooled connection, 2s for readiness). Pooled connections are pinged on checkout, so connections dropped by the server are replaced transparently.
 
-Errors are JSON `{"error": {"code", "message", "request_id"}}` with stable codes (`not_found`, `method_not_allowed`, `validation_error`, `http_error`, `internal_error`); the request id is also in the `X-Request-ID` header. API conventions and deferred decisions (idempotency, pagination): `src/flakepilot/interface/http/__init__.py`.
+Errors are JSON `{"error": {"code", "message", "request_id"}}` with stable codes (`unauthenticated`, `forbidden`, `not_found`, `method_not_allowed`, `validation_error`, `http_error`, `internal_error`); the request id is also in the `X-Request-ID` header. API conventions and deferred decisions (idempotency, pagination): `src/flakepilot/interface/http/__init__.py`.
 
 Migrations are an explicit step, never run at startup. They read `FLAKEPILOT_DATABASE_URL`:
 

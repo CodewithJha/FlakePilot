@@ -16,6 +16,7 @@ The ADR index, plus the Stage 1.4 technology decision inventory. ADRs are number
 | [ADR-008](ADR-008-deployment-and-trust-model.md) | Initial deployment model, execution trust model, and sandbox class | Accepted |
 | [ADR-009](ADR-009-initial-provider-adapters.md) | Initial provider adapters and telemetry export | Accepted |
 | [ADR-010](ADR-010-engineering-toolchain-and-quality-gates.md) | Engineering toolchain, repository conventions, and CI quality gates | Accepted |
+| [ADR-011](ADR-011-authentication-sessions-and-tokens.md) | Authentication sessions, CI upload tokens, and access-check details | Accepted |
 
 ## Stage 1.4 decision inventory (2026-10-20)
 

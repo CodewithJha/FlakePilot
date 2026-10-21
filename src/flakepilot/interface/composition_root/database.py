@@ -85,8 +85,9 @@ async def transaction(engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
     - Repositories receive the session; they never commit or roll back
       (tests/architecture enforces no `.commit()`/`.rollback()` calls in src).
     - Nothing retries non-idempotent work automatically after a failed commit.
-    - Tenant-scoped repositories must apply the org/repo tenant guard (ADR-005 decision 5);
-      that guard is added with the first tenant-scoped repository.
+    - Tenant guard (ADR-005 decision 5): every tenant-owned row carries the org ID (plus
+      the repo ID where it applies), and queries without that scope are rejected. Not
+      implemented: there is no tenant-owned table yet; it arrives with the first one.
     """
     async with AsyncSession(engine, expire_on_commit=False) as session, session.begin():
         yield session

@@ -1,8 +1,13 @@
-"""Maps framework errors to the stable error contract (see `request_context`).
+"""Maps framework and application errors to the stable error contract (`request_context`).
 
-Future expected failures from use cases: application layers raise plain exception classes
-defined in their own context (no FastAPI, no HTTP), and this module maps each class to a
-status and a new stable code when the first such exception exists. Nothing raises one yet.
+Expected failures from use cases: application layers raise plain exception classes defined
+in their own context (no FastAPI, no HTTP), and this module maps each class to a status
+and a stable code. Bodies never include exception text.
+
+Access failures: authentication failure is 401 `unauthenticated`; a resource the
+principal cannot see is 404 `not_found`, the same body as an unknown route, so denials
+never reveal whether something exists in another org; a visible resource with a missing
+grant is 403 `forbidden`.
 """
 
 from http import HTTPStatus
@@ -12,16 +17,32 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException
 
+from flakepilot.identity.application.authorization import (
+    PermissionDenied,
+    ResourceNotFound,
+)
 from flakepilot.interface.http.request_context import (
+    FORBIDDEN,
     HTTP_ERROR,
     METHOD_NOT_ALLOWED,
     NOT_FOUND,
+    UNAUTHENTICATED,
     VALIDATION_ERROR,
     error_body,
     request_id_var,
 )
 
+
+class Unauthenticated(Exception):
+    """Raised by the interface layer when a request has no verified principal."""
+
+
 _HTTP_CODES = {404: NOT_FOUND, 405: METHOD_NOT_ALLOWED}
+_ACCESS_ERRORS: dict[type[Exception], tuple[int, str]] = {
+    Unauthenticated: (401, UNAUTHENTICATED),
+    PermissionDenied: (403, FORBIDDEN),
+    ResourceNotFound: (404, NOT_FOUND),
+}
 
 
 async def _http_error(request: Request, exc: Exception) -> JSONResponse:
@@ -34,6 +55,12 @@ async def _http_error(request: Request, exc: Exception) -> JSONResponse:
         exc.status_code,
         headers=exc.headers,
     )
+
+
+async def _access_error(request: Request, exc: Exception) -> JSONResponse:
+    status, code = _ACCESS_ERRORS[type(exc)]
+    phrase = HTTPStatus(status).phrase
+    return JSONResponse(error_body(code, phrase, request_id_var.get()), status)
 
 
 async def _validation_error(request: Request, exc: Exception) -> JSONResponse:
@@ -60,3 +87,5 @@ async def _validation_error(request: Request, exc: Exception) -> JSONResponse:
 def register_error_handlers(app: FastAPI) -> None:
     app.add_exception_handler(HTTPException, _http_error)
     app.add_exception_handler(RequestValidationError, _validation_error)
+    for error in _ACCESS_ERRORS:
+        app.add_exception_handler(error, _access_error)
