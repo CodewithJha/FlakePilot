@@ -1,10 +1,13 @@
 """Remove expired labelled containers. The worker does not call this.
 
 A client killed with SIGKILL can leave its container running, because `--rm`
-is applied by the client. This adapter lists containers that carry
-`flakepilot.execution` and `flakepilot.expires`, and removes only those whose
-expiry is at or before the caller's clock. An active run has a later expiry
-and is left alone. A missing runtime removes nothing.
+is applied by the client. The expiry label is written before the container
+starts and is the wall-clock deadline, not a worker lease. This adapter lists
+containers that carry `flakepilot.execution` and `flakepilot.expires`, and
+removes only those whose deadline has passed. An active run has a later
+expiry and is left alone, including when its worker is gone. Two sweeps can
+run together: removing an id that is already gone is not a failure of the
+other sweep. A missing runtime removes nothing.
 
 The unit tests pass a fake CLI. They do not start a container and they do not
 mark isolation checks passed.
@@ -17,6 +20,7 @@ from collections.abc import Callable
 from typing import Protocol
 
 from flakepilot.execution.application.plane import ReapResult
+from flakepilot.execution.domain.plane import wall_expired
 
 __all__ = ["CliFailed", "LabelledContainerReaper", "exec_cli"]
 
@@ -116,7 +120,7 @@ def _expired_id(line: str, now: int) -> str | None:
         return None
     if not expires.isascii() or not expires.isdigit():
         return None
-    if int(expires) > now:
+    if not wall_expired(expires=int(expires), now=now):
         return None
     return container_id
 

@@ -12,7 +12,15 @@ PROBE="$DIR/probe.py"
 IMAGE=python@sha256:e8a38829209aea82774882e5157e1f7c3e8c8393ff53a697b3580896e57f345c
 PIN=sha256:e8a38829209aea82774882e5157e1f7c3e8c8393ff53a697b3580896e57f345c
 TMPFS=/tmp:rw,nosuid,nodev,noexec,size=64m
-DISK_TMPFS=/tmp:rw,nosuid,nodev,noexec,size=1m
+# Three spellings of a 1 MB cap. The probe must observe ENOSPC before 2 MB
+# is stored. A spelling that does not cap is a failed measurement, not a pass.
+DISK_SUFFIX=/tmp:rw,nosuid,nodev,noexec,size=1m
+DISK_K=/tmp:rw,nosuid,nodev,noexec,size=1024k
+DISK_BYTES=/tmp:rw,nosuid,nodev,noexec,size=1048576
+LIVE_EXECUTION=11111111-1111-4111-8111-111111111111
+DEAD_EXECUTION=22222222-2222-4222-8222-222222222222
+ORPHAN_EXECUTION=33333333-3333-4333-8333-333333333333
+STOPPED_EXECUTION=44444444-4444-4444-8444-444444444444
 fail=0
 PY=""
 
@@ -154,6 +162,67 @@ has() {
   esac
 }
 
+disk_capped() {
+  # ENOSPC, and the 2 MB target was not stored. A short write with errno 0 is a fail.
+  case "$cap_out" in
+    *'disk_errno=28'*) ;;
+    *) return 1 ;;
+  esac
+  case "$cap_out" in
+    *'written=2097152'*|*'size=2097152'*) return 1 ;;
+  esac
+  case "$cap_out" in
+    *'written='*) return 0 ;;
+  esac
+  return 1
+}
+
+reap_now() {
+  if [ -z "$PY" ]; then
+    echo "reaped=skipped reason=no_python"
+    return 0
+  fi
+  set +e
+  PYTHONPATH="$ROOT/src" "$PY" - <<'PY'
+from flakepilot.execution.infrastructure.reaper import LabelledContainerReaper
+import time
+
+result = LabelledContainerReaper(now=lambda: int(time.time())).reclaim()
+print(f"reaped={result.reclaimed} reason={result.reason}")
+PY
+  code=$?
+  set -e
+  if [ "$code" -ne 0 ]; then
+    echo "reaped=error reason=python_exit_$code"
+  fi
+}
+
+start_labelled() {
+  local name=$1
+  local execution=$2
+  local expires=$3
+  local _i state
+  docker rm -f "$name" >/dev/null 2>&1 || true
+  docker run -d --name "$name" \
+    "${base_args[@]}" \
+    --pids-limit=32 \
+    --memory=64m \
+    --cpus=0.5 \
+    --tmpfs="$TMPFS" \
+    --label "flakepilot.execution=$execution" \
+    --label "flakepilot.expires=$expires" \
+    "$IMAGE" \
+    python -c 'import time; time.sleep(120)' >/dev/null
+  for _i in 1 2 3 4 5 6 7 8 9 10; do
+    state=$(docker inspect -f '{{.State.Running}}' "$name" 2>/dev/null || true)
+    if [ "$state" = "true" ]; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "labelled $name did not start" >&2
+}
+
 echo "=== check 1 outbound network ==="
 capture_probe fp-probe-net network 32 128m "$TMPFS" >/tmp/fp-check1.out
 cat /tmp/fp-check1.out
@@ -211,13 +280,31 @@ else
 fi
 
 echo "=== check 6 disk ==="
-capture_probe fp-probe-disk disk 32 128m "$DISK_TMPFS" >/tmp/fp-check6d.out
+disk_status=FAIL
+disk_suffix=FAIL
+disk_k=FAIL
+disk_bytes=FAIL
+capture_probe fp-probe-disk disk 32 128m "$DISK_SUFFIX" >/tmp/fp-check6d.out
 cat /tmp/fp-check6d.out
-if has 'disk_errno=28'; then
+if disk_capped; then
+  disk_suffix=PASS
   disk_status=PASS
-else
-  disk_status=FAIL
 fi
+echo "disk_size_1m=$disk_suffix"
+capture_probe fp-probe-diskk disk 32 128m "$DISK_K" >/tmp/fp-check6dk.out
+cat /tmp/fp-check6dk.out
+if disk_capped; then
+  disk_k=PASS
+  disk_status=PASS
+fi
+echo "disk_size_1024k=$disk_k"
+capture_probe fp-probe-diskb disk 32 128m "$DISK_BYTES" >/tmp/fp-check6db.out
+cat /tmp/fp-check6db.out
+if disk_capped; then
+  disk_bytes=PASS
+  disk_status=PASS
+fi
+echo "disk_size_1048576=$disk_bytes"
 echo "disk=$disk_status"
 
 echo "=== check 6 pids ==="
@@ -287,31 +374,38 @@ fi
 docker rm -f fp-probe-mem >/dev/null 2>&1 || true
 
 echo "=== check 6 wall time ==="
-docker rm -f fp-probe-wall >/dev/null 2>&1 || true
-docker run -d --name fp-probe-wall \
-  "${base_args[@]}" \
-  --pids-limit=32 \
-  --memory=64m \
-  --cpus=0.5 \
-  --tmpfs="$TMPFS" \
-  "$IMAGE" \
-  python -c 'import time; time.sleep(120)' >/tmp/fp-wall.id
-sleep 5
-wall_state=$(docker inspect --format '{{.State.Status}}' fp-probe-wall 2>/dev/null || echo missing)
-echo "wall_state_after_5s=$wall_state"
-if [ "$wall_state" = "running" ]; then
-  wall_status=FAIL
-else
+# Docker does not stop a container when a label says it should. The reaper does.
+now_s=$(date +%s)
+start_labelled fp-probe-wall-live "$LIVE_EXECUTION" "$((now_s + 600))"
+start_labelled fp-probe-wall-dead "$DEAD_EXECUTION" "$((now_s - 30))"
+sleep 2
+live_before=$(docker inspect --format '{{.State.Status}}' fp-probe-wall-live 2>/dev/null || echo missing)
+dead_before=$(docker inspect --format '{{.State.Status}}' fp-probe-wall-dead 2>/dev/null || echo missing)
+echo "docker_native live=$live_before dead=$dead_before deadline_already_passed_for_dead=true"
+echo "=== reaper wall ==="
+reap_now
+live_after=$(docker inspect --format '{{.State.Status}}' fp-probe-wall-live 2>/dev/null || echo missing)
+dead_after=$(docker inspect --format '{{.State.Status}}' fp-probe-wall-dead 2>/dev/null || echo missing)
+echo "supervisor live=$live_after dead=$dead_after"
+echo "=== reaper wall again ==="
+reap_now
+live_again=$(docker inspect --format '{{.State.Status}}' fp-probe-wall-live 2>/dev/null || echo missing)
+echo "supervisor_second live=$live_again"
+wall_status=FAIL
+if [ "$live_before" = "running" ] && [ "$dead_before" = "running" ] \
+  && [ "$live_after" = "running" ] && [ "$dead_after" = "missing" ] \
+  && [ "$live_again" = "running" ]; then
   wall_status=PASS
 fi
-docker rm -f fp-probe-wall >/dev/null 2>&1 || true
+docker rm -f fp-probe-wall-live >/dev/null 2>&1 || true
+echo "wall=$wall_status docker_native=no_deadline supervisor_keeps_future_expiry=$live_after"
 
 if [ "$disk_status" = "PASS" ] && [ "$pids_status" = "PASS" ] \
   && [ "$cpu_status" = "PASS" ] && [ "$memory_status" = "PASS" ] \
   && [ "$wall_status" = "PASS" ]; then
-  result 6 limits PASS "disk=$disk_status pids=$pids_status cpu=$cpu_status memory=$memory_status wall=$wall_status"
+  result 6 limits PASS "disk=$disk_status suffix=$disk_suffix k=$disk_k bytes=$disk_bytes pids=$pids_status cpu=$cpu_status memory=$memory_status wall=$wall_status docker_native=no_deadline"
 else
-  result 6 limits FAIL "disk=$disk_status pids=$pids_status cpu=$cpu_status memory=$memory_status wall=$wall_status runtime_has_no_deadline"
+  result 6 limits FAIL "disk=$disk_status suffix=$disk_suffix k=$disk_k bytes=$disk_bytes pids=$pids_status cpu=$cpu_status memory=$memory_status wall=$wall_status docker_native=no_deadline"
 fi
 
 echo "=== check 7 outputs ==="
@@ -407,6 +501,8 @@ docker run --rm --name fp-probe-8c \
   --memory=64m \
   --cpus=0.5 \
   --tmpfs="$TMPFS" \
+  --label "flakepilot.execution=$ORPHAN_EXECUTION" \
+  --label flakepilot.expires=1 \
   "$IMAGE" \
   python -c 'import time; time.sleep(120)' >/tmp/fp-8c.out 2>/tmp/fp-8c.err &
 client=$!
@@ -423,15 +519,15 @@ kill -9 "$client" >/dev/null 2>&1 || true
 wait "$client" >/dev/null 2>&1 || true
 sleep 3
 if [ "$c8c_started" -ne 1 ]; then
-  c8c=FAIL
-  echo "8c_client_sigkill=FAIL container_never_started"
+  c8c=NEVER
+  echo "8c_client_sigkill=NEVER container_never_started"
 elif gone fp-probe-8c; then
-  c8c=PASS
-  echo "8c_client_sigkill=PASS absent"
+  c8c=ABSENT
+  echo "8c_client_sigkill=ABSENT"
 else
   c8c_state=$(docker inspect -f '{{.State.Status}}' fp-probe-8c 2>/dev/null || echo missing)
-  c8c=FAIL
-  echo "8c_client_sigkill=FAIL remains status=$c8c_state"
+  c8c=LEFT
+  echo "8c_client_sigkill=LEFT status=$c8c_state"
 fi
 
 docker rm -f fp-probe-8d >/dev/null 2>&1 || true
@@ -441,17 +537,19 @@ docker run -d --name fp-probe-8d \
   --memory=64m \
   --cpus=0.5 \
   --tmpfs="$TMPFS" \
+  --label "flakepilot.execution=$STOPPED_EXECUTION" \
+  --label flakepilot.expires=1 \
   "$IMAGE" \
   python -c 'import time; time.sleep(120)' >/tmp/fp-8d.id
 docker kill fp-probe-8d >/dev/null 2>&1 || true
 sleep 2
 if gone fp-probe-8d; then
-  c8d=PASS
-  echo "8d_no_rm=PASS absent"
+  c8d=ABSENT
+  echo "8d_no_rm=ABSENT"
 else
   c8d_state=$(docker inspect -f '{{.State.Status}}' fp-probe-8d 2>/dev/null || echo missing)
-  c8d=FAIL
-  echo "8d_no_rm=FAIL remains status=$c8d_state"
+  c8d=LEFT
+  echo "8d_no_rm=LEFT status=$c8d_state"
 fi
 
 docker rm -f fp-probe-8e >/dev/null 2>&1 || true
@@ -471,11 +569,37 @@ else
 fi
 echo "8e_docker_stop=$c8e"
 
-if [ "$c8a" = "PASS" ] && [ "$c8b" = "PASS" ] && [ "$c8c" = "PASS" ] \
-  && [ "$c8d" = "PASS" ] && [ "$c8e" = "PASS" ]; then
-  result 8 cleanup PARTIAL "completion=$c8a kill_rm=$c8b client_sigkill=$c8c no_rm=$c8d docker_stop=$c8e host_restart=NOT_EXECUTED"
+now_s=$(date +%s)
+start_labelled fp-probe-8live "$LIVE_EXECUTION" "$((now_s + 600))"
+sleep 1
+echo "=== reaper orphans ==="
+reap_now
+c8c_after=missing
+c8d_after=missing
+if ! gone fp-probe-8c; then
+  c8c_after=$(docker inspect -f '{{.State.Status}}' fp-probe-8c 2>/dev/null || echo missing)
+fi
+if ! gone fp-probe-8d; then
+  c8d_after=$(docker inspect -f '{{.State.Status}}' fp-probe-8d 2>/dev/null || echo missing)
+fi
+live_kept=$(docker inspect --format '{{.State.Status}}' fp-probe-8live 2>/dev/null || echo missing)
+echo "reaper_after 8c=$c8c_after 8d=$c8d_after live=$live_kept"
+reaper_expired=FAIL
+if [ "$c8c" = "LEFT" ] && [ "$c8d" = "LEFT" ] \
+  && [ "$c8c_after" = "missing" ] && [ "$c8d_after" = "missing" ]; then
+  reaper_expired=PASS
+fi
+reaper_live=FAIL
+if [ "$live_kept" = "running" ]; then
+  reaper_live=PASS
+fi
+docker rm -f fp-probe-8live >/dev/null 2>&1 || true
+
+if [ "$c8a" = "PASS" ] && [ "$c8b" = "PASS" ] && [ "$c8e" = "PASS" ] \
+  && [ "$reaper_expired" = "PASS" ] && [ "$reaper_live" = "PASS" ]; then
+  result 8 cleanup PARTIAL "completion=$c8a kill_rm=$c8b client_sigkill=$c8c no_rm=$c8d docker_stop=$c8e reaper_expired=$reaper_expired reaper_live=$reaper_live host_restart=NOT_EXECUTED"
 else
-  result 8 cleanup FAIL "completion=$c8a kill_rm=$c8b client_sigkill=$c8c no_rm=$c8d docker_stop=$c8e host_restart=NOT_EXECUTED harness_removed_names_after_record"
+  result 8 cleanup FAIL "completion=$c8a kill_rm=$c8b client_sigkill=$c8c no_rm=$c8d docker_stop=$c8e reaper_expired=$reaper_expired reaper_live=$reaper_live host_restart=NOT_EXECUTED"
 fi
 
 echo "=== check 9 stale worker ==="

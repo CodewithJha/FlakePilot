@@ -9,11 +9,12 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from flakepilot.execution.application.reproduction import schedule
+from flakepilot.execution.application.reproduction import evidence_of, schedule
 from flakepilot.execution.domain.reproduction import finish as terminal
 from flakepilot.execution.infrastructure.store import SqlExecutionStore
 from flakepilot.identity.application.authorization import (
     CodeHostAccess,
+    Grant,
     OrgAccess,
     ResourceNotFound,
 )
@@ -850,6 +851,248 @@ def test_artifact_bytes_are_readable_only_for_the_owning_org(
     data, foreign = run(migrated_database_url, scenario)
     assert data == b'{"selector":"tests.login.TestLogin.test_read","status":"passed"}'
     assert foreign == "other-tenant"
+
+
+def test_a_newer_generation_blocks_the_older_worker(
+    migrated_database_url: str,
+) -> None:
+    """After the lease ends, the next claim wins. The old generation cannot finish."""
+
+    async def scenario(engine: AsyncEngine) -> tuple[bool, bool, bool, str, int, str]:
+        host = _Host(SHA)
+        execution_id = await _schedule(engine, host, "tests.login.TestLogin.test_gen")
+        async with transaction(engine) as session:
+            claimed = await SqlExecutionStore(session).claim(
+                execution_id=execution_id,
+                owner="worker-a",
+                now=NOW,
+                lease=timedelta(seconds=30),
+            )
+            assert claimed is not None
+            first = claimed.generation
+        async with transaction(engine) as session:
+            again = await SqlExecutionStore(session).claim(
+                execution_id=execution_id,
+                owner="worker-b",
+                now=NOW + timedelta(seconds=31),
+                lease=timedelta(seconds=30),
+            )
+            assert again is not None
+            second = again.generation
+        passed = terminal("running", "success", "passed")
+        async with transaction(engine) as session:
+            records = SqlExecutionStore(session)
+            stale = await records.finish(
+                execution_id=execution_id,
+                owner="worker-a",
+                generation=first,
+                now=NOW + timedelta(seconds=32),
+                decision=passed,
+                evidence_partial=False,
+                actor=Actor(ActorType.SYSTEM),
+                origin=Origin(Channel.CLI, "corr-gen"),
+            )
+            wrong_owner = await records.finish(
+                execution_id=execution_id,
+                owner="worker-a",
+                generation=second,
+                now=NOW + timedelta(seconds=32),
+                decision=passed,
+                evidence_partial=False,
+                actor=Actor(ActorType.SYSTEM),
+                origin=Origin(Channel.CLI, "corr-gen"),
+            )
+            fresh = await records.finish(
+                execution_id=execution_id,
+                owner="worker-b",
+                generation=second,
+                now=NOW + timedelta(seconds=32),
+                decision=passed,
+                evidence_partial=False,
+                actor=Actor(ActorType.SYSTEM),
+                origin=Origin(Channel.CLI, "corr-gen"),
+            )
+        async with transaction(engine) as session:
+            records = SqlExecutionStore(session)
+            overwrite = await records.finish(
+                execution_id=execution_id,
+                owner="worker-a",
+                generation=first,
+                now=NOW + timedelta(seconds=33),
+                decision=terminal("running", "test_failure", "failed"),
+                evidence_partial=False,
+                actor=Actor(ActorType.SYSTEM),
+                origin=Origin(Channel.CLI, "corr-gen"),
+            )
+            current = await records.get(execution_id)
+            assert current is not None
+            assert (first, second) == (1, 2)
+            return (
+                stale,
+                wrong_owner,
+                fresh and not overwrite,
+                current.outcome or "",
+                current.generation,
+                current.lease_owner or "",
+            )
+
+    stale, wrong_owner, kept, outcome, generation, owner = run(
+        migrated_database_url, scenario
+    )
+    assert stale is False
+    assert wrong_owner is False
+    assert kept is True
+    assert outcome == "success"
+    assert generation == 2
+    assert owner == ""
+
+
+def test_partial_evidence_and_an_unverified_pass_stay_ineligible(
+    migrated_database_url: str, tmp_path: Path
+) -> None:
+    async def scenario(engine: AsyncEngine) -> tuple[str, str, str, str]:
+        host = _Host(SHA)
+        partial_id = await _schedule(engine, host, "tests.login.TestLogin.test_evgap")
+        await reproduce(
+            engine,
+            partial_id,
+            owner="worker-a",
+            now=NOW,
+            lease=timedelta(seconds=30),
+            sandbox=_Sandbox(
+                SandboxReport(
+                    "finished",
+                    "finished",
+                    (
+                        SandboxFile(
+                            "result",
+                            b'{"status":"failed","selector":"tests.login.TestLogin.test_evgap"}',
+                        ),
+                    ),
+                )
+            ),
+            host=host,
+            artifacts=_Broken(),
+            wall_seconds=5,
+            memory_mb=128,
+            pids=16,
+        )
+        body = b'{"status":"passed","selector":"tests.login.TestLogin.test_evhold"}'
+        held_id = await _schedule(engine, host, "tests.login.TestLogin.test_evhold")
+        await reproduce(
+            engine,
+            held_id,
+            owner="worker-a",
+            now=NOW,
+            lease=timedelta(seconds=30),
+            sandbox=_Sandbox(
+                SandboxReport("finished", "finished", (SandboxFile("result", body),))
+            ),
+            host=host,
+            artifacts=LocalFsArtifactStore(_root(tmp_path)),
+            wall_seconds=5,
+            memory_mb=128,
+            pids=16,
+        )
+        async with transaction(engine) as session:
+            records = SqlExecutionStore(session)
+            partial = await records.get(partial_id)
+            held = await records.get(held_id)
+            assert partial is not None and held is not None
+            gap = evidence_of(partial)
+            proof = evidence_of(held)
+            return gap.status, gap.reason, proof.status, proof.reason
+
+    gap_status, gap_reason, proof_status, proof_reason = run(
+        migrated_database_url, scenario
+    )
+    assert gap_status == "ineligible"
+    assert gap_reason == "incomplete"
+    assert proof_status == "ineligible"
+    assert proof_reason == "isolation_unverified"
+
+
+def test_a_tampered_artifact_and_an_ungranted_reader_are_refused(
+    migrated_database_url: str, tmp_path: Path
+) -> None:
+    selector = "tests.login.TestLogin.test_hash"
+
+    async def scenario(engine: AsyncEngine) -> tuple[bytes, str]:
+        host = _Host(SHA)
+        execution_id = await _schedule(engine, host, selector)
+        root = _root(tmp_path)
+        await reproduce(
+            engine,
+            execution_id,
+            owner="worker-a",
+            now=NOW,
+            lease=timedelta(seconds=30),
+            sandbox=_Sandbox(
+                SandboxReport(
+                    "finished",
+                    "finished",
+                    (
+                        SandboxFile(
+                            "result",
+                            b'{"status":"passed","selector":"'
+                            + selector.encode()
+                            + b'"}',
+                        ),
+                    ),
+                )
+            ),
+            host=host,
+            artifacts=LocalFsArtifactStore(root),
+            wall_seconds=5,
+            memory_mb=128,
+            pids=16,
+        )
+        async with transaction(engine) as session:
+            current = await SqlExecutionStore(session).get(execution_id)
+            assert current is not None
+            repo_id = current.repo_id
+        settings = Settings(Secret(migrated_database_url), artifact_dir=root)
+        viewer = OrgAccess(USER, ORG, grants=frozenset({(repo_id, Grant.VIEW)}))
+        kind, data = await read_execution_artifact(
+            engine,
+            settings,
+            access=viewer,
+            org_id=ORG,
+            execution_id=execution_id,
+            kind="result",
+        )
+        assert kind == "result"
+        stranger = OrgAccess("dddddddd-dddd-dddd-dddd-dddddddddddd", ORG)
+        with pytest.raises(ResourceNotFound):
+            await read_execution_artifact(
+                engine,
+                settings,
+                access=stranger,
+                org_id=ORG,
+                execution_id=execution_id,
+                kind="result",
+            )
+        for path in root.rglob("*"):
+            if path.is_file():
+                path.chmod(0o600)
+                path.write_bytes(b"tampered")
+        with pytest.raises(ResourceNotFound):
+            await read_execution_artifact(
+                engine,
+                settings,
+                access=viewer,
+                org_id=ORG,
+                execution_id=execution_id,
+                kind="result",
+            )
+        async with transaction(engine) as session:
+            current = await SqlExecutionStore(session).get(execution_id)
+            assert current is not None
+            return data, current.outcome or ""
+
+    data, outcome = run(migrated_database_url, scenario)
+    assert data == b'{"selector":"tests.login.TestLogin.test_hash","status":"passed"}'
+    assert outcome == "success"
 
 
 class _LiveCancel:

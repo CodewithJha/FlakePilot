@@ -181,13 +181,51 @@ def privs() -> None:
 
 
 def disk() -> None:
+    """Write 2 MB in 64 KB pieces. A short write is not success.
+
+    `FileIO.write` can return fewer bytes than requested without raising.
+    The previous probe treated that as `disk_errno=0`. This one keeps going
+    until 2 MB is stored or the filesystem refuses the next piece.
+    """
+    print("RESULT mount=" + _tmp_mount())
+    chunk = b"x" * (64 * 1024)
+    target = 2 * 1024 * 1024
+    written = 0
+    errno = 0
     try:
         with open("/tmp/fp-disk", "wb", buffering=0) as handle:
-            handle.write(b"x" * (2 * 1024 * 1024))
+            while written < target:
+                count = handle.write(chunk)
+                if not count:
+                    errno = 28
+                    break
+                written += count
+            try:
+                os.fsync(handle.fileno())
+            except OSError as exc:
+                if errno == 0:
+                    errno = exc.errno or 0
     except OSError as exc:
-        print(f"RESULT disk_errno={exc.errno}")
-        return
-    print("RESULT disk_errno=0")
+        errno = exc.errno or 0
+    try:
+        size = os.path.getsize("/tmp/fp-disk")
+    except OSError:
+        size = -1
+    print(f"RESULT disk_errno={errno} written={written} size={size}")
+
+
+def _tmp_mount() -> str:
+    try:
+        with open("/proc/mounts", encoding="utf-8") as handle:
+            lines = handle.readlines()
+    except OSError:
+        return "unreadable"
+    for line in lines:
+        parts = line.split()
+        if len(parts) >= 4 and parts[1] == "/tmp":
+            options = parts[3].replace(",", "_")
+            return f"{parts[2]}:{options}"
+    return "missing"
 
 
 def pids() -> None:

@@ -20,6 +20,8 @@ def test_harness_pins_the_image_and_does_not_pass_a_secret() -> None:
     probe = PROBE.read_text(encoding="utf-8")
     combined = workflow + script
     assert "pull_request_target" not in workflow
+    assert "workflow_dispatch:" in workflow
+    assert "\n  push:" not in workflow
     assert "persist-credentials: false" in workflow
     assert "contents: read" in workflow
     assert 'GITHUB_TOKEN: ""' in workflow

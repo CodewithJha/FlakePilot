@@ -114,3 +114,13 @@ def plane_request(
 def unavailable_report() -> PlaneReport:
     """No execution host accepted the handoff. Nothing ran."""
     return PlaneReport("unavailable", "execution_host_unavailable")
+
+
+def wall_expired(*, expires: int, now: int) -> bool:
+    """Whether a container's recorded wall deadline has passed.
+
+    `expires` is the unix time written on the container before it starts.
+    A worker lease is not an input. A container whose deadline is still ahead
+    stays up, including after the process that started it has died.
+    """
+    return expires <= now

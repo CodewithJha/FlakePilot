@@ -4,6 +4,7 @@ import subprocess
 
 import pytest
 
+from flakepilot.execution.domain.plane import wall_expired
 from flakepilot.execution.infrastructure.reaper import (
     CliFailed,
     LabelledContainerReaper,
@@ -65,6 +66,42 @@ def test_a_killed_client_orphan_is_removed_and_a_live_run_is_not() -> None:
     assert listed[1:3] == ["ps", "-a"]
     assert "label=flakepilot.execution" in listed
     assert LIVE not in [part for call in cli.calls for part in call[3:]]
+
+
+def test_wall_expiry_ignores_a_worker_lease() -> None:
+    """The deadline is the label. A lease is not an argument and cannot expire a run."""
+    assert wall_expired(expires=500, now=200) is False
+    assert wall_expired(expires=200, now=200) is True
+    assert wall_expired(expires=100, now=200) is True
+
+
+class _SharedCli:
+    """Two reapers see one listing. The second sweep finds nothing left to remove."""
+
+    def __init__(self) -> None:
+        self.rows = [f"{ORPHAN}\t{EXPIRED}\t100", f"{LIVE}\t{ACTIVE}\t500"]
+        self.removals: list[str] = []
+
+    def __call__(self, argv: list[str]) -> str:
+        if argv[1] == "ps":
+            return "\n".join(self.rows)
+        container_id = argv[-1]
+        self.removals.append(container_id)
+        self.rows = [
+            row for row in self.rows if not row.startswith(container_id + "\t")
+        ]
+        return ""
+
+
+def test_a_second_sweep_does_not_remove_the_container_again() -> None:
+    cli = _SharedCli()
+    first = LabelledContainerReaper(cli, now=lambda: 200).reclaim()
+    second = LabelledContainerReaper(cli, now=lambda: 200).reclaim()
+    assert first.reclaimed == 1
+    assert second.reclaimed == 0
+    assert second.reason == "expired_containers_removed"
+    assert cli.removals == [ORPHAN]
+    assert cli.rows == [f"{LIVE}\t{ACTIVE}\t500"]
 
 
 def test_an_expiry_equal_to_the_clock_is_removed() -> None:

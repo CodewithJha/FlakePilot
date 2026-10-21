@@ -1,16 +1,12 @@
 name: isolation-validation
 
-# Measurement lab only. A GitHub-hosted runner is not a FlakePilot execution
-# host. This job runs self-authored probes. It does not enable execution, and
-# it does not mark isolation checks passed. A red run is a measurement.
+# Manual measurement only. A GitHub-hosted runner is not a FlakePilot
+# execution host. This job is not part of push CI: a failed measurement must
+# not leave the repository red. The harness assertions stay strict. The job
+# does not enable execution and does not mark isolation checks passed.
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - ops/isolation/**
-      - .github/workflows/isolation-validation.yml
 
 permissions:
   contents: read
