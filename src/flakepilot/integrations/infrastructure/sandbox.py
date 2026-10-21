@@ -6,9 +6,10 @@
 fixed command inside a fresh container. It never executes that command on the
 host. If the runtime binary is missing, the result is `runtime_unavailable`.
 
-The container is not a microVM. `--network=none` is what blocks egress and
-metadata addresses. A worker killed with SIGKILL can leave a container behind;
-there is no TTL reaper.
+The container is not a microVM. `--network=none` is an argument, not a measured
+block of egress or metadata addresses. A worker killed with SIGKILL can leave
+a container behind. `reap_workdirs` removes leftover per-run directories and
+does not call a runtime. There is no container reaper.
 """
 
 import asyncio
@@ -39,6 +40,7 @@ __all__ = [
     "SandboxFile",
     "SandboxReport",
     "image_ok",
+    "reap_workdirs",
     "unverified_source",
 ]
 
@@ -275,6 +277,31 @@ def _extract(data: bytes, dest: Path) -> None:
                 out.write(chunk)
         if info.file_size not in (0, written):
             raise ValueError("invalid_source")
+
+
+def reap_workdirs(root: Path, *, now: float, ttl_seconds: float) -> int:
+    """Remove leftover per-run directories. Does not need the process that created them.
+
+    Only direct children named `fp-...` are removed, and only after `ttl_seconds`.
+    Symlinks are left alone. This does not remove containers: no runtime is invoked.
+    """
+    if ttl_seconds < 0 or not root.is_dir() or root.is_symlink():
+        return 0
+    base = root.resolve()
+    removed = 0
+    for child in base.iterdir():
+        if (
+            child.is_symlink()
+            or not child.is_dir()
+            or not child.name.startswith("fp-")
+            or not child.resolve().is_relative_to(base)
+        ):
+            continue
+        if now - child.stat().st_mtime < ttl_seconds:
+            continue
+        _remove(child)
+        removed += 1
+    return removed
 
 
 def _remove(path: Path) -> None:

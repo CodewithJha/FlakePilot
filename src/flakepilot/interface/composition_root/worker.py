@@ -8,14 +8,18 @@ Handlers are the `handlers` argument, never a payload field. Cleanup jobs stay d
 
 import asyncio
 import logging
+import os
 import signal
+import time
 import uuid
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from flakepilot.integrations.infrastructure.sandbox import reap_workdirs
 from flakepilot.interface.composition_root import configure_logging
 from flakepilot.interface.composition_root.database import (
     CONNECT_TIMEOUT,
@@ -87,6 +91,11 @@ async def run_worker(settings: Settings) -> int:
         except Exception as exc:  # noqa: BLE001 - driver errors can carry the host
             _logger.error("worker stopped: %s", type(exc).__name__)
             return 1
+        removed = reap_workdirs(
+            Path(os.environ.get("TMPDIR", "/tmp")), now=time.time(), ttl_seconds=3600
+        )
+        if removed:
+            _logger.info("removed %d expired work directories", removed)
         await enqueue_missing(engine, datetime.now(UTC))
         stop = asyncio.Event()
         loop = asyncio.get_running_loop()

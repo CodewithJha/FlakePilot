@@ -2,6 +2,7 @@
 
 import asyncio
 import io
+import os
 import stat
 import zipfile
 from collections.abc import Mapping
@@ -17,6 +18,7 @@ from flakepilot.integrations.infrastructure.sandbox import (
     ClosedSandbox,
     ContainerSandbox,
     RuntimeMissing,
+    reap_workdirs,
 )
 
 IMAGE = "ghcr.io/example/reproduce@sha256:" + ("ab" * 32)
@@ -210,3 +212,27 @@ def test_cancel_before_start_skips_the_runtime(tmp_path: Path) -> None:
         ContainerSandbox(runtime="bash", image=IMAGE)
     with pytest.raises(ValueError):
         ContainerSandbox(runtime="docker", image="python:latest")
+
+
+def test_reap_removes_only_expired_work_directories(tmp_path: Path) -> None:
+    """The reaper deletes leftover directories. It does not call a runtime."""
+    old = tmp_path / "fp-old"
+    old.mkdir()
+    (old / "notes.txt").write_bytes(b"x")
+    recent = tmp_path / "fp-new"
+    recent.mkdir()
+    other = tmp_path / "keep-me"
+    other.mkdir()
+    link = tmp_path / "fp-link"
+    link.symlink_to(old, target_is_directory=True)
+    moment = 1_000_000.0
+    os.utime(old, (moment - 10_000, moment - 10_000))
+    os.utime(recent, (moment, moment))
+    removed = reap_workdirs(tmp_path, now=moment, ttl_seconds=3600)
+    assert removed == 1
+    assert not old.exists()
+    assert recent.is_dir()
+    assert other.is_dir()
+    assert link.is_symlink()
+    assert reap_workdirs(tmp_path, now=moment, ttl_seconds=-1) == 0
+    assert reap_workdirs(recent / "missing", now=moment, ttl_seconds=1) == 0

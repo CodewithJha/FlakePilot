@@ -155,7 +155,7 @@ class SqlExecutionStore:
         )
         if current.state != SCHEDULED and not expired:
             return None
-        if current.cancel_requested and current.state == SCHEDULED:
+        if current.cancel_requested and (current.state == SCHEDULED or expired):
             await self._terminal(
                 current,
                 Decision(CANCELLED, CANCELLED, "cancelled"),
@@ -249,6 +249,33 @@ class SqlExecutionStore:
                 ),
             )
             .values(cancel_requested=True, updated_at=now)
+            .returning(executions.c.id)
+        )
+        return result.first() is not None
+
+    async def renew_lease(
+        self,
+        *,
+        execution_id: str,
+        owner: str,
+        generation: int,
+        now: datetime,
+        lease: timedelta,
+    ) -> bool:
+        """Extend the lease of the current attempt. A stale owner or generation changes nothing."""
+        _clock(now)
+        if not _OWNER.fullmatch(owner) or lease.total_seconds() <= 0:
+            raise InvalidExecution("invalid_request")
+        result = await self._session.execute(
+            update(executions)
+            .where(
+                executions.c.id == execution_id,
+                executions.c.state == RUNNING,
+                executions.c.lease_owner == owner,
+                executions.c.generation == generation,
+                executions.c.lease_expires_at > now,
+            )
+            .values(lease_expires_at=now + lease, updated_at=now)
             .returning(executions.c.id)
         )
         return result.first() is not None

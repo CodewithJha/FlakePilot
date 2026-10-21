@@ -5,8 +5,10 @@ SHA come from the execution row. Closed mode does not fetch source and does
 not start a runtime.
 """
 
+import asyncio
 import json
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -77,6 +79,8 @@ def reproduction_handlers(
             wall_seconds=settings.execution_wall_seconds,
             memory_mb=settings.execution_memory_mb,
             pids=settings.execution_pids,
+            clock=lambda: datetime.now(UTC),
+            cancel_poll=0.5,
         )
 
     return {JOB_TYPE: handle}
@@ -104,6 +108,8 @@ async def reproduce(
     wall_seconds: int,
     memory_mb: int,
     pids: int,
+    clock: Callable[[], datetime] | None = None,
+    cancel_poll: float = 0,
 ) -> None:
     async with transaction(engine) as session:
         records = SqlExecutionStore(session)
@@ -125,9 +131,28 @@ async def reproduce(
         raise RetryableJob("busy")
     if claimed.state != "running":
         return
-    report = await _execute(
-        engine, claimed, sandbox, host, wall_seconds, memory_mb, pids
-    )
+    flag = _Cancel()
+    if claimed.cancel_requested:
+        flag.mark()
+        report = SandboxReport("cancelled", "cancelled")
+    else:
+        report = await _run_watched(
+            engine,
+            claimed,
+            sandbox,
+            host,
+            owner=owner,
+            lease=lease,
+            now=now,
+            clock=clock,
+            cancel_poll=cancel_poll,
+            flag=flag,
+            wall_seconds=wall_seconds,
+            memory_mb=memory_mb,
+            pids=pids,
+        )
+    if flag.requested():
+        report = SandboxReport("cancelled", "cancelled")
     decision = classify(
         report.status,
         report.reason,
@@ -149,7 +174,7 @@ async def reproduce(
             execution_id=claimed.id,
             owner=owner,
             generation=claimed.generation,
-            now=now,
+            now=now if clock is None else clock(),
             decision=decision,
             evidence_partial=partial,
             actor=Actor(ActorType.SYSTEM),
@@ -160,11 +185,81 @@ async def reproduce(
     _logger.info("execution finished: %s %s", claimed.id, decision.outcome)
 
 
+class _Cancel:
+    def __init__(self) -> None:
+        self._on = False
+
+    def requested(self) -> bool:
+        return self._on
+
+    def mark(self) -> None:
+        self._on = True
+
+
+async def _run_watched(
+    engine: AsyncEngine,
+    claimed: Execution,
+    sandbox: Sandbox,
+    host: CodeHost,
+    *,
+    owner: str,
+    lease: timedelta,
+    now: datetime,
+    clock: Callable[[], datetime] | None,
+    cancel_poll: float,
+    flag: _Cancel,
+    wall_seconds: int,
+    memory_mb: int,
+    pids: int,
+) -> SandboxReport:
+    """Renew the execution lease and observe cancel while the runtime client runs."""
+    stop = asyncio.Event()
+
+    async def watch() -> None:
+        while not stop.is_set():
+            moment = now if clock is None else clock()
+            async with transaction(engine) as session:
+                records = SqlExecutionStore(session)
+                row = await records.get(claimed.id)
+                await records.renew_lease(
+                    execution_id=claimed.id,
+                    owner=owner,
+                    generation=claimed.generation,
+                    now=moment,
+                    lease=lease,
+                )
+            if row is not None and row.cancel_requested:
+                flag.mark()
+                return
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=max(cancel_poll, 0))
+            except TimeoutError:
+                if cancel_poll <= 0:
+                    await asyncio.sleep(0)
+
+    task = asyncio.create_task(watch())
+    try:
+        return await _execute(
+            engine,
+            claimed,
+            sandbox,
+            host,
+            flag,
+            wall_seconds,
+            memory_mb,
+            pids,
+        )
+    finally:
+        stop.set()
+        await task
+
+
 async def _execute(
     engine: AsyncEngine,
     claimed: Execution,
     sandbox: Sandbox,
     host: CodeHost,
+    cancel: _Cancel,
     wall_seconds: int,
     memory_mb: int,
     pids: int,
@@ -178,6 +273,7 @@ async def _execute(
             wall_seconds=wall_seconds,
             memory_mb=memory_mb,
             pids=pids,
+            cancel=cancel,
         )
     async with transaction(engine) as session:
         binding = await SqlRepoDirectory(session).get(claimed.repo_id)
@@ -198,6 +294,7 @@ async def _execute(
         wall_seconds=wall_seconds,
         memory_mb=memory_mb,
         pids=pids,
+        cancel=cancel,
     )
 
 

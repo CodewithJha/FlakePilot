@@ -10,6 +10,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from flakepilot.execution.application.reproduction import schedule
+from flakepilot.execution.domain.reproduction import finish as terminal
 from flakepilot.execution.infrastructure.store import SqlExecutionStore
 from flakepilot.identity.application.authorization import CodeHostAccess, OrgAccess
 from flakepilot.integrations.application.ports import (
@@ -533,6 +534,161 @@ def test_a_rejected_finish_keeps_the_attempt_running(
     state, artifacts = run(migrated_database_url, scenario)
     assert state == "running"
     assert artifacts == 0
+
+
+def test_an_expired_cancel_does_not_rerun_and_a_live_cancel_wins(
+    migrated_database_url: str,
+) -> None:
+    """A dead holder is not resumed after cancel. A live holder observes cancel."""
+
+    async def scenario(engine: AsyncEngine) -> tuple[str, int, str, int]:
+        host = _Host(SHA)
+        abandoned = _Sandbox(SandboxReport("closed", "execution_closed"))
+        abandoned_id = await _schedule(engine, host, "tests.login.TestLogin.test_dead")
+        async with transaction(engine) as session:
+            claimed = await SqlExecutionStore(session).claim(
+                execution_id=abandoned_id,
+                owner="worker-a",
+                now=NOW,
+                lease=timedelta(seconds=30),
+            )
+            assert claimed is not None
+            await SqlExecutionStore(session).request_cancel(
+                execution_id=abandoned_id, now=NOW
+            )
+        await reproduce(
+            engine,
+            abandoned_id,
+            owner="worker-b",
+            now=NOW + timedelta(seconds=31),
+            lease=timedelta(seconds=30),
+            sandbox=abandoned,
+            host=host,
+            artifacts=None,
+            wall_seconds=5,
+            memory_mb=128,
+            pids=16,
+        )
+        live = _LiveCancel(engine)
+        live_id = await _schedule(engine, host, "tests.login.TestLogin.test_live")
+        live.execution_id = live_id
+        await reproduce(
+            engine,
+            live_id,
+            owner="worker-a",
+            now=NOW,
+            lease=timedelta(seconds=30),
+            sandbox=live,
+            host=host,
+            artifacts=None,
+            wall_seconds=5,
+            memory_mb=128,
+            pids=16,
+        )
+        async with transaction(engine) as session:
+            records = SqlExecutionStore(session)
+            dead = await records.get(abandoned_id)
+            current = await records.get(live_id)
+            assert dead is not None and current is not None
+            return dead.state, abandoned.calls, current.outcome or "", live.calls
+
+    state, skipped, outcome, calls = run(migrated_database_url, scenario)
+    assert state == "cancelled"
+    assert skipped == 0
+    assert outcome == "cancelled"
+    assert calls == 1
+
+
+def test_renewal_keeps_the_holder_and_an_expired_lease_cannot_finish(
+    migrated_database_url: str,
+) -> None:
+    async def scenario(engine: AsyncEngine) -> tuple[bool, bool, bool, str]:
+        host = _Host(SHA)
+        execution_id = await _schedule(engine, host, "tests.login.TestLogin.test_lease")
+        async with transaction(engine) as session:
+            records = SqlExecutionStore(session)
+            claimed = await records.claim(
+                execution_id=execution_id,
+                owner="worker-a",
+                now=NOW,
+                lease=timedelta(seconds=30),
+            )
+            assert claimed is not None
+            extended = await records.renew_lease(
+                execution_id=execution_id,
+                owner="worker-a",
+                generation=claimed.generation,
+                now=NOW + timedelta(seconds=20),
+                lease=timedelta(seconds=30),
+            )
+            stranger = await records.renew_lease(
+                execution_id=execution_id,
+                owner="worker-b",
+                generation=claimed.generation,
+                now=NOW + timedelta(seconds=20),
+                lease=timedelta(seconds=30),
+            )
+        async with transaction(engine) as session:
+            stale = await SqlExecutionStore(session).finish(
+                execution_id=execution_id,
+                owner="worker-a",
+                generation=claimed.generation,
+                now=NOW + timedelta(seconds=51),
+                decision=terminal("running", "success", "passed"),
+                evidence_partial=False,
+                actor=Actor(ActorType.SYSTEM),
+                origin=Origin(Channel.CLI, "corr-lease"),
+            )
+            current = await SqlExecutionStore(session).get(execution_id)
+            assert current is not None
+            return extended, stranger, stale, current.state
+
+    extended, stranger, stale, state = run(migrated_database_url, scenario)
+    assert extended is True
+    assert stranger is False
+    assert stale is False
+    assert state == "running"
+
+
+class _LiveCancel:
+    def __init__(self, engine: AsyncEngine) -> None:
+        self._engine = engine
+        self.execution_id = ""
+        self.calls = 0
+
+    async def run(
+        self,
+        *,
+        execution_id: str,
+        selector: str,
+        sha: str,
+        source_zip: bytes,
+        wall_seconds: int,
+        memory_mb: int,
+        pids: int,
+        cancel: object = None,
+    ) -> SandboxReport:
+        del execution_id, selector, sha, source_zip, wall_seconds, memory_mb, pids
+        self.calls += 1
+        async with transaction(self._engine) as session:
+            await SqlExecutionStore(session).request_cancel(
+                execution_id=self.execution_id, now=NOW
+            )
+        for _ in range(30):
+            requested = getattr(cancel, "requested", None)
+            if callable(requested) and requested():
+                break
+            await asyncio.sleep(0)
+        return SandboxReport(
+            "finished",
+            "finished",
+            (
+                SandboxFile(
+                    "result",
+                    b'{"status":"passed","selector":"tests.login.TestLogin.test_live"}',
+                ),
+            ),
+        )
 
 
 class _Down(_Host):
