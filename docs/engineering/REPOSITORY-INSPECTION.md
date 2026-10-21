@@ -3,11 +3,11 @@
 | | |
 |---|---|
 | Status | **Stage 2.1**, inspection only. Nothing was fixed, scaffolded, installed, or initialized. Stage 2.2 not started |
-| Inspected | `Tue Oct 20 19:10:21 IST 2026` (`date` output at the start of inspection) |
-| Workspace root | `/Users/priyanshujha/Projects/FlakePilot` |
-| Pre-change snapshot | `/tmp/fp_s21_before.txt` (outside the workspace): path, size, mtime, sha256 for every entry, including hidden ones |
+| Inspected | 2026-10-20, 19:10 local time (`date` output at the start of inspection) |
+| Workspace root | `<workspace>` |
+| Pre-change snapshot | a snapshot file outside the workspace: path, size, mtime, sha256 for every entry, including hidden ones |
 | Only change made | This file, plus the new `docs/engineering/` directory |
-| Post-inspection follow-up | §1–§12 describe the workspace at inspection time. **Git was initialized afterwards** and the docs were staged, with no commit yet. See [§13](#13-post-inspection-follow-up-2026-10-20-1920-ist) |
+| Post-inspection follow-up | §1–§12 describe the workspace at inspection time. **Git was initialized afterwards** and the docs were staged, with no commit yet. See [§13](#13-post-inspection-follow-up-2026-10-20-1920) |
 
 **Status vocabulary** used below: **not implemented** (accepted in the docs, absent in the repo), **not found** (looked for, absent, no doc requires it yet), **conflicting** (repo contradicts an accepted decision), **unable to verify** (couldn't be checked from here). An absent implementation is not a conflict.
 
@@ -26,17 +26,17 @@ The workspace holds **only the Stage 1 documentation**: 16 Markdown files under 
 | Inside a work tree? | `git rev-parse --is-inside-work-tree` | `fatal: not a git repository (or any of the parent directories): .git`, exit 128 |
 | Enclosing repo? | `git -C . rev-parse --show-toplevel` | Same error, exit 128 |
 | `.git` in workspace | `find . -name '.*' ! -name .` | No output (no hidden entries at all) |
-| `.git` in parent | `ls -la ~/Projects/.git` | `No such file or directory` |
+| `.git` in parent | `ls -la ../.git` | `No such file or directory` |
 
 Branch, status, log, tracked files, ignored files, and remotes: **not applicable** (no repository). `git status --porcelain=v1 --ignored` and `git diff` could not be used for verification; the snapshot diff (§11) is used instead.
 
-**Doc-internal fact:** [PRODUCT-SCOPE](../product/PRODUCT-SCOPE.md) line 7 records that, when it was written, "The directory was empty and was not a git repository". The Git part is still true. Stage 1 work therefore has **no version history**. The only copies outside the workspace are 12 directories `/private/tmp/fp2` … `/private/tmp/fp13` (142 files, e.g. `fp13/BOUNDED-CONTEXTS.md.bak`, `fp2/mtimes.before.txt`) and `/private/tmp/fp_audit_check.py`. `/tmp` is a system temporary directory, not durable backup storage. Their contents were not inspected beyond listing.
+**Doc-internal fact:** [PRODUCT-SCOPE](../product/PRODUCT-SCOPE.md) line 7 records that, when it was written, "The directory was empty and was not a git repository". The Git part is still true. Stage 1 work therefore has **no version history**. The only copies outside the workspace are ad hoc working copies in the system temporary directory (142 files in 12 directories, e.g. `.md.bak` backups and timestamp listings, plus one audit script). A temporary directory is not durable backup storage. Their contents were not inspected beyond listing.
 
 ---
 
 ## 3. Inventory
 
-From `find . -print` (all entries, hidden included) and `ls -la`. Times are local (IST), 2026-10-20. sha256 prefixes are from `/tmp/fp_s21_before.txt`.
+From `find . -print` (all entries, hidden included) and `ls -la`. Times are local, 2026-10-20. sha256 prefixes are from the pre-change snapshot.
 
 | Path | Bytes | Modified | sha256 (first 12) |
 |---|---:|---|---|
@@ -98,7 +98,7 @@ From `find . -print` (all entries, hidden included) and `ls -la`. Times are loca
 | Tool | Result |
 |---|---|
 | OS | `Darwin arm64` |
-| `python3` | `Python 3.14.6` (`/opt/homebrew/bin/python3`); `python`: not on PATH |
+| `python3` | `Python 3.14.6` (system package manager install); `python`: not on PATH |
 | `pip3` | `pip 26.1.2` |
 | `uv` | `uv 0.11.23` |
 | `git` | `git version 2.54.0` |
@@ -165,7 +165,7 @@ All 16 files in §3: the accepted Stage 1 product scope, architecture, and ADR-0
 
 | # | Severity | Finding | Status | Paths |
 |---|---|---|---|---|
-| 1 | **High** | No version control. Stage 1 work has no history; the only extra copies are ephemeral files in `/tmp` | Not found | Workspace root (no `.git`); `/private/tmp/fp2`–`fp13`, `/private/tmp/fp_audit_check.py` |
+| 1 | **High** | No version control. Stage 1 work has no history; the only extra copies are ephemeral files in the system temporary directory | Not found | Workspace root (no `.git`); temporary working copies |
 | 2 | **High** (sequencing) | Boundary enforcement (import-linter contracts for layers, the §3.1 matrix, the §5 DIAG invariant) must exist before feature code, and none exists | Not implemented | `docs/adr/ADR-001-modular-monolith.md`, `docs/adr/ADR-002-domain-layering.md`, `docs/adr/ADR-007-implementation-stack-and-licensing.md`, `docs/architecture/DEPENDENCY-RULES.md` |
 | 3 | Medium | No Stage 2 / 2.2 definition in the docs; scope must come from the owner | Not found | `docs/` (D-1) |
 | 4 | Medium | No `LICENSE` (Apache-2.0) and no dependency-licence check | Not implemented | `docs/adr/ADR-007-implementation-stack-and-licensing.md` item 5, item 7 |
@@ -178,18 +178,18 @@ All 16 files in §3: the accepted Stage 1 product scope, architecture, and ADR-0
 ## 10. Not inspected or unable to verify
 
 - **Git-based checks** (branch, log, remotes, ignored files, `git diff`): not applicable; no repository.
-- **Contents of `/private/tmp/fp*`**: listed only, not compared with the workspace.
+- **Contents of the temporary working copies**: listed only, not compared with the workspace.
 - **Whether the docs are final**: unable to verify. One file changed three minutes before inspection (§3).
 - **Runtime behavior, tests, licences of dependencies**: nothing exists to run or scan.
 - **Host services** (a running PostgreSQL server, Docker daemon state): not checked; only CLI versions were read.
-- The parent directory `~/Projects` (contains `.DS_Store`, `.shots`, other entries) was not inspected beyond confirming it has no `.git`.
+- The parent directory was not inspected beyond confirming it has no `.git`.
 - Anchor checking in the link script uses a GitHub-style slug approximation; all 230 links passed it.
 
 ---
 
 ## 11. Validation of this inspection
 
-- **Snapshot diff** (`diff /tmp/fp_s21_before.txt /tmp/fp_s21_after.txt`): the only additions are `./docs/engineering` and `./docs/engineering/REPOSITORY-INSPECTION.md`. The only other changed line is the mtime of the `./docs` directory, caused by adding the subdirectory. All 16 pre-existing files have identical size, mtime, and sha256.
+- **Snapshot diff** (pre-change vs post-inspection snapshot): the only additions are `./docs/engineering` and `./docs/engineering/REPOSITORY-INSPECTION.md`. The only other changed line is the mtime of the `./docs` directory, caused by adding the subdirectory. All 16 pre-existing files have identical size, mtime, and sha256.
 - **Link check**: inline script over the Markdown files, resolving relative paths and `#anchors`. Stage 1 docs: 230 links, 0 broken. This report: 16 links, 0 broken.
 - **ADR titles**: every `ADR-00N: Title` in §8.1 was compared by script with line 1 of the ADR file; all 9 match.
 - **Paths**: every `docs/...` path cited in this report was checked by script to exist.
@@ -213,9 +213,9 @@ All 16 files in §3: the accepted Stage 1 product scope, architecture, and ADR-0
 
 ---
 
-## 13. Post-inspection follow-up (2026-10-20 19:20 IST)
+## 13. Post-inspection follow-up (2026-10-20 19:20)
 
-Recorded at `Tue Oct 20 19:20:29 IST 2026` (`date`). This section was added **after** the inspection. Nothing in §1–§12 has been changed; those sections stay accurate for 19:10.
+Recorded at 2026-10-20, 19:20 local time (`date`). This section was added **after** the inspection. Nothing in §1–§12 has been changed; those sections stay accurate for 19:10.
 
 ### 13.1 Git initialized after the inspection
 
@@ -223,14 +223,14 @@ The coordinator ran `git init -b main && git add docs` with the owner's approval
 
 | Check | Result |
 |---|---|
-| `git rev-parse --is-inside-work-tree` / `--show-toplevel` | `true` / `/Users/priyanshujha/Projects/FlakePilot` |
+| `git rev-parse --is-inside-work-tree` / `--show-toplevel` | `true` / `<workspace>` |
 | `git branch --show-current` | `main` |
 | `git status --porcelain=v1 -b --untracked-files=all` | `## No commits yet on main`; 17 files `A` (staged); no unstaged changes and no untracked files at that time |
 | `git diff --cached --stat` | `17 files changed, 3109 insertions(+)`: the 16 Stage 1 docs plus this report |
 | `git log --oneline -n 20` | `fatal: your current branch 'main' does not have any commits yet` |
 | `git remote -v` | No remotes |
 | `user.name` / `user.email` (local, global, system) | Not set at any level; no `GIT_AUTHOR_*` or `GIT_COMMITTER_*` environment variables |
-| Staged blobs vs `/tmp/fp_s21_after.txt` | All 17 staged blobs have the same sha256 as the post-inspection snapshot |
+| Staged blobs vs the post-inspection snapshot | All 17 staged blobs have the same sha256 as the post-inspection snapshot |
 
 **Effect on finding 1 (§9, High, "No version control"): partially addressed.** A repository exists and the docs are staged. There is still **no commit**, so the docs still have no durable history: staged content is only in `.git/index` and loose objects. A first commit needs a Git identity, which isn't configured.
 
