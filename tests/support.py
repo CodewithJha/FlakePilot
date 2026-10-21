@@ -21,7 +21,11 @@ Response = tuple[int, dict[str, str], Any]
 
 
 async def request(
-    app: FastAPI, method: str, target: str, headers: list[tuple[str, str]] | None = None
+    app: FastAPI,
+    method: str,
+    target: str,
+    headers: list[tuple[str, str]] | None = None,
+    body: bytes = b"",
 ) -> Response:
     """Drive the ASGI app directly (httpx, needed by TestClient, pulls in MPL-2.0 certifi)."""
     path, _, query = target.partition("?")
@@ -42,18 +46,18 @@ async def request(
     sent: list[Message] = []
 
     async def receive() -> Message:
-        return {"type": "http.request", "body": b"", "more_body": False}
+        return {"type": "http.request", "body": body, "more_body": False}
 
     async def send(message: Message) -> None:
         sent.append(message)
 
     await app(scope, receive, send)
     start = next(m for m in sent if m["type"] == "http.response.start")
-    body = b"".join(
+    content = b"".join(
         m.get("body", b"") for m in sent if m["type"] == "http.response.body"
     )
     response_headers = {k.decode(): v.decode() for k, v in start["headers"]}
-    return start["status"], response_headers, json.loads(body)
+    return start["status"], response_headers, json.loads(content)
 
 
 def get(

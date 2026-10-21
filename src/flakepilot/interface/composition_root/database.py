@@ -24,7 +24,11 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 
-from flakepilot.interface.http.request_context import error_body, request_id_var
+from flakepilot.interface.http.request_context import (
+    INTERNAL_ERROR,
+    error_body,
+    request_id_var,
+)
 
 # Local-development defaults, not SLOs (RELIABILITY-AND-SLOS: TBD by benchmark).
 POOL_SIZE = 10  # connections; no overflow, so this is the hard limit
@@ -141,7 +145,7 @@ async def _database_error(request: Request, exc: Exception) -> JSONResponse:
     """
     kind = "database error" if isinstance(exc, SQLAlchemyError) else "connection error"
     _logger.error("%s: %s", kind, type(exc).__name__)
-    body = error_body("internal_error", "Internal server error", request_id_var.get())
+    body = error_body(INTERNAL_ERROR, "Internal server error", request_id_var.get())
     return JSONResponse(body, 500)
 
 

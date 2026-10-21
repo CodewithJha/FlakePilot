@@ -1,3 +1,12 @@
+"""Request ID, the error body that carries it, and the per-request middleware.
+
+Error contract (stable): every error response is JSON
+`{"error": {"code": <code>, "message": <text>, "request_id": <id>}}`, and the same id is
+in the `X-Request-ID` header. `code` is one of the constants below and never changes
+meaning; `message` is human-readable and may change. 422 adds `fields`: a list of
+`{"loc", "type"}` pairs (Pydantic's input values and messages are never included).
+"""
+
 import logging
 import re
 import uuid
@@ -8,8 +17,16 @@ from starlette.datastructures import MutableHeaders
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+# Stable error codes, with the HTTP status each is sent with.
+NOT_FOUND = "not_found"  # 404: no such route
+METHOD_NOT_ALLOWED = "method_not_allowed"  # 405, with an Allow header
+VALIDATION_ERROR = "validation_error"  # 422: request failed schema validation
+HTTP_ERROR = "http_error"  # any other HTTPException status
+INTERNAL_ERROR = "internal_error"  # 500: unexpected, database or connection error
+
 REQUEST_ID_HEADER = "X-Request-ID"
 _VALID_REQUEST_ID = re.compile(r"[A-Za-z0-9._-]{1,64}")
+_MAX_LOGGED_PATH = 256
 _logger = logging.getLogger("flakepilot.http")
 
 request_id_var: ContextVar[str | None] = ContextVar("request_id", default=None)
@@ -29,11 +46,23 @@ def _client_request_id(scope: Scope) -> str | None:
     return None
 
 
+def _logged_path(scope: Scope) -> str:
+    """The matched route template (no path values); else the raw path, truncated."""
+    template: str | None = getattr(scope.get("route"), "path_format", None)
+    if template:
+        return template
+    path: str = scope["path"]
+    return path if len(path) <= _MAX_LOGGED_PATH else path[:_MAX_LOGGED_PATH] + "…"
+
+
 class RequestContextMiddleware:
     """Generates the request ID, logs one line per request, and is the 500 boundary.
 
     The request ID is always ours (uuid4) and is returned in X-Request-ID. A valid inbound
     X-Request-ID is only logged as `client_request_id`; it is never used as our ID.
+    The request line logs the matched route template, so path values (IDs, tokens) and the
+    query string never reach the log. The router records the matched route in the shared
+    scope, which is read after the app has run.
     Unhandled exceptions are logged with their traceback; the client gets a generic body.
     """
 
@@ -66,7 +95,7 @@ class RequestContextMiddleware:
             if started:
                 raise
             response = JSONResponse(
-                error_body("internal_error", "Internal server error", request_id), 500
+                error_body(INTERNAL_ERROR, "Internal server error", request_id), 500
             )
             await response(scope, receive, send_with_request_id)
         finally:
@@ -74,6 +103,6 @@ class RequestContextMiddleware:
                 {"client_request_id": client_request_id} if client_request_id else None
             )
             _logger.info(
-                "%s %s %d", scope["method"], scope["path"], status, extra=extra
+                "%s %s %d", scope["method"], _logged_path(scope), status, extra=extra
             )
             request_id_var.reset(token)

@@ -7,6 +7,8 @@ import sys
 from typing import Any
 
 import pytest
+from fastapi import HTTPException
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine
 from support import (
@@ -22,6 +24,13 @@ from support import (
 )
 
 from flakepilot.interface.composition_root import create_app
+from flakepilot.interface.http.request_context import (
+    HTTP_ERROR,
+    INTERNAL_ERROR,
+    METHOD_NOT_ALLOWED,
+    NOT_FOUND,
+    VALIDATION_ERROR,
+)
 
 
 def logs(stderr: str) -> list[dict[str, Any]]:
@@ -247,6 +256,33 @@ def test_missing_or_invalid_inbound_request_id_is_ignored(
     assert "client_request_id" not in log
 
 
+def test_request_log_uses_route_templates_not_path_values_or_queries(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    app = create_app(SETTINGS)
+
+    @app.get("/test-only/items/{item_id}")
+    async def item(item_id: str) -> dict[str, str]:
+        return {"ok": "yes"}
+
+    assert get(app, "/test-only/items/SENTINEL-path-55?token=abc123")[0] == 200
+    assert get(app, "/health/live")[0] == 200
+    err = capsys.readouterr().err
+    messages = [e["message"] for e in logs(err) if e["logger"] == "flakepilot.http"]
+    assert messages == ["GET /test-only/items/{item_id} 200", "GET /health/live 200"]
+    assert "SENTINEL-path-55" not in err and "abc123" not in err
+
+
+def test_request_log_truncates_long_unmatched_paths(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    app = create_app(SETTINGS)
+    path = "/" + "x" * 300
+    assert get(app, path)[0] == 404
+    log = request_log(capsys.readouterr().err)
+    assert log["message"] == f"GET {path[:256]}… 404"
+
+
 def test_unknown_route_and_wrong_method_use_the_error_shape() -> None:
     app = create_app(SETTINGS)
 
@@ -265,6 +301,88 @@ def test_unknown_route_and_wrong_method_use_the_error_shape() -> None:
     assert headers["allow"] == "GET"
     assert body["error"]["code"] == "method_not_allowed"
     assert body["error"]["request_id"] == headers["x-request-id"]
+
+
+def test_every_error_code_has_its_status_and_request_id() -> None:
+    app = create_app(SETTINGS)
+
+    @app.get("/test-only/int/{value}")
+    async def typed(value: int) -> dict[str, int]:
+        return {"value": value}
+
+    @app.get("/test-only/teapot")
+    async def teapot() -> None:
+        raise HTTPException(418)
+
+    @app.get("/test-only/crash")
+    async def crash() -> None:
+        raise RuntimeError("boom")
+
+    cases = [
+        ("GET", "/nope", 404, NOT_FOUND),
+        ("POST", "/health/live", 405, METHOD_NOT_ALLOWED),
+        ("GET", "/test-only/int/x", 422, VALIDATION_ERROR),
+        ("GET", "/test-only/teapot", 418, HTTP_ERROR),
+        ("GET", "/test-only/crash", 500, INTERNAL_ERROR),
+    ]
+    for method, path, status, code in cases:
+        got, headers, body = asyncio.run(request(app, method, path))
+        assert (got, body["error"]["code"]) == (status, code), path
+        assert body["error"]["request_id"] == headers["x-request-id"], path
+        assert is_uuid(headers["x-request-id"])
+
+
+SENTINEL = "SENTINEL-zq81"
+
+
+@pytest.mark.parametrize(
+    ("path", "body", "fields"),
+    [
+        (f"/test-only/items/{SENTINEL}", None, [(["path", "item_id"], "int_parsing")]),
+        (
+            f"/test-only/items/1?limit={SENTINEL}",
+            None,
+            [(["query", "limit"], "int_parsing")],
+        ),
+        (
+            "/test-only/items/1",
+            f'{{"name": 5, "{SENTINEL}": 1}}',
+            [(["body", "name"], "string_type"), (["body"], "extra_forbidden")],
+        ),
+        (
+            "/test-only/items/1",
+            f'{{"name": {SENTINEL}',
+            [(["body", 9], "json_invalid")],
+        ),
+    ],
+)
+def test_validation_errors_never_echo_client_input(
+    path: str, body: str | None, fields: list[tuple[list[object], str]]
+) -> None:
+    app = create_app(SETTINGS)
+
+    class Item(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+        name: str
+
+    @app.post("/test-only/items/{item_id}")
+    async def create(item_id: int, item: Item | None = None, limit: int = 1) -> None:
+        pass
+
+    status, headers, response = asyncio.run(
+        request(
+            app,
+            "POST",
+            path,
+            [("content-type", "application/json")],
+            body=(body or "").encode(),
+        )
+    )
+    assert status == 422
+    assert response["error"]["code"] == VALIDATION_ERROR
+    assert response["error"]["request_id"] == headers["x-request-id"]
+    assert [(f["loc"], f["type"]) for f in response["error"]["fields"]] == fields
+    assert SENTINEL not in json.dumps(response)
 
 
 def test_validation_error_reports_fields_without_echoing_input() -> None:
