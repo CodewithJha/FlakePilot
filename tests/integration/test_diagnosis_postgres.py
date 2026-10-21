@@ -1,0 +1,210 @@
+"""Diagnosis policy, request metadata, and outbox against PostgreSQL."""
+
+import asyncio
+import uuid
+from collections.abc import Awaitable, Callable
+from typing import Any
+
+import pytest
+from sqlalchemy import exc, text
+from sqlalchemy.engine import CursorResult
+from sqlalchemy.ext.asyncio import AsyncEngine
+
+from flakepilot.diagnosis.application.store import AiPolicy, AiRequestRecord, DiagStore
+from flakepilot.diagnosis.domain.output import DataPolicy, DiagnosisOutcome
+from flakepilot.diagnosis.infrastructure.store import SqlDiagStore
+from flakepilot.interface.composition_root.database import create_engine, transaction
+from flakepilot.shared_kernel.events import (
+    Actor,
+    ActorType,
+    Channel,
+    Event,
+    Origin,
+    Subject,
+)
+
+pytestmark = pytest.mark.integration
+
+ORG = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+REPO = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+ACTOR = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+
+
+def run[T](url: str, scenario: Callable[[AsyncEngine], Awaitable[T]]) -> T:
+    async def main() -> T:
+        engine = create_engine(url)
+        try:
+            return await scenario(engine)
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(main())
+
+
+async def sql(engine: AsyncEngine, statement: str, **params: object) -> list[Any]:
+    async with transaction(engine) as session:
+        result = await session.execute(text(statement), params)
+        returns_rows = isinstance(result, CursorResult) and result.returns_rows
+        return list(result) if returns_rows else []
+
+
+def _request(
+    *,
+    retain_raw: bool = False,
+    raw_output: str | None = None,
+    outcome: DiagnosisOutcome = DiagnosisOutcome.PRODUCED,
+    validation_reason: str | None = None,
+) -> AiRequestRecord:
+    return AiRequestRecord(
+        id=str(uuid.uuid4()),
+        org_id=ORG,
+        repo_id=REPO,
+        actor_id=ACTOR,
+        policy_level=DataPolicy.EVIDENCE_ONLY,
+        retain_raw=retain_raw,
+        provider="fake",
+        model="deterministic",
+        payload_sha256=b"a" * 32,
+        payload_size=12,
+        outcome=outcome,
+        validation_reason=validation_reason,
+        linked_count=1,
+        unverified_count=0,
+        contradicted_count=0,
+        raw_output=raw_output,
+    )
+
+
+def _event() -> Event:
+    return Event(
+        name="diag.diagnosis.recorded",
+        actor=Actor(ActorType.USER, ACTOR),
+        origin=Origin(Channel.HTTP, "diagnosis-test"),
+        subject=Subject("ai_request", str(uuid.uuid4())),
+        org_id=ORG,
+        repo_id=REPO,
+        payload={"retain_raw": False, "linked": 1},
+    )
+
+
+def test_migration_creates_the_diag_schema(url: str) -> None:
+    async def scenario(engine: AsyncEngine) -> list[Any]:
+        return await sql(
+            engine,
+            "SELECT to_regclass('diag.ai_policies'), to_regclass('diag.ai_requests'), "
+            "to_regclass('diag.outbox')",
+        )
+
+    assert run(url, scenario) == [
+        ("diag.ai_policies", "diag.ai_requests", "diag.outbox")
+    ]
+
+
+def test_missing_policy_is_disabled_and_writes_nothing(url: str) -> None:
+    org_id = str(uuid.uuid4())
+
+    async def scenario(engine: AsyncEngine) -> tuple[AiPolicy, int]:
+        async with transaction(engine) as session:
+            found = await SqlDiagStore(session).policy(org_id)
+        [count] = await sql(
+            engine,
+            "SELECT count(*) FROM diag.ai_policies WHERE org_id = :org",
+            org=org_id,
+        )
+        return found, count[0]
+
+    assert run(url, scenario) == (AiPolicy(DataPolicy.DISABLED, False), 0)
+
+
+def test_raw_output_requires_the_opt_in(url: str) -> None:
+    async def scenario(engine: AsyncEngine) -> tuple[int, int]:
+        async def write(request: AiRequestRecord) -> None:
+            async with transaction(engine) as session:
+                await SqlDiagStore(session).record_request(request)
+
+        with pytest.raises(exc.IntegrityError):
+            await write(_request(raw_output="model text"))
+        await write(_request(retain_raw=True, raw_output="model text"))
+        [rejected] = await sql(
+            engine, "SELECT count(*) FROM diag.ai_requests WHERE raw_output IS NOT NULL"
+        )
+        [kept] = await sql(engine, "SELECT count(*) FROM diag.ai_requests")
+        return rejected[0], kept[0]
+
+    assert run(url, scenario) == (1, 1)
+
+
+def test_rejected_outcome_needs_a_reason(url: str) -> None:
+    async def scenario(engine: AsyncEngine) -> None:
+        async with transaction(engine) as session:
+            await SqlDiagStore(session).record_request(
+                _request(outcome=DiagnosisOutcome.REJECTED, validation_reason=None)
+            )
+
+    with pytest.raises(exc.IntegrityError):
+        run(url, scenario)
+
+
+class _FailingOutbox(SqlDiagStore):
+    async def append_event(self, event: Event) -> None:
+        await super().append_event(event)
+        await super().append_event(event)
+
+
+def test_a_failed_outbox_write_rolls_back_the_change(url: str) -> None:
+    async def scenario(engine: AsyncEngine) -> tuple[tuple[int, ...], tuple[int, ...]]:
+        async def counts() -> tuple[int, ...]:
+            [row] = await sql(
+                engine,
+                "SELECT (SELECT count(*) FROM diag.ai_policies), "
+                "(SELECT count(*) FROM diag.ai_requests), "
+                "(SELECT count(*) FROM diag.outbox)",
+            )
+            return tuple(row)
+
+        async def attempt() -> None:
+            async with transaction(engine) as session:
+                store: DiagStore = _FailingOutbox(session)
+                await store.set_policy(ORG, AiPolicy(DataPolicy.EVIDENCE_ONLY, True))
+                await store.record_request(_request(retain_raw=True, raw_output="kept"))
+                await store.append_event(_event())
+
+        before = await counts()
+        with pytest.raises(exc.IntegrityError):
+            await attempt()
+        return before, await counts()
+
+    before, after = run(url, scenario)
+    assert after == before
+
+
+def test_a_successful_change_keeps_one_unpublished_event(url: str) -> None:
+    async def scenario(engine: AsyncEngine) -> tuple[Any, ...]:
+        async with transaction(engine) as session:
+            store = SqlDiagStore(session)
+            await store.set_policy(ORG, AiPolicy(DataPolicy.EVIDENCE_ONLY, False))
+            await store.record_request(_request())
+            await store.append_event(_event())
+        [policy] = await sql(
+            engine,
+            "SELECT level, retain_raw FROM diag.ai_policies WHERE org_id = :org",
+            org=ORG,
+        )
+        [event] = await sql(
+            engine,
+            "SELECT name, published_at IS NULL FROM diag.outbox WHERE org_id = :org",
+            org=ORG,
+        )
+        return (*policy, *event)
+
+    assert run(url, scenario) == (
+        "evidence_only",
+        False,
+        "diag.diagnosis.recorded",
+        True,
+    )
+
+
+@pytest.fixture
+def url(migrated_database_url: str) -> str:
+    return migrated_database_url

@@ -16,6 +16,7 @@ from typing import Any
 from alembic import context
 from sqlalchemy.engine import Connection
 
+from flakepilot.diagnosis.infrastructure.tables import metadata as diag_metadata
 from flakepilot.identity.infrastructure.tables import metadata as iam_metadata
 from flakepilot.integrations.infrastructure.secret_store import (
     metadata as secret_store_metadata,
@@ -24,7 +25,7 @@ from flakepilot.interface.composition_root.database import create_engine
 from flakepilot.interface.composition_root.settings import Settings, SettingsError
 from flakepilot.test_intelligence.infrastructure.tables import metadata as ti_metadata
 
-target_metadata = [iam_metadata, secret_store_metadata, ti_metadata]
+target_metadata = [iam_metadata, secret_store_metadata, ti_metadata, diag_metadata]
 _SCHEMAS = {metadata.schema for metadata in target_metadata}
 _OPTIONS: dict[str, Any] = {
     "target_metadata": target_metadata,

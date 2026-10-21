@@ -35,6 +35,7 @@ version_locations = [
     "flakepilot.identity.infrastructure:migrations",
     "flakepilot.integrations.infrastructure:migrations",
     "flakepilot.test_intelligence.infrastructure:migrations",
+    "flakepilot.diagnosis.infrastructure:migrations",
 ]
 
 [tool.ruff.lint]
