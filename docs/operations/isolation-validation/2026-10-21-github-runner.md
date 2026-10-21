@@ -81,3 +81,13 @@ Flags for the probes: `--network=none`, `--cap-drop=ALL`, `--security-opt=no-new
 ## What this environment is not
 
 A GitHub-hosted runner is not a machine FlakePilot owns. It is not a per-run microVM. A later attempt on the same class of runner, if the pull returns, is still only a measurement of Docker flags on GitHub's VM.
+
+## Remediation not re-run
+
+Commit `0be5da6bb2b16c80d19f76548b189ce6a62873d0` changes the harness and makes the workflow `workflow_dispatch` only. Pushing that commit did not start this workflow. Creating a dispatch event returned HTTP 403. The credential available to this process cannot start the manual job. No new probe log exists.
+
+The disk change writes 2 MB in 64 KB pieces and treats a stored 2 MB file as a failure. Attempt 2 used one `write` of 2 MB, which can return a short count without an error, so that failure does not by itself prove `size=1m` was ignored. It also does not prove the cap works. Until the manual job is run, check 6's disk result stays the attempt 2 observation: the recorded line was `disk_errno=0`.
+
+The wall-time change does not ask Docker for a deadline. It starts one container whose `flakepilot.expires` is already past and one whose expiry is still ahead, then runs `LabelledContainerReaper` as a separate process. That was not executed on a runtime. The unit test uses a fake CLI. Attempt 2 remains the evidence that Docker left the sleep running after 5 seconds and that SIGKILL of the client left the container running.
+
+`IsolationChecks` stay false.
