@@ -49,13 +49,45 @@ class _Records:
     def __init__(self) -> None:
         self.rows: list[Execution] = []
 
-    async def find_active(self, **kwargs: object) -> Execution | None:
+    async def find_active(
+        self, *, org_id: str, repo_id: str, selector: str, sha: str
+    ) -> Execution | None:
+        del org_id, repo_id, selector, sha
+        return None
+
+    async def find_closed(
+        self, *, org_id: str, repo_id: str, selector: str, sha: str
+    ) -> Execution | None:
+        del org_id, repo_id, selector, sha
+        return None
+
+    async def artifacts(self, execution_id: str) -> list[tuple[str, str, int]]:
+        del execution_id
+        return []
+
+    async def get(self, execution_id: str) -> Execution | None:
+        del execution_id
+        return None
+
+    async def claim(self, **kwargs: object) -> Execution | None:
         del kwargs
         return None
 
-    async def find_closed(self, **kwargs: object) -> Execution | None:
+    async def finish(self, **kwargs: object) -> bool:
         del kwargs
-        return None
+        return False
+
+    async def request_cancel(self, **kwargs: object) -> bool:
+        del kwargs
+        return False
+
+    async def attach_job(self, **kwargs: object) -> bool:
+        del kwargs
+        return False
+
+    async def scheduled_without_job(self, limit: int) -> list[str]:
+        del limit
+        return []
 
     async def find_unverified(
         self, *, org_id: str, repo_id: str, selector: str, sha: str
