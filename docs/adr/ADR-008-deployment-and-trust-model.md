@@ -83,3 +83,7 @@ Owner answer to OQ-3: **one trusted org per deployment**.
 - **Positive:** a deployable, portable v1 with the full ADR-004 boundary. The isolation level is honest about what it protects against.
 - **Negative:** production self-hosters must provide a dedicated execution host. Container isolation carries kernel-sharing risk. Evaluation installs give up host separation.
 - **Follow-ups:** the implementation details above. The Docker-based deployment artifacts and docs come in a later stage.
+
+## Stage 7 implementation note
+
+Evaluation mode is the explicit opt-in this ADR requires, and `closed` is the default. The deviations are concrete. This repository does not provision a dedicated execution host, does not install a container runtime, and does not run a TTL reaper. The job worker is a control-plane process with database access, and in evaluation mode that same process execs the runtime client. The container is not given the database URL, a token, or the control-plane environment. The argument list does not set a seccomp profile. Kernel enforcement of `--network=none` and the other flags is documented only: CI did not start a container. A hosted multi-tenant service still needs the microVM-class decision in item 6. See [EXECUTION](../operations/EXECUTION.md).

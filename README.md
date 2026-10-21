@@ -13,6 +13,7 @@ Evidence-based investigation and verification of recurring test failures. See [P
 - **No quotas or rate limits.** AI spend is not checked either (ADR-014).
 - **AI assist is off unless an org admin enables it.** The use case exists, the process wires only `NullAiAssist`, and there is no HTTP route. A missing provider answers `unavailable`. See ADR-014.
 - **Artifacts are not encrypted at rest, and never cleaned up.** Raw reports are plain files under `FLAKEPILOT_ARTIFACT_DIR`, and there is no retention job.
+- **Browser reproduction fails closed.** The default execution mode starts no container and runs no repository code. Evaluation mode is an explicit opt-in, builds a `docker` or `podman` argument list, and is not a microVM and not a production sandbox. No container was run in CI. See [EXECUTION](docs/operations/EXECUTION.md).
 - **No Docker deployment yet.**
 - **TLS and request limits are your job.** Run it only behind a TLS-terminating reverse proxy that also enforces request size and time limits.
 
@@ -51,6 +52,13 @@ Settings come from environment variables only (see [`.env.example`](.env.example
 | `FLAKEPILOT_WORKER_POLL_SECONDS` | no | `2` | Worker poll interval, 1–300. The API process ignores it |
 | `FLAKEPILOT_WORKER_BATCH_SIZE` | no | `10` | Jobs and outbox rows per tick, 1–100 |
 | `FLAKEPILOT_WORKER_LEASE_SECONDS` | no | `30` | Job lease length, 5–3600 |
+| `FLAKEPILOT_EXECUTION_MODE` | no | `closed` | `closed` never starts a container. `evaluation` is an explicit opt-in and is not production isolation |
+| `FLAKEPILOT_EXECUTION_RUNTIME` | no | `docker` | `docker` or `podman`, used only in evaluation mode |
+| `FLAKEPILOT_EXECUTION_IMAGE` | for evaluation | — | Digest-pinned image. Required when mode is `evaluation` |
+| `FLAKEPILOT_EXECUTION_WALL_SECONDS` | no | `30` | Sandbox wall clock, 5–120. The execution lease is this plus 30 seconds |
+| `FLAKEPILOT_EXECUTION_MEMORY_MB` | no | `512` | Container memory limit, 64–2048 |
+| `FLAKEPILOT_EXECUTION_PIDS` | no | `64` | Container process limit, 8–256 |
+| `FLAKEPILOT_GITHUB_CONTENTS_TOKEN` | no | — | Optional bearer for GitHub contents reads. Empty: revisions stay unverified. Never logged |
 
 ### GitHub App sign-in
 
@@ -118,7 +126,7 @@ Errors are JSON `{"error": {"code", "message", "request_id"}}`; the request ID i
 
 API conventions: `src/flakepilot/interface/http/__init__.py`.
 
-Each context keeps its migrations in its own `infrastructure/migrations` directory and its tables in its own schema (`iam`, `int_secrets`, `ti`, `diag`, `orch`, `aud`). `uv run alembic check` verifies that the models and migrations match.
+Each context keeps its migrations in its own `infrastructure/migrations` directory and its tables in its own schema (`iam`, `int_secrets`, `ti`, `diag`, `orch`, `aud`, `repo`, `exec`). `uv run alembic check` verifies that the models and migrations match.
 
 ## Quality gates
 

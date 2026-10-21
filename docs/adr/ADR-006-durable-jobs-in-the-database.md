@@ -79,3 +79,5 @@ The module is in-house. Two points differ from the wording above; both are recor
 2. **The relay delivers to AUD only.** Decision 3 names matrix subscribers plus AUD. No matrix subscriber is registered. Delivery is still at-least-once, and `aud.events` dedupes on `event_id`. `published_at` and the audit insert commit in one transaction. See [DURABLE-JOBS](../operations/DURABLE-JOBS.md).
 
 Polling is implemented. `LISTEN/NOTIFY` is not; decision 9 already makes polling the source of truth. Lease instants are the worker's clock, passed into SQL, so tests advance time without sleeping. No retention or cleanup job is registered. Outbox rows are not pruned.
+
+Stage 7 registers one job type, `browser_reproduction`. Its payload is an execution id. The relay also delivers `exec.outbox`. The sandbox still has no self-expiring reaper, so a worker killed with `SIGKILL` during an evaluation run can leave a container behind. See [EXECUTION](../operations/EXECUTION.md).

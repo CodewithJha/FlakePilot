@@ -11,7 +11,7 @@
 - PRODUCT-SCOPE §7 adds **the request origin** to the audit record. Membership, grants, ingestion (CI upload) tokens and secrets must be audited.
 - ADR-011 deferred audit storage "to the first state-changing use case". Stage 3 now has several: sign-in, session rotation, sign-out, CI upload token creation and revocation, and operator org bootstrap.
 - The envelope and the outbox contract are shared-kernel items. DEPENDENCY-RULES §6 requires an ADR to change the shared kernel; this is that ADR.
-- The relay and `aud.events` now exist (ADR-006 Stage 6). They deliver `iam`, `ti`, and `diag` only. `int_secrets.outbox` is still absent.
+- The relay and `aud.events` now exist (ADR-006 Stage 6). They deliver `iam`, `ti`, `diag`, and, since Stage 7, `exec`. `int_secrets.outbox` is still absent.
 
 ## Decision
 
@@ -77,3 +77,7 @@ The encrypted secret store has no production caller yet. When it gets one, `put`
 - **Positive:** every IAM, TI, and diagnosis state change is durably recorded atomically with the change, and fails closed. The relay copies those envelopes to `aud.events` without the writers calling AUD.
 - **Negative:** there is still no audit query or export. Outbox rows are not pruned. A crash before the relay commits delays the audit row; it does not drop it.
 - **Follow-ups:** outbox pruning after AUD (and any later subscriber) has consumed the row; an authorized audit query; `int_secrets.outbox` when the secret store gets a caller; calibrate retention.
+
+## Stage 7 implementation note
+
+The relay also copies `exec.outbox` to `aud.events`, and `aud.events.source` allows `exec`. Envelopes are `execution.reproduction.scheduled` and `execution.reproduction.finished`. They carry the execution id, a short outcome, and a short reason. They do not carry selectors, SHAs, source, or artifact bytes. No audit query was added, and no outbox row is deleted.

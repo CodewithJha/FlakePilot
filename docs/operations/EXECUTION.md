@@ -4,7 +4,9 @@ Stage 7. The binding rules are [ADR-004](../adr/ADR-004-control-plane-and-execut
 
 ## Fail closed
 
-The default execution mode is `closed`. In that mode the worker never starts a container, never starts a subprocess for a test, and never runs repository code in the API or worker process. A request is recorded as `inconclusive` with reason `execution_closed`. There is no in-process fallback.
+The default execution mode is `closed`. In that mode the worker never starts a container, never starts a subprocess for a test, and never runs repository code in the API or worker process. There is no in-process fallback.
+
+`schedule` does not read the mode. A pinned revision is stored as `scheduled`. On startup the worker enqueues any scheduled row that has no job. The handler then records `inconclusive` with reason `execution_closed`, without fetching source and without starting a runtime. There is no HTTP route that schedules a run.
 
 `evaluation` is an explicit opt-in. It is not production isolation. Containers share the host kernel (ADR-008). This repository does not ship a browser image, and this control plane does not embed Playwright. Playwright, when an operator supplies a digest-pinned image that contains it, runs only inside that container.
 
@@ -34,7 +36,7 @@ The control plane starts every interaction. The sandbox has no route back.
 
 A caller-supplied SHA is not evidence. Scheduling authorizes `repo.investigate` (IAM), loads the repository binding (`repo.repositories`, host `github` only), and asks the code host to confirm that exact commit. The host's SHA must equal the claimed SHA. Unsafe URL schemes and redirects are rejected. The token stays in the adapter.
 
-If the host is not configured, or the commit cannot be confirmed, the execution is stored as `inconclusive` / `source_unverified` and no job is enqueued. No sandbox starts.
+If the host is not configured, or the commit cannot be confirmed, the execution is stored as `inconclusive` / `source_unverified` and no job is enqueued. No sandbox starts. The contents credential is an optional static bearer, `FLAKEPILOT_GITHUB_CONTENTS_TOKEN`, sent only as a header inside the adapter. It is not a GitHub App installation token, and this repository does not mint one. Empty means the transport is not called.
 
 Source bytes are fetched by the control plane and extracted into a per-run directory. Archive members that escape the directory, or that exceed the size and count caps, abort the run as `infra_failure` / `invalid_source`. The token is not copied into the container.
 
@@ -52,13 +54,13 @@ Source bytes are fetched by the control plane and extracted into a per-run direc
 | `completed` | `timeout` | The wall clock fired. Not a test failure |
 | `completed` | `invalid_result` | Output was malformed, oversized, or tried to name an outcome, tenant, or handler |
 | `completed` | `inconclusive` | Nothing ran: closed mode, or the revision was not verified |
-| `cancelled` | `cancelled` | Cancel was set before the sandbox started, or the run was killed by cancel |
+| `cancelled` | `cancelled` | Cancel was set on a scheduled row before claim. The handler does not poll cancel during a run, and it does not pass a cancel flag into the runtime |
 
-Terminal rows are not deleted and are not rewritten. A finish whose `generation` or lease owner does not match changes nothing, so a stale attempt cannot overwrite a newer result.
+Terminal rows are not deleted and are not rewritten. A finish whose `generation` or lease owner does not match changes nothing and rolls back any artifact rows from that attempt, so a stale attempt cannot overwrite a newer result.
 
 One active row per `(org, repo, selector, sha)`. A duplicate schedule returns that row. Two workers claiming it serialize on the row lock; the loser finds it no longer `scheduled`.
 
-Backoff and leases are the Stage 6 job runtime. The execution lease is the same length. Tests advance a clock. They do not sleep.
+The execution lease is the wall-clock limit plus 30 seconds. The job lease is `FLAKEPILOT_WORKER_LEASE_SECONDS` and is renewed once before the handler, not while the run is in progress. A second worker that picks up the job before the execution lease expires is told the row is busy and retries. If the execution lease expires while a run is still going, a later attempt can claim the row. Tests advance a clock. They do not sleep.
 
 ## Evaluation runtime arguments
 
@@ -72,9 +74,9 @@ The argument list is built in code. It always includes `--network=none`, `--cap-
 
 ## Evidence
 
-Outputs are size-capped. The result must be a JSON object whose only keys are `status` (`passed` or `failed`) and `selector` (equal to the request). Any other key, including `verified`, `flaky`, `outcome`, `tenant`, or `handler`, is `invalid_result`. The control plane stores the canonical JSON it accepted, plus an optional PNG screenshot under the existing artifact store (`owner=exec`). Keys are content-addressed and org/repo scoped. There is no public artifact route.
+Outputs are size-capped. The result must be a JSON object whose only keys are `status` (`passed` or `failed`) and `selector` (equal to the request). Any other key, including `verified`, `flaky`, `outcome`, `tenant`, or `handler`, is `invalid_result`. The control plane stores a canonical JSON object it built, not the sandbox's bytes, and only for `success` and `test_failure`. An optional PNG screenshot is stored in those two outcomes when it has a PNG signature and is within the size cap. The store is the existing artifact store (`owner=exec`). Keys are `exec/<org>/<repo>/sha256/<hex>`. The execution id and the verified SHA live on the execution row, not in the key. A SHA on an `inconclusive` / `source_unverified` row is the caller's claim and is not evidence. There is no public artifact route.
 
-Hashes are SHA-256 of the stored bytes. Filenames never come from the sandbox. A crash or a failed artifact write still persists the terminal outcome, with `evidence_partial` set when a file was dropped.
+Hashes are SHA-256 of the stored bytes. Filenames never come from the sandbox. A failed artifact write still persists the terminal outcome, with `evidence_partial` set. A finish the store rejects rolls the artifact rows back. A file already written to disk can remain as an orphan; nothing deletes it.
 
 Artifacts are not encrypted at rest. Nothing in this stage deletes them. Retention durations are not invented here.
 
@@ -84,4 +86,29 @@ The execution change and one `exec.outbox` envelope commit together. The relay c
 
 ## Not in this stage
 
-Audit query, outbox pruning, retention deletion, investigation workflows beyond this single execution, patch verification, live AI, and a microVM sandbox. Reasons: no approved retention rule, and ADR-008's production host split is an operator deployment this repository does not provision.
+Audit query, outbox pruning, retention deletion, investigation workflows beyond this single execution, patch verification, live AI, and a microVM sandbox. Reasons: no approved retention rule, and ADR-008's production host split is an operator deployment this repository does not provision. Polling stays sufficient. No audit or outbox row is deleted.
+
+## What is enforced
+
+| Guarantee | How it is known |
+|---|---|
+| Closed mode fetches nothing and starts nothing | Integration test |
+| A job payload with an extra field, a command, or a non-string id is rejected | Unit test |
+| A result that adds `verified` is `invalid_result` and is not stored | Integration test |
+| Timeout, a missing archive, and cancel-before-claim are not test results | Integration test |
+| An artifact-store failure still records the outcome, with `evidence_partial` | Integration test |
+| A rejected finish leaves the attempt running and writes no artifact row | Integration test |
+| A second delivery of a finished execution does not call the sandbox again | Integration test |
+| A row left without a job is enqueued with a payload of the execution id only | Integration test |
+| A stale lease owner cannot finish | Integration test against the store |
+| The evaluation argument list is `--network=none`, dropped capabilities, no new privileges, read-only, non-root, pid and memory limits, one CPU, a nosuid tmpfs, a digest-pinned image, and `/opt/flakepilot/reproduce`. The runtime client's environment is `PATH` only | Unit test of the argument list. No container was started |
+| The kernel actually blocks egress, metadata addresses, and host mounts | Documented only. It depends on `docker` or `podman` honoring those flags. Neither binary is installed in CI or in the environment that produced this stage |
+| TTL reaper, seccomp, a dedicated execution host, GitHub App installation-token minting | Not implemented |
+
+## Deviations
+
+- ADR-008 requires a dedicated execution host in production and a TTL reaper. This repository provisions neither. The default mode is `closed`, which is the fail-closed behavior for production and for untrusted use. `evaluation` is an explicit opt-in and is not a microVM.
+- ADR-008 says execution workers have no database access, and that control-plane processes do not drive sandbox workloads. The process that runs `browser_reproduction` is the control-plane worker. It uses the database. In evaluation mode that same process execs `docker` or `podman`. The container does not receive the database URL. The worker process does.
+- ADR-008's hardening list includes a syscall filter. The argument list does not pass a seccomp profile.
+- ADR-009's code host uses short-lived GitHub App installation tokens and a write tier. This stage has a read-only static bearer and no token minting.
+- Playwright is not a dependency. The control plane does not import it. An operator may put it in the digest-pinned image. That image is not built or run by this repository.

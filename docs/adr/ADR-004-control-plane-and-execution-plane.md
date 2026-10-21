@@ -56,3 +56,7 @@ FlakePilot runs code it doesn't control: repo code, tests, dependencies, and AI-
 - **Positive:** credentials and tenant data out of reach of executed code. Outcomes can be recomputed from stored raw outputs. Prompt injection is contained by structure, not by model behavior.
 - **Negative:** source snapshots and artifacts move through the control plane (bandwidth and storage cost). Some tests can't run without services that are excluded by default egress, which shows up as `unsupported` (PRODUCT-SCOPE R5). Depends on the chosen sandbox technology meeting strict guarantees.
 - **Follow-ups (deferred):** sandbox technology. Artifact transfer mode (pull vs scoped push). Safe rendering of HTML/DOM artifacts. Redaction approach.
+
+## Stage 7 implementation note
+
+The sandbox technology is no longer entirely deferred, and it does not meet decision 7 for production. The default adapter returns `execution_closed` and starts nothing. An explicit evaluation adapter builds a `docker` or `podman` argument list (network none, dropped capabilities, read-only root, non-root user, resource limits, digest-pinned image, one approved command). That client is not a microVM, has no TTL reaper, and was not executed in CI. The control plane classifies the outcome. A sandbox failure is not a test failure. Details and the remaining gaps are in [EXECUTION](../operations/EXECUTION.md).
