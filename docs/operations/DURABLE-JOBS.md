@@ -13,7 +13,7 @@ uv run python -m flakepilot.interface.composition_root worker
 
 `SIGINT` or `SIGTERM` finishes the batch already claimed, then the process exits. A database outage is logged by exception class and the next poll tries again. The process does not log the database URL, job payloads, or exception messages.
 
-No product job type is registered. The process drains `iam.outbox`, `ti.outbox`, and `diag.outbox`. Cleanup of sessions, revoked tokens, artifacts, and raw AI output is not registered.
+The registered product job is `browser_reproduction`. Its payload is an execution id. The process also drains `iam.outbox`, `ti.outbox`, `diag.outbox`, and `exec.outbox`. Cleanup of sessions, revoked tokens, artifacts, and raw AI output is not registered. `LISTEN/NOTIFY` is not used. Audit and outbox rows are not deleted.
 
 ## Configuration
 

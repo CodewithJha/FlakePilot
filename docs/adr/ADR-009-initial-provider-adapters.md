@@ -50,6 +50,10 @@ SYSTEM-ARCHITECTURE §4 defines vendor-neutral ports with required guarantees. A
   - GitHub's permission model needs the R6 mitigations.
 - **Follow-ups:** the implementation details in the last column.
 
+## Stage 8 implementation note
+
+Execution can mint a short-lived installation token with `contents:read` for one repository (`FLAKEPILOT_GITHUB_APP_ID` and `FLAKEPILOT_GITHUB_APP_PRIVATE_KEY`). Missing credentials do not call GitHub. `FLAKEPILOT_GITHUB_CONTENTS_TOKEN` is not sent. There is still no write tier. Tests use a fake transport. Per-user repository ACL on GitHub is not queried.
+
 ## Stage 7 implementation note
 
 The code-host read used to pin a reproduction is not the GitHub App installation flow in the table above. It is an optional static bearer (`FLAKEPILOT_GITHUB_CONTENTS_TOKEN`) kept inside the adapter and sent only as a header. With no token the adapter does not call GitHub, and the execution is `inconclusive` / `source_unverified`. There is no write tier, no branch prefix, and no installation-token minting. Redirects and non-HTTPS URLs are rejected. Playwright is not imported by the control plane. The sandbox port's evaluation adapter is described in [EXECUTION](../operations/EXECUTION.md).

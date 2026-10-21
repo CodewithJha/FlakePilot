@@ -86,7 +86,7 @@ Owner answer to OQ-3: **one trusted org per deployment**.
 
 ## Stage 8 feasibility
 
-No dedicated execution host, container runtime, or runtime socket was available where Stage 8 started. The production placement rule in this ADR is therefore unmet. The implementation keeps untrusted execution disabled and does not add a test that launches a container. See [EXECUTION](../operations/EXECUTION.md).
+No dedicated execution host, container runtime, or runtime socket was available where Stage 8 started, and none was added. The production placement rule in this ADR is unmet. Untrusted execution stays disabled. The operator route records `execution_closed` without starting a runtime. Installation tokens are `contents:read` and stay in the control plane. There is no container reaper and no test that launches a container. Patch proposals are not implemented, because this deployment cannot produce evidence from a verified sandbox. See [EXECUTION](../operations/EXECUTION.md).
 
 ## Stage 7 implementation note
 
