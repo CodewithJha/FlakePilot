@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | **Accepted** by the project owner, 2026-10-21. Decision B (session lifetimes) is **provisional**. The IAM data model (G) is pending owner review; audit storage is deferred |
+| Status | **Accepted** by the project owner, 2026-10-21. Decision B (session lifetimes) is **provisional**. Decision G is accepted in [IAM-DATA-MODEL](../architecture/IAM-DATA-MODEL.md) and the `iam` tables exist. IAM envelopes are written to `iam.outbox` ([ADR-012](ADR-012-event-envelope-and-outbox.md)). The outbox relay and the audit-log table are still deferred. Decision F's encrypted table exists and has no production caller |
 | Related | [PRODUCT-SCOPE §3, §4, D2](../product/PRODUCT-SCOPE.md), [SYSTEM-ARCHITECTURE §7](../architecture/SYSTEM-ARCHITECTURE.md#7-tenancy-authorization-data-ownership-secrets), [ADR-005](ADR-005-system-of-record-database.md), [ADR-007](ADR-007-implementation-stack-and-licensing.md), [ADR-009](ADR-009-initial-provider-adapters.md), [ADR-010](ADR-010-engineering-toolchain-and-quality-gates.md) |
 
 ## Context
@@ -21,15 +21,15 @@
 | C | CSRF for server-rendered pages | `SameSite` cookies plus an `Origin`/`Referer` check on unsafe methods (standard library only) |
 | D | CI upload token | `fpi_` followed by 32 random bytes, stored only as a plain SHA-256 hash, sent as `Authorization: Bearer` |
 | E | GitHub sign-in adapter (INT) | Standard-library `urllib`, run off the event loop. No new dependency |
-| F | Secret store (ADR-009 encrypted table) | Built together with the GitHub adapter, adding `cryptography` at that time. Not built now |
+| F | Secret store (ADR-009 encrypted table) | **As implemented:** `int_secrets.secrets` and `EncryptedSecretStore` (AES-256-GCM, `cryptography`) exist. The GitHub adapter does not use the store; it reads `FLAKEPILOT_GITHUB_CLIENT_SECRET` from the environment. `create_app` does not construct the store. `FLAKEPILOT_SECRET_KEY` is validated when set and otherwise unused. The store still has no production caller ([ADR-012](ADR-012-event-envelope-and-outbox.md)) |
 | H | Denial responses | Not visible to the principal (another org, no grant, no code-host read) → 404 `not_found`, indistinguishable from a missing resource. Visible but the grant is missing → 403 `forbidden` |
 | I | "Matching" code-host access for a grant | Granting `repo.approve` requires the grantee to have code-host **write**; every other grant requires code-host **read** |
 
 **Unchanged:** D2 as accepted in PRODUCT-SCOPE. Approvers are holders of `repo.approve` with code-host write; only org admins grant `repo.approve`; no self-approval except in single-member orgs.
 
-**Pending and deferred:**
-- G: the IAM data model (orgs, memberships, grants, sessions, CI upload tokens) is drafted for owner review before any table is built.
-- Audit storage (outbox and audit-log schemas, event names, retention) is deferred to the first state-changing use case. The SYSTEM-ARCHITECTURE §5 contract (same-transaction outbox write, fail closed) is unchanged.
+**Later implementation (not still pending review):**
+- G was accepted in [IAM-DATA-MODEL](../architecture/IAM-DATA-MODEL.md). The `iam` tables, sessions, CSRF check, CI upload tokens, and GitHub adapter are implemented.
+- Audit storage: IAM writes the envelope to `iam.outbox` in the same transaction as the change and fails closed ([ADR-012](ADR-012-event-envelope-and-outbox.md)). The relay and the audit-log table are still deferred. The SYSTEM-ARCHITECTURE §5 contract is unchanged.
 
 ## Alternatives considered
 
@@ -46,6 +46,6 @@
 
 ## Consequences
 
-- **Positive:** no new dependencies now. Sessions and tokens can be revoked immediately and never stored in recoverable form. Denials never reveal resources in other orgs.
+- **Positive:** sessions and tokens can be revoked immediately and never stored in recoverable form. Denials never reveal resources in other orgs. The original decision added no dependency; `cryptography` arrived later with the unused secret store.
 - **Negative:** one database lookup per authenticated request. A CSRF check is needed on every unsafe method. Synchronous `urllib` calls take a worker thread each.
-- **Follow-ups:** review the IAM data model (G); implement sessions, the CSRF check, CI upload tokens, the GitHub adapter and the secret store against this ADR; calibrate B.
+- **Follow-ups:** calibrate B. Wire the secret store only together with `int_secrets.outbox`. The outbox relay is still deferred.

@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | **Accepted** by the project owner, 2026-10-21 (ADR-011 decision G). Values marked provisional are calibrated later. Not built yet: no migrations, models, or code |
+| Status | **Accepted** by the project owner, 2026-10-21 (ADR-011 decision G). Implemented by migrations `iam_0001` and `iam_0002` and the identity store. Values marked provisional are calibrated later. Not built: the cleanup job below, and every item in [Out of scope](#out-of-scope) (org suspension, the platform operator role, break-glass grants, quotas, and the org retention-policy settings) |
 | Owns | Tables, constraints, and indexes for IAM's orgs, users, memberships, repo grants, sessions, and CI upload tokens |
 | Follows | [ADR-005](../adr/ADR-005-system-of-record-database.md) (own namespace, tenant scoping, no cross-context foreign keys, no secrets in business tables), [ADR-006](../adr/ADR-006-durable-jobs-in-the-database.md) (cleanup jobs), [ADR-011](../adr/ADR-011-authentication-sessions-and-tokens.md) (sessions, tokens, matching code-host access), [PRODUCT-SCOPE §3](../product/PRODUCT-SCOPE.md#3-roles-and-permission-boundaries) (roles and grants, D2) |
 

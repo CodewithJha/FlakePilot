@@ -1,5 +1,7 @@
 # FlakePilot — Repository Inspection (Stage 2.1)
 
+Point-in-time inspection from 2026-10-20. §§1–12 describe that workspace, not the current tree.
+
 | | |
 |---|---|
 | Status | **Stage 2.1**, inspection only. Nothing was fixed, scaffolded, installed, or initialized. Stage 2.2 not started |
