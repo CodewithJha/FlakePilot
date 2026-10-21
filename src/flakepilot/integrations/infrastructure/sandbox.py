@@ -10,7 +10,8 @@ result is `runtime_unavailable`.
 The container is not a microVM. `--network=none` is an argument, not a measured
 block of egress or metadata addresses. A worker killed with SIGKILL can leave
 a container behind. `reap_workdirs` removes leftover per-run directories and
-does not call a runtime. There is no container reaper.
+does not call a runtime. `LabelledContainerReaper` can remove an expired
+labelled container, and this process does not construct it.
 """
 
 import asyncio
@@ -18,9 +19,10 @@ import io
 import os
 import re
 import stat
+import time
 import uuid
 import zipfile
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Protocol
 
@@ -54,6 +56,9 @@ MAX_ARCHIVE_BYTES = 5 * 1024 * 1024
 MAX_UNCOMPRESSED_BYTES = 20 * 1024 * 1024
 MAX_ARCHIVE_FILES = 500
 _IMAGE = re.compile(r"[a-z0-9][a-z0-9._/-]{0,180}@sha256:[0-9a-f]{64}")
+_EXECUTION_ID = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+)
 
 
 def unverified_source() -> SandboxReport:
@@ -113,6 +118,7 @@ class ContainerSandbox:
         image: str,
         runner: Runner | None = None,
         work_root: Path | None = None,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         if runtime not in ("docker", "podman"):
             raise ValueError("runtime must be docker or podman")
@@ -122,6 +128,7 @@ class ContainerSandbox:
         self._image = image
         self._runner = runner or _subprocess_runner
         self._root = work_root or Path(os.environ.get("TMPDIR", "/tmp"))
+        self._clock = time.time if clock is None else clock
 
     async def run(
         self,
@@ -157,6 +164,8 @@ class ContainerSandbox:
                 sha=sha,
                 memory_mb=memory_mb,
                 pids=pids,
+                execution_id=execution_id,
+                expires=int(self._clock()) + wall_seconds,
             )
             try:
                 code = await self._runner(
@@ -187,6 +196,8 @@ def _argv(
     sha: str,
     memory_mb: int,
     pids: int,
+    execution_id: str,
+    expires: int,
 ) -> list[str]:
     return [
         runtime,
@@ -211,8 +222,21 @@ def _argv(
         f"SELECTOR={selector}",
         "-e",
         f"FLAKEPILOT_SHA={sha}",
+        *_container_labels(execution_id, expires),
         image,
         APPROVED_COMMAND,
+    ]
+
+
+def _container_labels(execution_id: str, expires: int) -> list[str]:
+    """Labels the reaper selects. An id that is not a UUID is not written."""
+    if _EXECUTION_ID.fullmatch(execution_id) is None or expires < 0:
+        return []
+    return [
+        "--label",
+        f"flakepilot.execution={execution_id}",
+        "--label",
+        f"flakepilot.expires={expires}",
     ]
 
 

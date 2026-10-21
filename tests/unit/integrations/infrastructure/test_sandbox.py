@@ -98,7 +98,11 @@ def test_container_argv_is_fixed_and_the_host_env_is_not_passed(
 
     monkeypatch.setenv("FLAKEPILOT_DATABASE_URL", "postgresql://secret")
     sandbox = ContainerSandbox(
-        runtime="docker", image=IMAGE, runner=runner, work_root=tmp_path
+        runtime="docker",
+        image=IMAGE,
+        runner=runner,
+        work_root=tmp_path,
+        clock=lambda: 1_000.0,
     )
     result = asyncio.run(
         sandbox.run(
@@ -126,6 +130,8 @@ def test_container_argv_is_fixed_and_the_host_env_is_not_passed(
         "--memory=128m",
     ):
         assert flag in argv
+    assert "flakepilot.execution=" + EXECUTION in argv
+    assert "flakepilot.expires=1005" in argv
     assert "--privileged" not in argv
     assert "docker.sock" not in joined
     assert "--network=host" not in argv
@@ -134,6 +140,37 @@ def test_container_argv_is_fixed_and_the_host_env_is_not_passed(
     assert result.status == "finished"
     assert [item.kind for item in result.files] == ["result", "screenshot"]
     assert list(tmp_path.iterdir()) == []
+
+
+def test_a_label_is_not_written_for_an_unsafe_execution_id(tmp_path: Path) -> None:
+    seen: list[str] = []
+
+    async def runner(
+        argv: list[str],
+        *,
+        env: Mapping[str, str],
+        timeout: float,
+        cancel: CancelFlag | None,
+    ) -> int:
+        del env, timeout, cancel
+        seen.extend(argv)
+        return 0
+
+    sandbox = ContainerSandbox(
+        runtime="docker", image=IMAGE, runner=runner, work_root=tmp_path
+    )
+    asyncio.run(
+        sandbox.run(
+            execution_id="$(touch)",
+            selector=SELECTOR,
+            sha=SHA,
+            source_zip=_zip(),
+            wall_seconds=5,
+            memory_mb=128,
+            pids=16,
+        )
+    )
+    assert not any(part.startswith("flakepilot.") for part in seen)
 
 
 def test_unsafe_archives_and_a_missing_runtime_do_not_run(tmp_path: Path) -> None:
