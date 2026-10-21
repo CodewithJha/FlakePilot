@@ -21,6 +21,9 @@ LIVE_EXECUTION=11111111-1111-4111-8111-111111111111
 DEAD_EXECUTION=22222222-2222-4222-8222-222222222222
 ORPHAN_EXECUTION=33333333-3333-4333-8333-333333333333
 STOPPED_EXECUTION=44444444-4444-4444-8444-444444444444
+EIGHT_LIVE=55555555-5555-4555-8555-555555555555
+LEDGER=/tmp/fp-host-ledger
+rm -f "$LEDGER"
 fail=0
 PY=""
 
@@ -177,17 +180,41 @@ disk_capped() {
   return 1
 }
 
+host_register() {
+  local execution=$1
+  local expires=$2
+  if [ -z "$PY" ]; then
+    echo "ledger skipped" >&2
+    return 0
+  fi
+  PYTHONPATH="$ROOT/src" "$PY" - "$LEDGER" "$execution" "$expires" <<'PY'
+import sys
+from pathlib import Path
+
+from flakepilot.execution.infrastructure.ledger import FileLedger
+
+FileLedger(Path(sys.argv[1])).register(sys.argv[2], int(sys.argv[3]))
+PY
+}
+
 reap_now() {
   if [ -z "$PY" ]; then
     echo "reaped=skipped reason=no_python"
     return 0
   fi
   set +e
-  PYTHONPATH="$ROOT/src" "$PY" - <<'PY'
-from flakepilot.execution.infrastructure.reaper import LabelledContainerReaper
+  PYTHONPATH="$ROOT/src" "$PY" - "$LEDGER" <<'PY'
+import sys
 import time
+from pathlib import Path
 
-result = LabelledContainerReaper(now=lambda: int(time.time())).reclaim()
+from flakepilot.execution.infrastructure.ledger import FileLedger
+from flakepilot.execution.infrastructure.reaper import LabelledContainerReaper
+
+result = LabelledContainerReaper(
+    now=lambda: int(time.time()),
+    authority=FileLedger(Path(sys.argv[1])),
+).reclaim()
 print(f"reaped={result.reclaimed} reason={result.reason}")
 PY
   code=$?
@@ -202,6 +229,7 @@ start_labelled() {
   local execution=$2
   local expires=$3
   local _i state
+  host_register "$execution" "$expires"
   docker rm -f "$name" >/dev/null 2>&1 || true
   docker run -d --name "$name" \
     "${base_args[@]}" \
@@ -495,6 +523,7 @@ fi
 echo "8b_kill_rm=$c8b"
 
 docker rm -f fp-probe-8c >/dev/null 2>&1 || true
+host_register "$ORPHAN_EXECUTION" 1
 docker run --rm --name fp-probe-8c \
   "${base_args[@]}" \
   --pids-limit=32 \
@@ -531,6 +560,7 @@ else
 fi
 
 docker rm -f fp-probe-8d >/dev/null 2>&1 || true
+host_register "$STOPPED_EXECUTION" 1
 docker run -d --name fp-probe-8d \
   "${base_args[@]}" \
   --pids-limit=32 \
@@ -570,7 +600,7 @@ fi
 echo "8e_docker_stop=$c8e"
 
 now_s=$(date +%s)
-start_labelled fp-probe-8live "$LIVE_EXECUTION" "$((now_s + 600))"
+start_labelled fp-probe-8live "$EIGHT_LIVE" "$((now_s + 600))"
 sleep 1
 echo "=== reaper orphans ==="
 reap_now

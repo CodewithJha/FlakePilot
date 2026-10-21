@@ -116,11 +116,47 @@ def unavailable_report() -> PlaneReport:
     return PlaneReport("unavailable", "execution_host_unavailable")
 
 
-def wall_expired(*, expires: int, now: int) -> bool:
-    """Whether a container's recorded wall deadline has passed.
+def execution_id_ok(value: str) -> bool:
+    """A lowercase canonical UUID. This does not look up a row."""
+    pieces = value.split("-")
+    widths = (8, 4, 4, 4, 12)
+    if len(pieces) != len(widths):
+        return False
+    return all(
+        len(piece) == width
+        and piece.isascii()
+        and all(character in "0123456789abcdef" for character in piece)
+        for piece, width in zip(pieces, widths, strict=True)
+    )
 
-    `expires` is the unix time written on the container before it starts.
-    A worker lease is not an input. A container whose deadline is still ahead
-    stays up, including after the process that started it has died.
+
+def expires_ok(value: int) -> bool:
+    """A unix second the ledger can store. A bool is not a timestamp."""
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and 0 <= value <= 9_999_999_999
+    )
+
+
+def wall_expired(*, expires: int, now: int) -> bool:
+    """Whether a host-recorded wall deadline has passed.
+
+    A worker lease is not an input. The container label is not an input.
     """
     return expires <= now
+
+
+def container_action(
+    *, registered: bool, cancelled: bool, expires: int, now: int
+) -> str:
+    """`keep` or `remove` for one labelled container.
+
+    The host ledger is the authority. A container the host did not register
+    is removed. Cancel, or a passed ledger deadline, removes it. A rewritten
+    label cannot extend that deadline or shorten a run the ledger still holds
+    open. A worker lease is not an input.
+    """
+    if not registered or cancelled or wall_expired(expires=expires, now=now):
+        return "remove"
+    return "keep"

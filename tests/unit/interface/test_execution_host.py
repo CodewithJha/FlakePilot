@@ -12,6 +12,16 @@ from flakepilot.interface.composition_root.worker import startup_cleanup
 IMAGE = "ghcr.io/example/reproduce@sha256:" + ("cd" * 32)
 
 
+def test_the_worker_does_not_construct_the_host_reaper() -> None:
+    root = Path(__file__).resolve().parents[3]
+    text = (root / "src/flakepilot/interface/composition_root/worker.py").read_text(
+        encoding="utf-8"
+    )
+    assert "UnavailableRuntimeReaper" in text
+    for name in ("LabelledContainerReaper", "HostGate", "FileLedger"):
+        assert name not in text
+
+
 def test_evaluation_settings_still_use_the_closed_sandbox() -> None:
     settings = Settings(
         Secret("postgresql://localhost/flakepilot"),

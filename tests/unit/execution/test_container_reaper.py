@@ -4,8 +4,11 @@ import subprocess
 
 import pytest
 
+from flakepilot.execution.application.host import MemoryLedger
+from flakepilot.execution.application.plane import ReapResult
 from flakepilot.execution.domain.plane import wall_expired
 from flakepilot.execution.infrastructure.reaper import (
+    Cli,
     CliFailed,
     LabelledContainerReaper,
     exec_cli,
@@ -41,6 +44,17 @@ class FakeCli:
         return ""
 
 
+def _ledger(*pairs: tuple[str, int]) -> MemoryLedger:
+    ledger = MemoryLedger()
+    for execution_id, expires in pairs:
+        ledger.register(execution_id, expires)
+    return ledger
+
+
+def _reap(cli: Cli, ledger: MemoryLedger, *, now: int = 200) -> ReapResult:
+    return LabelledContainerReaper(cli, now=lambda: now, authority=ledger).reclaim()
+
+
 def _listing() -> str:
     return "\n".join(
         [
@@ -54,13 +68,16 @@ def _listing() -> str:
 
 
 def test_a_killed_client_orphan_is_removed_and_a_live_run_is_not() -> None:
-    """SIGKILL leaves the container running. Expiry, not status, decides."""
+    """The ledger deadline decides. A garbage label does not keep an expired id."""
     cli = FakeCli(_listing())
-    result = LabelledContainerReaper(cli, now=lambda: 200).reclaim()
-    assert result.reclaimed == 1
+    result = _reap(cli, _ledger((EXPIRED, 100), (ACTIVE, 500)))
+    assert result.reclaimed == 2
     assert result.reason == "expired_containers_removed"
     removed = [call for call in cli.calls if call[1] == "rm"]
-    assert removed == [["docker", "rm", "-f", ORPHAN]]
+    assert removed == [
+        ["docker", "rm", "-f", ORPHAN],
+        ["docker", "rm", "-f", "fff456fff456"],
+    ]
     listed = cli.calls[0]
     assert listed[0] == "docker"
     assert listed[1:3] == ["ps", "-a"]
@@ -69,7 +86,7 @@ def test_a_killed_client_orphan_is_removed_and_a_live_run_is_not() -> None:
 
 
 def test_wall_expiry_ignores_a_worker_lease() -> None:
-    """The deadline is the label. A lease is not an argument and cannot expire a run."""
+    """The deadline is the ledger. A lease is not an argument and cannot expire a run."""
     assert wall_expired(expires=500, now=200) is False
     assert wall_expired(expires=200, now=200) is True
     assert wall_expired(expires=100, now=200) is True
@@ -95,8 +112,9 @@ class _SharedCli:
 
 def test_a_second_sweep_does_not_remove_the_container_again() -> None:
     cli = _SharedCli()
-    first = LabelledContainerReaper(cli, now=lambda: 200).reclaim()
-    second = LabelledContainerReaper(cli, now=lambda: 200).reclaim()
+    ledger = _ledger((EXPIRED, 100), (ACTIVE, 500))
+    first = _reap(cli, ledger)
+    second = _reap(cli, ledger)
     assert first.reclaimed == 1
     assert second.reclaimed == 0
     assert second.reason == "expired_containers_removed"
@@ -106,14 +124,14 @@ def test_a_second_sweep_does_not_remove_the_container_again() -> None:
 
 def test_an_expiry_equal_to_the_clock_is_removed() -> None:
     cli = FakeCli(f"{ORPHAN}\t{EXPIRED}\t200")
-    result = LabelledContainerReaper(cli, now=lambda: 200).reclaim()
+    result = _reap(cli, _ledger((EXPIRED, 200)))
     assert result.reclaimed == 1
     assert ["docker", "rm", "-f", ORPHAN] in cli.calls
 
 
 def test_nothing_expired_still_means_the_runtime_was_inspected() -> None:
     cli = FakeCli(f"{LIVE}\t{ACTIVE}\t500")
-    result = LabelledContainerReaper(cli, now=lambda: 200).reclaim()
+    result = _reap(cli, _ledger((ACTIVE, 500)))
     assert result.reclaimed == 0
     assert result.reason == "expired_containers_removed"
     assert [call[1] for call in cli.calls] == ["ps"]
@@ -121,7 +139,7 @@ def test_nothing_expired_still_means_the_runtime_was_inspected() -> None:
 
 def test_a_missing_runtime_removes_nothing() -> None:
     cli = FakeCli("", fail_ps=FileNotFoundError())
-    result = LabelledContainerReaper(cli, now=lambda: 200).reclaim()
+    result = _reap(cli, MemoryLedger())
     assert result.reclaimed == 0
     assert result.reason == "runtime_reaper_unavailable"
     assert [call[1] for call in cli.calls] == ["ps"]
@@ -129,25 +147,57 @@ def test_a_missing_runtime_removes_nothing() -> None:
 
 def test_a_failed_listing_does_not_remove() -> None:
     cli = FakeCli(_listing(), fail_ps=CliFailed())
-    result = LabelledContainerReaper(cli, now=lambda: 200).reclaim()
+    result = _reap(cli, _ledger((EXPIRED, 100), (ACTIVE, 500)))
     assert result.reclaimed == 0
     assert result.reason == "runtime_reaper_unavailable"
 
 
 def test_a_failed_removal_is_not_counted() -> None:
     cli = FakeCli(f"{ORPHAN}\t{EXPIRED}\t100", fail_rm=CliFailed())
-    result = LabelledContainerReaper(cli, now=lambda: 200).reclaim()
+    result = _reap(cli, _ledger((EXPIRED, 100)))
     assert result.reclaimed == 0
     assert result.reason == "expired_containers_removed"
     assert ["docker", "rm", "-f", ORPHAN] in cli.calls
 
 
+def test_a_future_label_does_not_extend_a_recorded_deadline() -> None:
+    cli = FakeCli(f"{LIVE}\t{ACTIVE}\t99999")
+    result = _reap(cli, _ledger((ACTIVE, 100)))
+    assert result.reclaimed == 1
+    assert ["docker", "rm", "-f", LIVE] in cli.calls
+
+
+def test_a_past_label_does_not_remove_a_run_the_ledger_holds_open() -> None:
+    cli = FakeCli(f"{LIVE}\t{ACTIVE}\t1")
+    result = _reap(cli, _ledger((ACTIVE, 500)))
+    assert result.reclaimed == 0
+    assert [call[1] for call in cli.calls] == ["ps"]
+
+
+def test_an_unregistered_label_is_removed() -> None:
+    cli = FakeCli(f"{LIVE}\t{ACTIVE}\t99999")
+    result = _reap(cli, MemoryLedger())
+    assert result.reclaimed == 1
+
+
+def test_a_cancelled_registration_is_removed_before_its_deadline() -> None:
+    ledger = _ledger((ACTIVE, 500))
+    ledger.cancel(ACTIVE)
+    cli = FakeCli(f"{LIVE}\t{ACTIVE}\t99999")
+    result = _reap(cli, ledger)
+    assert result.reclaimed == 1
+
+
 def test_podman_is_the_only_other_runtime() -> None:
     cli = FakeCli("")
-    LabelledContainerReaper(cli, now=lambda: 1, runtime="podman").reclaim()
+    LabelledContainerReaper(
+        cli, now=lambda: 1, authority=MemoryLedger(), runtime="podman"
+    ).reclaim()
     assert cli.calls[0][0] == "podman"
     with pytest.raises(ValueError):
-        LabelledContainerReaper(cli, now=lambda: 1, runtime="bash")
+        LabelledContainerReaper(
+            cli, now=lambda: 1, authority=MemoryLedger(), runtime="bash"
+        )
 
 
 def test_the_real_cli_does_not_inherit_the_process_environment(
