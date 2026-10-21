@@ -123,8 +123,8 @@ Audit query, outbox pruning, retention deletion, investigation workflows beyond 
 | A second delivery of a finished execution does not call the sandbox again | Integration test |
 | A row left without a job is enqueued with a payload of the execution id only | Integration test |
 | A stale lease owner cannot finish | Integration test against the store |
-| The evaluation argument list is `--network=none`, dropped capabilities, no new privileges, read-only, non-root, pid and memory limits, one CPU, a nosuid tmpfs, a digest-pinned image, and `/opt/flakepilot/reproduce`. The runtime client's environment is `PATH` only | Unit test of the argument list. No container was started |
-| The kernel actually blocks egress, metadata addresses, and host mounts | Documented only. It depends on `docker` or `podman` honoring those flags. Neither binary is installed in CI or in the environment that produced this stage |
+| The evaluation argument list is `--network=none`, dropped capabilities, no new privileges, read-only, non-root, pid and memory limits, one CPU, a nosuid tmpfs, a digest-pinned image, `/opt/flakepilot/reproduce`, and, for a UUID execution id, `flakepilot.execution` and `flakepilot.expires` labels. The runtime client's environment is `PATH` only | Unit test of the argument list. No container was started |
+| The kernel actually blocks egress, metadata addresses, and host mounts | Not measured on this control plane or in CI. A developer laptop recorded a Docker Desktop run on 21 October 2026. That record is not this deployment. See [isolation-validation/2026-10-21-laptop.md](isolation-validation/2026-10-21-laptop.md) |
 | A live cancel finishes `cancelled` and does not keep a passing result. An expired cancelled attempt is not rerun | Integration test with a fake runtime. No container was started |
 | A pass returned after cancel has committed is stored as `cancelled` and writes no artifact row | Integration test with a fake runtime that does not wait for the watcher. No container was started |
 | A renewed execution lease can finish later; a stranger or an expired lease cannot | Integration test against the store |
@@ -138,7 +138,7 @@ Audit query, outbox pruning, retention deletion, investigation workflows beyond 
 | Artifact bytes are returned only for the owning org, and a key for another org is not read | Integration test against the local filesystem. The filesystem is not encrypted |
 | `reconcile` reports orphan files and missing keys and deletes nothing | Unit test |
 | Evidence is eligible only when every isolation check passed. Production checks are all false | Unit test. The all-true case is a fixture, not this deployment |
-| Seccomp, a dedicated execution host, a container TTL reaper, kernel enforcement of the runtime flags, default-deny egress, metadata blocking, cleanup of a real container | Not implemented. Not tested. No isolation suite was executed |
+| Seccomp, a dedicated execution host, kernel enforcement on that host, and production cleanup | Not provisioned. The worker does not reap containers. `LabelledContainerReaper` is unit-tested with a fake CLI and is not selected here. The laptop record is not a production pass |
 
 ## Production prerequisites
 
@@ -148,9 +148,9 @@ Checked again before Stage 9 code: `docker`, `podman`, `firecracker`, and `qemu-
 |---|---|
 | Enforced and tested | Closed mode does not fetch or start a process. The operator route does not call GitHub and does not enqueue, in closed mode and in evaluation, because no live ACL is confirmed. Payloads, selectors, and result JSON are validated in code. A stale finish writes nothing. Artifact rows roll back with a rejected finish. Execution-lease renewal and cancel are enforced in the store and the handler. A committed cancel before persistence discards a pass. The job lease is renewed during the handler in a unit test. Expired `fp-` directories are removed without a runtime. Installation-token requests ask for `contents:read` on one repository, or they do not call the network. The evaluation argument list is checked as text. Evidence from this process is ineligible. Artifact download checks the org and the hash. |
 | Configuration-dependent | `evaluation` is still a legal setting and still requires a digest-pinned image so an old environment loads. The worker does not use that image. Installation minting runs only when both app settings are present and a caller has confirmed a live read. The operator route never confirms that read. |
-| Untested assumptions | That `--network=none` blocks egress and metadata addresses. That the runtime drops capabilities and enforces memory, pids, and a read-only root. That a dedicated host would contain a kernel escape. That GitHub honors the permission set on a real installation. That a microVM would survive a kernel bug in a container. |
-| Missing | A dedicated execution host. A measured default-deny network, including cloud metadata. A reviewed seccomp profile. A non-root runtime that was started. Cleanup of containers after `SIGKILL`. Encryption of the local artifact directory. An approved retention duration. Live GitHub ACL and live installation-token minting. |
-| Disabled | Production sandbox use. MicroVM isolation. A TTL reaper for containers. Patch generation, application, push, and merge. Using a static contents bearer for execution. Any setting that would mark isolation checks as passed. |
+| Untested assumptions | That the laptop's Docker Desktop VM is a sufficient boundary for a hosted multi-tenant service. It is not treated as one. That a dedicated host would contain a kernel escape. That GitHub honors the permission set on a real installation. That a microVM would survive a kernel bug in a container. |
+| Missing | A dedicated execution host. A reviewed seccomp profile. Encryption of the local artifact directory. An approved retention duration. Live GitHub ACL and live installation-token minting. A worker that reaps containers. The laptop showed that SIGKILL of the client leaves a container running. |
+| Disabled | Production sandbox use. MicroVM isolation. Selecting `LabelledContainerReaper` from the worker. Patch generation, application, push, and merge. Using a static contents bearer for execution. Any setting that would mark isolation checks as passed. |
 
 A passing unit test of an argument list is not a sandbox integration test. Do not treat it as one.
 
@@ -172,7 +172,9 @@ A dedicated execution host was not provisioned. The exact gap:
 - No encrypted volume and no object-store credentials are available. Local artifacts stay plaintext. Evidence stays ineligible. No retention duration was invented.
 - No GitHub App id, private key, or installation is configured, so live token minting and a live per-user ACL stay unverified.
 
-The ten isolation checks (egress, metadata, host files, credentials, privileges, host limits, malformed output, cleanup after kill, stale workers, tenant artifacts) were not executed. They are not passed.
+The ten isolation checks were not executed on a FlakePilot execution host, and they are not passed for this deployment. A developer laptop ran benign probes on 21 October 2026 inside Docker Desktop's LinuxKit VM. That record is [isolation-validation/2026-10-21-laptop.md](isolation-validation/2026-10-21-laptop.md). It is a laptop, a Docker Desktop VM, and a container. It is not a dedicated host and it is not a microVM. Stale-worker overwrite and tenant artifact authorization were not executed there. SIGKILL of the docker client left the container running until an explicit label removal. Those results do not set `IsolationChecks`.
+
+`LabelledContainerReaper` lists containers labelled `flakepilot.execution` and removes one only when `flakepilot.expires` is at or before the caller's clock. The worker does not construct it. Startup still reports `runtime_reaper_unavailable`. A unit test drives the reaper with a fake CLI and does not start a container.
 
 Untrusted execution remains disabled. Patch generation, push, pull requests, and merge are not in this stage.
 
