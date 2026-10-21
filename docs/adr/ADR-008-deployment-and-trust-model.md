@@ -84,6 +84,10 @@ Owner answer to OQ-3: **one trusted org per deployment**.
 - **Negative:** production self-hosters must provide a dedicated execution host. Container isolation carries kernel-sharing risk. Evaluation installs give up host separation.
 - **Follow-ups:** the implementation details above. The Docker-based deployment artifacts and docs come in a later stage.
 
+## Stage 8 feasibility
+
+No dedicated execution host, container runtime, or runtime socket was available where Stage 8 started. The production placement rule in this ADR is therefore unmet. The implementation keeps untrusted execution disabled and does not add a test that launches a container. See [EXECUTION](../operations/EXECUTION.md).
+
 ## Stage 7 implementation note
 
 Evaluation mode is the explicit opt-in this ADR requires, and `closed` is the default. The deviations are concrete. This repository does not provision a dedicated execution host, does not install a container runtime, and does not run a TTL reaper. The job worker is a control-plane process with database access, and in evaluation mode that same process execs the runtime client. The container is not given the database URL, a token, or the control-plane environment. The argument list does not set a seccomp profile. Kernel enforcement of `--network=none` and the other flags is documented only: CI did not start a container. A hosted multi-tenant service still needs the microVM-class decision in item 6. See [EXECUTION](../operations/EXECUTION.md).

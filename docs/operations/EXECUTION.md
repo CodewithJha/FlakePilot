@@ -105,6 +105,19 @@ Audit query, outbox pruning, retention deletion, investigation workflows beyond 
 | The kernel actually blocks egress, metadata addresses, and host mounts | Documented only. It depends on `docker` or `podman` honoring those flags. Neither binary is installed in CI or in the environment that produced this stage |
 | TTL reaper, seccomp, a dedicated execution host, GitHub App installation-token minting | Not implemented |
 
+## Production prerequisites
+
+Checked in this environment before Stage 8 code: `docker` and `podman` are not installed, and there is no container runtime socket. CI does not start a runtime. A hardened execution host was not provisioned. Untrusted execution stays disabled. The default mode remains `closed`.
+
+| Kind | What it covers |
+|---|---|
+| Enforced and tested | Closed mode does not fetch or start a process. Payloads, selectors, and result JSON are validated in code. A stale finish writes nothing. Artifact rows roll back with a rejected finish. The evaluation argument list is checked as text. |
+| Configuration-dependent | `evaluation` plus a digest-pinned image selects `ContainerSandbox`. That selection is an operator opt-in. It does not prove the kernel applied the flags. |
+| Untested assumptions | That `--network=none` blocks egress and metadata addresses. That the runtime drops capabilities and enforces memory, pids, and a read-only root. That a dedicated host would contain a kernel escape. |
+| Disabled | Production sandbox use. MicroVM isolation. A TTL reaper for containers. Short-lived GitHub App installation tokens. An operator route that schedules a run. Patch application, push, and merge. |
+
+A passing unit test of an argument list is not a sandbox integration test. Do not treat it as one.
+
 ## Deviations
 
 - ADR-008 requires a dedicated execution host in production and a TTL reaper. This repository provisions neither. The default mode is `closed`, which is the fail-closed behavior for production and for untrusted use. `evaluation` is an explicit opt-in and is not a microVM.
