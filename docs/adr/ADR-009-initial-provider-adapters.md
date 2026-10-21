@@ -50,6 +50,10 @@ SYSTEM-ARCHITECTURE §4 defines vendor-neutral ports with required guarantees. A
   - GitHub's permission model needs the R6 mitigations.
 - **Follow-ups:** the implementation details in the last column.
 
+## Stage 9 implementation note
+
+The operator route does not treat a repository binding as a live GitHub ACL. Without a confirmed read it stores `source_unverified` and does not mint a token or fetch an archive. Installation minting remains `contents:read` for one repository, tested with a fake transport and an ephemeral key. No live GitHub credential was available, so minting against GitHub is unverified. The static contents bearer is still not sent. There is no write tier. Local artifact storage is plaintext; `reconcile` reports orphans and does not delete them. Encryption at rest is an operator requirement (encrypted volume or encrypted object storage), not something this adapter performs.
+
 ## Stage 8 implementation note
 
 Execution can mint a short-lived installation token with `contents:read` for one repository (`FLAKEPILOT_GITHUB_APP_ID` and `FLAKEPILOT_GITHUB_APP_PRIVATE_KEY`). Missing credentials do not call GitHub. `FLAKEPILOT_GITHUB_CONTENTS_TOKEN` is not sent. There is still no write tier. Tests use a fake transport. Per-user repository ACL on GitHub is not queried.

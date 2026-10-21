@@ -84,6 +84,10 @@ Owner answer to OQ-3: **one trusted org per deployment**.
 - **Negative:** production self-hosters must provide a dedicated execution host. Container isolation carries kernel-sharing risk. Evaluation installs give up host separation.
 - **Follow-ups:** the implementation details above. The Docker-based deployment artifacts and docs come in a later stage.
 
+## Stage 9 feasibility
+
+Checked again on the control-plane host used for this stage: no `docker`, `podman`, `firecracker`, or `qemu-system-x86_64`, and no runtime socket. `/dev/kvm` is not usable by this user. No runtime was installed, and no isolation suite was executed. The production placement rule in this ADR is unmet. Untrusted execution stays disabled. The operator route records `execution_closed` or, in evaluation, `source_unverified`, and starts nothing. Job leases are renewed while a handler runs. A committed cancel is read again before artifacts are stored. Artifact bytes require the owning org and a matching hash. Local artifact files are plaintext and require an encrypted volume in production. There is no container reaper and no patch proposal. See [EXECUTION](../operations/EXECUTION.md).
+
 ## Stage 8 feasibility
 
 No dedicated execution host, container runtime, or runtime socket was available where Stage 8 started, and none was added. The production placement rule in this ADR is unmet. Untrusted execution stays disabled. The operator route records `execution_closed` without starting a runtime. Installation tokens are `contents:read` and stay in the control plane. There is no container reaper and no test that launches a container. Patch proposals are not implemented, because this deployment cannot produce evidence from a verified sandbox. See [EXECUTION](../operations/EXECUTION.md).

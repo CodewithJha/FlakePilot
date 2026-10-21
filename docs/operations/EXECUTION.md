@@ -1,6 +1,6 @@
 # Secure browser reproduction
 
-Stage 7. The binding rules are [ADR-004](../adr/ADR-004-control-plane-and-execution-plane.md) and [ADR-008](../adr/ADR-008-deployment-and-trust-model.md). This page is the contract the code implements. It is not a claim that this deployment is a production sandbox.
+Stage 9. The binding rules are [ADR-004](../adr/ADR-004-control-plane-and-execution-plane.md) and [ADR-008](../adr/ADR-008-deployment-and-trust-model.md). This page is the contract the code implements. It is not a claim that this deployment is a production sandbox. Untrusted execution is not enabled. The default mode remains `closed`.
 
 ## Fail closed
 
@@ -8,9 +8,26 @@ The default execution mode is `closed`. In that mode the worker never starts a c
 
 `POST /orgs/{org_id}/reproductions` is the operator entry. In `closed` mode it stores `inconclusive` / `execution_closed` immediately. It does not call GitHub, enqueue a job, or start a runtime. A repeat of the same org, repo, selector, and SHA returns that row. `schedule` itself does not read the mode. A row that is already `scheduled` is still enqueued on worker start, and the handler then records `execution_closed` without fetching source.
 
-`evaluation` is an explicit opt-in. It is not production isolation. Containers share the host kernel (ADR-008). This repository does not ship a browser image, and this control plane does not embed Playwright. Playwright, when an operator supplies a digest-pinned image that contains it, runs only inside that container.
+`evaluation` is an explicit opt-in and is not production isolation. The operator route still does not call the code host: a live per-user GitHub ACL is not available to this process, so the row is `inconclusive` / `source_unverified` and no job is enqueued. Containers share the host kernel (ADR-008). This repository does not ship a browser image, and this control plane does not embed Playwright. Playwright, when an operator supplies a digest-pinned image that contains it, would run only inside that container. No such container is started here.
 
-A container is not a microVM. ADR-008 requires a microVM-class boundary before a hosted multi-tenant service. That boundary is not implemented.
+A container is not a microVM. ADR-008 requires a microVM-class boundary before a hosted multi-tenant service. That boundary is not implemented. No container runtime, microVM monitor, or verified seccomp profile is installed in this environment, and none was added.
+
+## Trust boundary
+
+Untrusted repository contents, tests, dependencies, and build scripts are the execution plane. The API and the worker are the control plane. They hold the database URL, session secrets, and any GitHub App private key. Untrusted code must not run in those processes and must not run on a host that has those secrets. This repository's process is the control plane. It does not start a sandbox.
+
+| Threat | What the code does | What is still missing |
+|---|---|---|
+| Malicious repo, tests, dependencies, or build scripts | `closed` returns `execution_closed` and starts nothing. The operator `evaluation` path does not fetch source | A separate execution host, and a runtime that was actually started and measured |
+| Host files, credentials, database URLs, internal services | The control plane does not pass its environment into a container, because it does not start one. Job payloads are the execution id only | Proof that a runtime process cannot read the host |
+| Cloud metadata and other egress | Not reachable from code that does not run | A default-deny network policy measured against a live runtime, including metadata addresses |
+| Runtime sockets, host mounts, privilege, kernel attack surface | No privileged container, socket mount, or seccomp profile is configured, because no runtime is invoked | A reviewed non-root syscall policy on a real runtime, and a microVM boundary where the kernel is shared |
+| CPU, memory, PID, disk, process, and wall time | The execution row has a lease and a wall-clock budget. The worker renews the job lease while the handler runs. Argument-list limits exist only as text | Host enforcement of those limits. A killed worker can leave a container; nothing reaps one |
+| Malformed or oversized output, path traversal, symlinks | Result JSON is allow-listed. Artifact keys are validated and must stay under the root. Symlinks are not treated as artifact bytes | A runtime that produces those outputs under a real mount policy |
+| Worker crash, host restart, cancel, orphans | A stale execution owner cannot finish. Cancel committed before the result is stored discards a pass. `fp-` directories older than an hour are removed on worker start. `reconcile` reports orphan blobs and missing keys and deletes neither | Container cleanup after `SIGKILL`. Crash of the machine that holds the plaintext artifact disk |
+| Cross-tenant reads and artifact disclosure | Artifact bytes require `repo.view` on that execution's org. The key must be `exec/<org>/<repo>/sha256/<hex>` for that row. The hash is checked on read | Encryption at rest. A retention rule. This disk is plaintext |
+
+Evidence is eligible only when `accept` says so: completed `success` or `test_failure`, canonical org and repo ids, a 40-character lowercase SHA, complete evidence, not superseded, and all seven isolation checks true (`network_denied`, `metadata_denied`, `host_mounts_denied`, `credentials_absent`, `unprivileged`, `limits_enforced`, `cleanup_verified`). Production uses `UnavailableIsolation`, which sets every check false. There is no setting that marks isolation verified. A fixture in unit tests may pass all seven checks; that fixture is not this deployment. Eligibility is not a flakiness classification. One failure is not a flake. `infra_failure` is not a test failure. `success` and `test_failure` stay distinct.
 
 ## What may run
 
@@ -36,7 +53,9 @@ The control plane starts every interaction. The sandbox has no route back.
 
 A caller-supplied SHA is not evidence. Scheduling authorizes `repo.investigate` (IAM), loads the repository binding (`repo.repositories`, host `github` only), and asks the code host to confirm that exact commit. The host's SHA must equal the claimed SHA. Unsafe URL schemes and redirects are rejected. The token stays in the adapter.
 
-Evaluation scheduling confirms the commit through a GitHub App installation token when `FLAKEPILOT_GITHUB_APP_ID` and `FLAKEPILOT_GITHUB_APP_PRIVATE_KEY` are both set. The token is `contents:read` for that one repository, created at call time, kept in the adapter, and never written to a job, an artifact, a log line, or an error. It is not passed to sandbox code. Redirects are refused. If either setting is missing, or the key is not an unencrypted RSA private key, execution does not call GitHub. `FLAKEPILOT_GITHUB_CONTENTS_TOKEN` is still parsed so an old environment loads, and execution does not send it. Closed-mode operator requests do not call GitHub at all. An evaluation pin that cannot be confirmed is `inconclusive` / `source_unverified` and no job is enqueued.
+The operator route does not confirm a commit. A repository binding plus a FlakePilot grant is not a live GitHub ACL, and this process cannot ask GitHub whether the caller can read the repository. The route therefore stores `inconclusive` / `source_unverified` and does not call the code host, in `closed` and in `evaluation`. A repeat of that tuple returns the same row. `schedule_registered` calls the host only when its caller returns a confirmed read. The operator route never passes such a caller.
+
+Installation minting, when some other caller does confirm a read, still uses `FLAKEPILOT_GITHUB_APP_ID` and `FLAKEPILOT_GITHUB_APP_PRIVATE_KEY` together. The token is `contents:read` for that one repository, created at call time, kept in the adapter, and never written to a job, an artifact, a log line, or an error. It is not passed to sandbox code. Redirects are refused. If either setting is missing, or the key is not an unencrypted RSA private key, that caller does not call GitHub. `FLAKEPILOT_GITHUB_CONTENTS_TOKEN` is still parsed so an old environment loads, and execution does not send it. There is no live GitHub App credential in this environment. Minting and installation membership were tested with a fake transport only.
 
 Source bytes are fetched by the control plane and extracted into a per-run directory. Archive members that escape the directory, or that exceed the size and count caps, abort the run as `infra_failure` / `invalid_source`. The token is not copied into the container.
 
@@ -60,7 +79,7 @@ Terminal rows are not deleted and are not rewritten. A finish whose `generation`
 
 One active row per `(org, repo, selector, sha)`. A duplicate schedule returns that row. Two workers claiming it serialize on the row lock; the loser finds it no longer `scheduled`.
 
-The execution lease is the wall-clock limit plus 30 seconds. While a holder runs, it renews that lease and reads `cancel_requested`. A finish uses a fresh clock. A stale owner, generation, or expired lease cannot renew or finish, and a rejected finish rolls artifact rows back. The job lease is `FLAKEPILOT_WORKER_LEASE_SECONDS` and is still renewed once before the handler, not continuously during it. A second worker that arrives before the execution lease expires is told the row is busy. If renewal stops and the lease expires, a later attempt can claim. Tests advance a clock. They do not sleep.
+The execution lease is the wall-clock limit plus 30 seconds. While a holder runs, it renews that lease and reads `cancel_requested`. After the runtime returns, the handler reads `cancel_requested` once more and, if it is set, stores `cancelled` instead of the runtime report. A pass that is already terminal is not rewritten. A finish uses a fresh clock. A stale owner, generation, or expired lease cannot renew or finish, and a rejected finish rolls artifact rows back. The job lease is `FLAKEPILOT_WORKER_LEASE_SECONDS`. The worker renews it before the handler and again while the handler runs, at one third of the lease and at least one second. A renewal the store rejects is not completed. A second worker that arrives before the execution lease expires is told the row is busy. If renewal stops and the lease expires, a later attempt can claim. Tests advance a clock. They do not sleep. The renewal test uses a fake store, not two machines.
 
 Worker startup deletes direct child directories named `fp-` under `TMPDIR` (or `/tmp`) whose age is at least one hour. Symlinks are left alone. That cleanup does not call `docker` or `podman`. A container left behind by `SIGKILL` is not reaped.
 
@@ -76,11 +95,13 @@ The argument list is built in code. It always includes `--network=none`, `--cap-
 
 ## Evidence
 
-Outputs are size-capped. The result must be a JSON object whose only keys are `status` (`passed` or `failed`) and `selector` (equal to the request). Any other key, including `verified`, `flaky`, `outcome`, `tenant`, or `handler`, is `invalid_result`. The control plane stores a canonical JSON object it built, not the sandbox's bytes, and only for `success` and `test_failure`. An optional PNG screenshot is stored in those two outcomes when it has a PNG signature and is within the size cap. The store is the existing artifact store (`owner=exec`). Keys are `exec/<org>/<repo>/sha256/<hex>`. The execution id and the verified SHA live on the execution row, not in the key. A SHA on an `inconclusive` / `source_unverified` row is the caller's claim and is not evidence. There is no public artifact route.
+Outputs are size-capped. The result must be a JSON object whose only keys are `status` (`passed` or `failed`) and `selector` (equal to the request). Any other key, including `verified`, `flaky`, `outcome`, `tenant`, or `handler`, is `invalid_result`. The control plane stores a canonical JSON object it built, not the sandbox's bytes, and only for `success` and `test_failure`. An optional PNG screenshot is stored in those two outcomes when it has a PNG signature and is within the size cap. The store is the existing artifact store (`owner=exec`). Keys are `exec/<org>/<repo>/sha256/<hex>`. The execution id and the verified SHA live on the execution row, not in the key. A SHA on an `inconclusive` / `source_unverified` row is the caller's claim and is not evidence. There is no unauthenticated artifact route.
 
-Hashes are SHA-256 of the stored bytes. Filenames never come from the sandbox. A failed artifact write still persists the terminal outcome, with `evidence_partial` set. A finish the store rejects rolls the artifact rows back. A file already written to disk can remain as an orphan; nothing deletes it.
+Hashes are SHA-256 of the stored bytes. Filenames never come from the sandbox. A failed artifact write still persists the terminal outcome, with `evidence_partial` set. A finish the store rejects rolls the artifact rows back. A file already written to disk can remain as an orphan. `reconcile` lists content-addressed files that have no known key, and known keys that have no regular file. It does not delete either. Temporary files older than an hour are still swept at store startup. Symlinks are not read as objects.
 
-Artifacts are not encrypted at rest. Nothing in this stage deletes them. Retention durations are not invented here.
+`GET /orgs/{org_id}/reproductions/{execution_id}` returns `evidence_status` and `evidence_reason` from `UnavailableIsolation` and lists artifact names without bytes. `GET .../artifacts/{kind}` returns bytes only for `result` or `screenshot`, only after `repo.view`, and only when the key is under that execution's org and repo and the hash matches. Another org is not found. No artifact directory is not found.
+
+Local artifact files are plaintext, mode `0400`. Production must place that directory on an encrypted volume or replace the adapter with encrypted object storage. This process does not encrypt. No retention duration is defined. Audit rows, outbox rows, and execution rows are not deleted.
 
 ## Audit
 
@@ -106,32 +127,39 @@ Audit query, outbox pruning, retention deletion, investigation workflows beyond 
 | The evaluation argument list is `--network=none`, dropped capabilities, no new privileges, read-only, non-root, pid and memory limits, one CPU, a nosuid tmpfs, a digest-pinned image, and `/opt/flakepilot/reproduce`. The runtime client's environment is `PATH` only | Unit test of the argument list. No container was started |
 | The kernel actually blocks egress, metadata addresses, and host mounts | Documented only. It depends on `docker` or `podman` honoring those flags. Neither binary is installed in CI or in the environment that produced this stage |
 | A live cancel finishes `cancelled` and does not keep a passing result. An expired cancelled attempt is not rerun | Integration test with a fake runtime. No container was started |
-| A renewed lease can finish later; a stranger or an expired lease cannot | Integration test against the store |
+| A pass returned after cancel has committed is stored as `cancelled` and writes no artifact row | Integration test with a fake runtime that does not wait for the watcher. No container was started |
+| A renewed execution lease can finish later; a stranger or an expired lease cannot | Integration test against the store |
+| The worker renews the job lease while the handler runs, and a rejected renewal is not completed | Unit test with a fake job store. Not two hosts |
 | Worker startup removes expired `fp-` directories and does not invoke a runtime | Unit test of the directory reaper |
 | An installation token is `contents:read` for one repository, and a static contents bearer is not used for execution | Unit test with a fake transport and an ephemeral RSA key. No live GitHub call |
-| `POST /orgs/{org_id}/reproductions` in closed mode stores `execution_closed`, returns the same id on repeat, and enqueues nothing. A session is required. Another org is not found. Artifact names are returned without bytes | Integration test over HTTP. No container was started |
-| Seccomp, a dedicated execution host, a container TTL reaper, kernel enforcement of the runtime flags | Not implemented. Not tested |
+| The operator route does not call the code host when the caller has not confirmed a live read. Evaluation stores `source_unverified`, returns the same id on repeat, and enqueues nothing | Unit test with fakes, and an integration test. No live GitHub call |
+| `POST /orgs/{org_id}/reproductions` in closed mode stores `execution_closed`, returns the same id on repeat, and enqueues nothing. The response is `ineligible` / `execution_closed`. A session is required. Another org is not found | Integration test over HTTP. No container was started |
+| Artifact bytes are returned only for the owning org, and a key for another org is not read | Integration test against the local filesystem. The filesystem is not encrypted |
+| `reconcile` reports orphan files and missing keys and deletes nothing | Unit test |
+| Evidence is eligible only when every isolation check passed. Production checks are all false | Unit test. The all-true case is a fixture, not this deployment |
+| Seccomp, a dedicated execution host, a container TTL reaper, kernel enforcement of the runtime flags, default-deny egress, metadata blocking, cleanup of a real container | Not implemented. Not tested. No isolation suite was executed |
 
 ## Production prerequisites
 
-Checked in this environment before Stage 8 code: `docker` and `podman` are not installed, and there is no container runtime socket. CI does not start a runtime. A hardened execution host was not provisioned. Untrusted execution stays disabled. The default mode remains `closed`.
+Checked again before Stage 9 code: `docker`, `podman`, `firecracker`, and `qemu-system-x86_64` are not installed. There is no container runtime socket. `/dev/kvm` exists and is group `ssl-cert`; this user is not in that group, so it is not usable. This machine holds the repository and the test database password, so it is a control-plane host, not an execution host. No runtime was installed. CI does not start a runtime. Untrusted execution stays disabled. The default mode remains `closed`.
 
 | Kind | What it covers |
 |---|---|
-| Enforced and tested | Closed mode does not fetch or start a process. The operator route in closed mode does not enqueue. Payloads, selectors, and result JSON are validated in code. A stale finish writes nothing. Artifact rows roll back with a rejected finish. Lease renewal and cancel are enforced in the store and the handler. Expired `fp-` directories are removed without a runtime. Installation-token requests ask for `contents:read` on one repository, or they do not call the network. The evaluation argument list is checked as text. |
-| Configuration-dependent | `evaluation` plus a digest-pinned image selects `ContainerSandbox` and may pin a commit. That selection is an operator opt-in. It does not prove the kernel applied the flags. Installation minting runs only when both app settings are present. |
-| Untested assumptions | That `--network=none` blocks egress and metadata addresses. That the runtime drops capabilities and enforces memory, pids, and a read-only root. That a dedicated host would contain a kernel escape. That GitHub honors the permission set on a real installation. |
-| Disabled | Production sandbox use. MicroVM isolation. A TTL reaper for containers. Patch generation, application, push, and merge. Using a static contents bearer for execution. |
+| Enforced and tested | Closed mode does not fetch or start a process. The operator route does not call GitHub and does not enqueue, in closed mode and in evaluation, because no live ACL is confirmed. Payloads, selectors, and result JSON are validated in code. A stale finish writes nothing. Artifact rows roll back with a rejected finish. Execution-lease renewal and cancel are enforced in the store and the handler. A committed cancel before persistence discards a pass. The job lease is renewed during the handler in a unit test. Expired `fp-` directories are removed without a runtime. Installation-token requests ask for `contents:read` on one repository, or they do not call the network. The evaluation argument list is checked as text. Evidence from this process is ineligible. Artifact download checks the org and the hash. |
+| Configuration-dependent | `evaluation` plus a digest-pinned image selects `ContainerSandbox` for a handler that actually runs. The operator route does not create that row. Installation minting runs only when both app settings are present and a caller has confirmed a live read. Neither condition is met for the operator route. |
+| Untested assumptions | That `--network=none` blocks egress and metadata addresses. That the runtime drops capabilities and enforces memory, pids, and a read-only root. That a dedicated host would contain a kernel escape. That GitHub honors the permission set on a real installation. That a microVM would survive a kernel bug in a container. |
+| Missing | A dedicated execution host. A measured default-deny network, including cloud metadata. A reviewed seccomp profile. A non-root runtime that was started. Cleanup of containers after `SIGKILL`. Encryption of the local artifact directory. An approved retention duration. Live GitHub ACL and live installation-token minting. |
+| Disabled | Production sandbox use. MicroVM isolation. A TTL reaper for containers. Patch generation, application, push, and merge. Using a static contents bearer for execution. Any setting that would mark isolation checks as passed. |
 
 A passing unit test of an argument list is not a sandbox integration test. Do not treat it as one.
 
 ## Operator route
 
-`POST /orgs/{org_id}/reproductions` and `GET /orgs/{org_id}/reproductions/{execution_id}` require a session. Unsafe requests also require `Origin` or `Referer` equal to `FLAKEPILOT_PUBLIC_ORIGIN`. The org is the URL, loaded from IAM for that session. The body may contain only `repo_id`, `selector`, and a 40-character lowercase SHA. `repo.investigate` is required to create; `repo.view` is enough to read. A principal who cannot see the repo, or a different org, gets the same not-found response. The response lists artifact kind, key, and size. It does not return bytes, and there is no download route.
+`POST /orgs/{org_id}/reproductions` and `GET /orgs/{org_id}/reproductions/{execution_id}` require a session. Unsafe requests also require `Origin` or `Referer` equal to `FLAKEPILOT_PUBLIC_ORIGIN`. The org is the URL, loaded from IAM for that session. The body may contain only `repo_id`, `selector`, and a 40-character lowercase SHA. `repo.investigate` is required to create; `repo.view` is enough to read. A principal who cannot see the repo, or a different org, gets the same not-found response. The status response lists artifact kind, key, and size, plus `evidence_status` and `evidence_reason`. It does not return bytes.
 
-Code-host read on this route means the repository is in `repo.repositories`. It is not a live GitHub permission lookup, and the client cannot supply it.
+`GET /orgs/{org_id}/reproductions/{execution_id}/artifacts/{kind}` returns bytes after the same view check. `kind` is `result` or `screenshot`. The key must belong to that execution's org and repo, and the stored hash must match. There is no unauthenticated download.
 
-`evaluation` may still confirm the SHA and enqueue `browser_reproduction` with only the execution id. That opt-in does not start a container inside the request. It is not a verified sandbox.
+The client cannot supply a code-host permission. The route does not ask GitHub. `evaluation` does not confirm the SHA and does not enqueue. It is not a verified sandbox.
 
 ## Patch proposals
 
@@ -146,6 +174,6 @@ Authorized audit-log query, outbox pruning, retention deletion, `LISTEN/NOTIFY`,
 - ADR-008 requires a dedicated execution host in production and a TTL reaper. This repository provisions neither. The default mode is `closed`, which is the fail-closed behavior for production and for untrusted use. `evaluation` is an explicit opt-in and is not a microVM.
 - ADR-008 says execution workers have no database access, and that control-plane processes do not drive sandbox workloads. The process that runs `browser_reproduction` is the control-plane worker. It uses the database. In evaluation mode that same process execs `docker` or `podman`. The container does not receive the database URL. The worker process does.
 - ADR-008's hardening list includes a syscall filter. The argument list does not pass a seccomp profile.
-- ADR-009's code host has a read tier and an opt-in write tier. Execution mints `contents:read` only, and only for one repository. There is no write tier, no branch prefix, and no merge. The static contents bearer is ignored. Per-user code-host ACL is not queried: read is the repository binding plus the FlakePilot grant.
-- Patch proposals are not implemented. Closed mode cannot produce `success` or `test_failure`, and an evaluation result is not verified isolation, so neither is eligible evidence. See below.
+- ADR-009's code host has a read tier and an opt-in write tier. Execution can mint `contents:read` only, and only for one repository, and only for a caller that confirmed a live read. The operator route does not. There is no write tier, no branch prefix, and no merge. The static contents bearer is ignored. Live GitHub ACL is not queried, and the route fails closed.
+- Patch proposals are not implemented. This deployment cannot produce an eligible result: isolation checks are unavailable, and the operator route does not run a sandbox. `success` and `test_failure` would still not be a flakiness claim.
 - Playwright is not a dependency. The control plane does not import it. An operator may put it in the digest-pinned image. That image is not built or run by this repository.
