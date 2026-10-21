@@ -15,7 +15,7 @@ import asyncio
 import hashlib
 import logging
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from flakepilot.identity.application.iam import CiUploadPrincipal
@@ -149,13 +149,14 @@ class Ingestion:
         self,
         principal: CiUploadPrincipal,
         *,
-        headers: Mapping[str, str],
+        headers: Mapping[str, Sequence[str]],
         content_type: str | None,
         content_encoding: str | None,
         body: bytes | None,
         origin: Origin,
     ) -> IngestionResult:
-        """`body` is None when it exceeded `MAX_UPLOAD_BYTES` (reading stopped)."""
+        """`headers` holds every value of each metadata header; a header sent more than
+        once is rejected. `body` is None when it exceeded `MAX_UPLOAD_BYTES`."""
         attempt = _Attempt(
             principal,
             origin,
@@ -172,8 +173,13 @@ class Ingestion:
                 "identity",
             ):
                 raise UploadRejected(UNSUPPORTED_MEDIA_TYPE)
+            for name, values in headers.items():
+                if len(values) > 1:
+                    raise UploadRejected(INVALID_METADATA, name)
             try:
-                metadata = parse_metadata(headers)
+                metadata = parse_metadata(
+                    {name: values[0] for name, values in headers.items() if values}
+                )
             except InvalidMetadata as exc:
                 raise UploadRejected(INVALID_METADATA, exc.header) from None
             try:

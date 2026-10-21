@@ -53,11 +53,7 @@ async def ingest_junit(
         raise IngestionNotConfigured
     result = await ingestion.ingest(
         principal,
-        headers={
-            name: value
-            for name in METADATA_HEADERS
-            if (value := request.headers.get(name)) is not None
-        },
+        headers={name: request.headers.getlist(name) for name in METADATA_HEADERS},
         content_type=request.headers.get("content-type"),
         content_encoding=request.headers.get("content-encoding"),
         body=await _body_within_limit(request),

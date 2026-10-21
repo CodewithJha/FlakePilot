@@ -11,6 +11,7 @@ Outcomes: `<error>` → errored, `<failure>` → failed, `<skipped>` → skipped
 `rerunError` are further failed attempts after the first failure.
 """
 
+import unicodedata
 from xml.parsers import expat
 
 from flakepilot.integrations.application.ports import ParsedTestCase, ReportRejected
@@ -103,6 +104,10 @@ def _value(attributes: dict[str, str], name: str) -> str:
     value = attributes.get(name, "").strip()
     if len(value) > MAX_NAME_CHARS:
         raise ReportRejected("value_too_long")
+    # Control (Cc, incl. U+0080-U+009F) and format (Cf, incl. bidi overrides) characters
+    # can disguise names in logs and views.
+    if any(unicodedata.category(c) in ("Cc", "Cf") for c in value):
+        raise ReportRejected("invalid_characters")
     return value
 
 
@@ -122,6 +127,8 @@ class JUnitParser:
         parser.EndElementHandler = handler.end
         try:
             parser.Parse(data, True)
-        except expat.ExpatError:
+        except (expat.ExpatError, ValueError, LookupError):
+            # ValueError/LookupError: a declared encoding expat or Python can't decode
+            # (multi-byte like UTF-32 or Shift_JIS, non-text codecs, unknown names).
             raise ReportRejected("malformed_xml") from None
         return handler.cases

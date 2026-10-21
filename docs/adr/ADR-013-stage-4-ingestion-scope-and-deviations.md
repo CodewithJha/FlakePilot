@@ -30,7 +30,7 @@ Workflow C classifies only inside user-opened investigations, which belong to OR
 **Endpoint:** `POST /ingest/junit`.
 - **Auth:** `Authorization: Bearer fpi_…`. The token alone decides the org and repo; the client never names either.
 - **Content:** type `application/xml` or `text/xml`, no content encoding.
-- **Metadata:** strictly validated headers. Error messages name the header, never the value.
+- **Metadata:** strictly validated headers, each sent exactly once. Error messages name the header, never the value.
 
 | Header | Format |
 |---|---|

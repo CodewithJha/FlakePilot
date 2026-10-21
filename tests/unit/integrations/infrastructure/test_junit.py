@@ -136,6 +136,41 @@ def test_invalid_reports_are_refused_with_a_reason(report: bytes, reason: str) -
     assert "SENTINEL" not in str(excinfo.value)
 
 
+@pytest.mark.parametrize(
+    "encoding",
+    ["UTF-32", "UTF-7", "Shift_JIS", "Big5", "GB2312", "base64", "rot13", "x-nope"],
+)
+def test_undecodable_declared_encodings_are_malformed(encoding: str) -> None:
+    report = f'<?xml version="1.0" encoding="{encoding}"?><testsuite/>'.encode()
+    with pytest.raises(ReportRejected) as excinfo:
+        PARSE(report)
+    assert excinfo.value.reason == "malformed_xml"
+
+
+@pytest.mark.parametrize(
+    "character",
+    ["\u0085", "\u009f", "\u200e", "\u202a", "\u202e", "\u2066", "\u2069", "\ufeff"],
+)
+@pytest.mark.parametrize("attribute", ["classname", "name"])
+def test_control_and_format_characters_in_names_are_refused(
+    character: str, attribute: str
+) -> None:
+    other = "name" if attribute == "classname" else "classname"
+    report = (
+        f'<testsuite><testcase {other}="ok" {attribute}="a{character}b"/></testsuite>'
+    ).encode()
+    with pytest.raises(ReportRejected) as excinfo:
+        PARSE(report)
+    assert excinfo.value.reason == "invalid_characters"
+
+
+def test_tab_character_references_are_refused_but_plain_unicode_is_kept() -> None:
+    with pytest.raises(ReportRejected):
+        PARSE(b'<testsuite><testcase name="a&#9;b"/></testsuite>')
+    [case] = PARSE('<testsuite><testcase name="tést ✓ 测试"/></testsuite>'.encode())
+    assert case.name == "tést ✓ 测试"
+
+
 def test_counts_are_capped(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(junit, "MAX_CASES", 3)
     cases = b"".join(b"<testcase name='t%d'/>" % i for i in range(4))

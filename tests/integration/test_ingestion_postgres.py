@@ -443,6 +443,59 @@ def test_rejections_are_recorded_audited_and_never_echo_input(
     run(url, scenario)
 
 
+ENCODINGS = [
+    "UTF-32",
+    "UTF-7",
+    "Shift_JIS",
+    "Big5",
+    "GB2312",
+    "base64",
+    "rot13",
+    "x-nope",
+]
+
+
+def test_undecodable_encodings_and_repeated_headers_are_audited_rejections(
+    url: str, artifact_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    async def scenario(engine: AsyncEngine) -> None:
+        correlation: list[str] = []
+        async with client(url, artifact_dir) as api:
+            for encoding in ENCODINGS:
+                body = (
+                    f'<?xml version="1.0" encoding="{encoding}"?>'
+                    '<testsuite><testcase name="t"/></testsuite>'
+                ).encode()
+                status, error = await api.upload(TOKEN_A, body, metadata())
+                assert (status, error["error"]["code"]) == (422, "invalid_report")
+                assert error["error"]["reason"] == "malformed_xml"
+                correlation.append(error["error"]["request_id"])
+            twice = [(HEADERS["job_name"], f"second {SENTINEL}")]
+            status, error = await api.upload(
+                TOKEN_A, report(("c", "t", "")), metadata(), twice
+            )
+            assert (status, error["error"]["code"]) == (422, "validation_error")
+            assert error["error"]["fields"] == [
+                {"loc": ["header", HEADERS["job_name"]], "type": "invalid"}
+            ]
+            correlation.append(error["error"]["request_id"])
+            leaked = b"".join(api.bodies).decode()
+        audit = await events(engine, "correlation_id = ANY(:c)", c=correlation)
+        assert [(e.name, e.reason) for e in audit] == [
+            ("ti.upload.rejected", "malformed_xml")
+        ] * len(ENCODINGS) + [("ti.upload.rejected", "invalid_metadata")]
+        [[rejected]] = await sql(
+            engine,
+            "SELECT count(*) FROM ti.uploads WHERE state = 'rejected' AND id = ANY(:ids)",
+            ids=[e.subject_id for e in audit],
+        )
+        assert rejected == len(ENCODINGS) + 1
+        logs = capsys.readouterr().err
+        assert "Traceback" not in logs and SENTINEL not in leaked + logs
+
+    run(url, scenario)
+
+
 def test_an_oversized_body_is_refused_while_streaming(
     url: str, artifact_dir: Path
 ) -> None:
@@ -662,7 +715,7 @@ class FailingOutbox(SqlTiStore):
 def test_a_failed_outbox_write_rolls_back_the_whole_upload(url: str) -> None:
     principal = CiUploadPrincipal(TOKEN_IDS[TOKEN_A], ORG_A, REPO_1)
     origin = Origin(Channel.HTTP, "rollback-request")
-    meta = dict(metadata(ci_run_id="rollback"))
+    meta = {name: [value] for name, value in metadata(ci_run_id="rollback")}
 
     async def scenario(engine: AsyncEngine) -> InMemoryArtifactStore:
         @asynccontextmanager
