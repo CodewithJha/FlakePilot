@@ -21,7 +21,14 @@ from flakepilot.identity.application.authorization import (
     PermissionDenied,
     ResourceNotFound,
 )
+from flakepilot.identity.application.iam import (
+    AuthNotConfigured,
+    AuthProviderUnavailable,
+    SignInFailed,
+)
 from flakepilot.interface.http.request_context import (
+    AUTH_NOT_CONFIGURED,
+    AUTH_PROVIDER_UNAVAILABLE,
     FORBIDDEN,
     HTTP_ERROR,
     METHOD_NOT_ALLOWED,
@@ -37,12 +44,27 @@ class Unauthenticated(Exception):
     """Raised by the interface layer when a request has no verified principal."""
 
 
+class CrossSiteRequest(Exception):
+    """A cookie-authenticated unsafe request whose Origin/Referer is not ours (CSRF)."""
+
+
 _HTTP_CODES = {404: NOT_FOUND, 405: METHOD_NOT_ALLOWED}
 _ACCESS_ERRORS: dict[type[Exception], tuple[int, str]] = {
     Unauthenticated: (401, UNAUTHENTICATED),
+    SignInFailed: (401, UNAUTHENTICATED),
     PermissionDenied: (403, FORBIDDEN),
+    CrossSiteRequest: (403, FORBIDDEN),
     ResourceNotFound: (404, NOT_FOUND),
+    AuthNotConfigured: (503, AUTH_NOT_CONFIGURED),
+    AuthProviderUnavailable: (503, AUTH_PROVIDER_UNAVAILABLE),
 }
+
+
+def access_error_body(exc: Exception) -> tuple[int, dict[str, object]]:
+    """Status and body for a mapped access error (for routes that build responses)."""
+    status, code = _ACCESS_ERRORS[type(exc)]
+    phrase = HTTPStatus(status).phrase
+    return status, error_body(code, phrase, request_id_var.get())
 
 
 async def _http_error(request: Request, exc: Exception) -> JSONResponse:
@@ -58,9 +80,8 @@ async def _http_error(request: Request, exc: Exception) -> JSONResponse:
 
 
 async def _access_error(request: Request, exc: Exception) -> JSONResponse:
-    status, code = _ACCESS_ERRORS[type(exc)]
-    phrase = HTTPStatus(status).phrase
-    return JSONResponse(error_body(code, phrase, request_id_var.get()), status)
+    status, body = access_error_body(exc)
+    return JSONResponse(body, status)
 
 
 async def _validation_error(request: Request, exc: Exception) -> JSONResponse:

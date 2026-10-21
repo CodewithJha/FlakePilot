@@ -2,13 +2,22 @@
 
 import json
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from importlib.metadata import version
 
 from fastapi import FastAPI
+from sqlalchemy.ext.asyncio import AsyncEngine
 
+from flakepilot.identity.application.iam import (
+    Iam,
+    IamStore,
+    IdentityProvider,
+    UnitOfWork,
+)
+from flakepilot.identity.infrastructure.store import SqlIamStore
+from flakepilot.integrations.infrastructure.github import GitHubIdentityProvider
 from flakepilot.interface.composition_root.database import (
     CONNECT_TIMEOUT,
     EngineFactory,
@@ -17,19 +26,23 @@ from flakepilot.interface.composition_root.database import (
     dispose_engine,
     ping,
     register_database_error_handler,
+    transaction,
 )
 from flakepilot.interface.composition_root.settings import (
+    GitHubApp,
     Secret,
     Settings,
     SettingsError,
 )
-from flakepilot.interface.http import errors, health
+from flakepilot.interface.http import auth, errors, health
 from flakepilot.interface.http.request_context import (
     RequestContextMiddleware,
     request_id_var,
 )
 
-__all__ = ["Secret", "Settings", "SettingsError", "create_app"]
+__all__ = ["GitHubApp", "Secret", "Settings", "SettingsError", "create_app"]
+
+IdentityProviderFactory = Callable[[Settings], IdentityProvider | None]
 
 _HANDLER_NAME = "flakepilot-json"
 _logger = logging.getLogger("flakepilot.database")
@@ -75,16 +88,41 @@ def _startup_failure(exc: Exception) -> RuntimeError:
     return RuntimeError("database unavailable at startup")
 
 
+def github_identity_provider(settings: Settings) -> IdentityProvider | None:
+    """The GitHub sign-in adapter, or None (sign-in disabled) when not configured."""
+    if settings.github_app is None or settings.public_origin is None:
+        return None
+    return GitHubIdentityProvider(
+        client_id=settings.github_app.client_id,
+        client_secret=settings.github_app.client_secret.reveal(),
+        redirect_uri=f"{settings.public_origin}/auth/github/callback",
+    )
+
+
+def iam_unit_of_work(engine: AsyncEngine) -> UnitOfWork:
+    @asynccontextmanager
+    async def unit_of_work() -> AsyncIterator[IamStore]:
+        async with transaction(engine) as session:
+            yield SqlIamStore(session)
+
+    return unit_of_work
+
+
 def create_app(
-    settings: Settings, engine_factory: EngineFactory = create_engine
+    settings: Settings,
+    engine_factory: EngineFactory = create_engine,
+    identity_provider_factory: IdentityProviderFactory = github_identity_provider,
 ) -> FastAPI:
     """Build the app. No I/O happens until the server runs the lifespan.
 
     Startup fails fast: the engine is created and checked with one bounded `SELECT 1`;
     on failure the engine is disposed and startup raises (driver details are not chained).
     Migrations are never run here; they are an explicit `alembic upgrade` step (ADR-005).
+    Sign-in is enabled only when GitHub and the public origin are configured; otherwise
+    the auth endpoints answer 503 `auth_not_configured` (fail closed).
     """
     configure_logging(settings.log_level)
+    identity_provider = identity_provider_factory(settings)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -100,6 +138,7 @@ def create_app(
                 raise _startup_failure(exc) from None
             raise
         app.state.readiness_probe = ReadinessCheck(engine)
+        app.state.iam = Iam(iam_unit_of_work(engine), identity_provider)
         app.state.ready = True
         try:
             yield
@@ -117,8 +156,14 @@ def create_app(
         lifespan=lifespan,
     )
     app.state.ready = False
+    app.state.auth_config = (
+        auth.AuthConfig(settings.public_origin, settings.secure_cookies)
+        if identity_provider is not None and settings.public_origin is not None
+        else None
+    )
     app.add_middleware(RequestContextMiddleware)
     errors.register_error_handlers(app)
     register_database_error_handler(app)
     app.include_router(health.router)
+    app.include_router(auth.router)
     return app

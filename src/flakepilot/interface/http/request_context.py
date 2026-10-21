@@ -25,6 +25,8 @@ METHOD_NOT_ALLOWED = "method_not_allowed"  # 405, with an Allow header
 VALIDATION_ERROR = "validation_error"  # 422: request failed schema validation
 HTTP_ERROR = "http_error"  # any other HTTPException status
 INTERNAL_ERROR = "internal_error"  # 500: unexpected, database or connection error
+AUTH_NOT_CONFIGURED = "auth_not_configured"  # 503: sign-in is not configured
+AUTH_PROVIDER_UNAVAILABLE = "auth_provider_unavailable"  # 503: sign-in provider is down
 
 REQUEST_ID_HEADER = "X-Request-ID"
 _VALID_REQUEST_ID = re.compile(r"[A-Za-z0-9._-]{1,64}")

@@ -1,8 +1,8 @@
 """IAM's authorization decision point (SYSTEM-ARCHITECTURE §7.2).
 
-Every application use case calls `authorize` before doing work. `OrgAccess` must come
-from verified authentication and IAM's records; nothing builds it from request input.
-Authentication itself is not implemented yet (see the Stage 2.3 step 3.7 report).
+Every application use case calls `authorize` before doing work. `OrgAccess` comes only
+from verified authentication and IAM's records (`Iam.org_access`), never from request
+input. The access types are re-exported here as IAM's public API.
 """
 
 from flakepilot.identity.domain.access import (
@@ -12,6 +12,15 @@ from flakepilot.identity.domain.access import (
     OrgAccess,
     decide,
 )
+
+__all__ = [
+    "CodeHostAccess",
+    "Grant",
+    "OrgAccess",
+    "PermissionDenied",
+    "ResourceNotFound",
+    "authorize",
+]
 
 
 class ResourceNotFound(Exception):

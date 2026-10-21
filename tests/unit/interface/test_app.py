@@ -30,6 +30,7 @@ from flakepilot.identity.application.authorization import (
 from flakepilot.interface.composition_root import create_app
 from flakepilot.interface.http.errors import Unauthenticated
 from flakepilot.interface.http.request_context import (
+    AUTH_NOT_CONFIGURED,
     FORBIDDEN,
     HTTP_ERROR,
     INTERNAL_ERROR,
@@ -67,15 +68,39 @@ def test_creating_the_app_does_no_database_work() -> None:
     assert factory.engine.connects == 0
 
 
-def test_only_health_and_openapi_routes_are_registered() -> None:
+def test_only_expected_routes_are_registered() -> None:
     app = create_app(SETTINGS)
-    assert set(app.openapi()["paths"]) == {"/health/live", "/health/ready"}
+    assert set(app.openapi()["paths"]) == {
+        "/health/live",
+        "/health/ready",
+        "/auth/github/login",
+        "/auth/github/callback",
+        "/auth/logout",
+    }
     assert [getattr(r, "path", None) for r in app.routes if hasattr(r, "path")] == [
         "/openapi.json"
     ]
     assert get(app, "/openapi.json")[0] == 200
     assert get(app, "/docs")[0] == 404
     assert get(app, "/redoc")[0] == 404
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("GET", "/auth/github/login"),
+        ("GET", "/auth/github/callback?code=c&state=s"),
+        ("POST", "/auth/logout"),
+    ],
+)
+def test_auth_endpoints_fail_closed_without_sign_in_configuration(
+    method: str, path: str
+) -> None:
+    app = create_app(SETTINGS)
+    status, headers, body = asyncio.run(request(app, method, path))
+    assert (status, body["error"]["code"]) == (503, AUTH_NOT_CONFIGURED)
+    assert "set-cookie" not in headers
+    assert get(app, "/health/live")[0] == 200
 
 
 def test_openapi_version_is_the_package_version() -> None:

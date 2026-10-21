@@ -9,6 +9,7 @@ license-files = ["LICENSE"]
 dependencies = [
     "alembic>=1.20.0",
     "asyncpg>=0.32.0",
+    "cryptography>=50.0.2",
     "fastapi>=0.153.0",
     "sqlalchemy[asyncio]>=2.1.5",
     "uvicorn>=0.54.0",
@@ -30,6 +31,10 @@ dev = [
 # The URL comes only from FLAKEPILOT_DATABASE_URL (see migrations/env.py).
 [tool.alembic]
 script_location = "flakepilot.interface.composition_root:migrations"
+version_locations = [
+    "flakepilot.identity.infrastructure:migrations",
+    "flakepilot.integrations.infrastructure:migrations",
+]
 
 [tool.ruff.lint]
 extend-select = ["B", "I", "UP"]
@@ -54,7 +59,9 @@ markers = [
 # SPDX "A OR B" expressions are not split by pip-licenses, so they are listed whole and
 # only when every option is permissive. Elected licences for dual-licensed packages:
 #   packaging (Apache-2.0 OR BSD-2-Clause): Apache-2.0
+#   cryptography (Apache-2.0 OR BSD-3-Clause): Apache-2.0
 # "MIT AND PSF-2.0" (greenlet) is conjunctive: both licences apply and both are permissive.
+# "MIT-0" (cffi) is MIT No Attribution.
 # Exceptions apply only to the dev-environment gate, as `--ignore-packages <name>:<version>`
 # (a version change fails the gate and forces re-review). The runtime-environment gate applies none.
 #   pathspec 1.1.1 | MPL-2.0 | dev-only transitive dependency of mypy; never shipped in
@@ -62,7 +69,7 @@ markers = [
 [tool.pip-licenses]
 from = "mixed"
 with-system = true
-allow-only = "Apache-2.0;Apache-2.0 OR BSD-2-Clause;BSD License;BSD-2-Clause;BSD-3-Clause;MIT;MIT AND PSF-2.0;MIT License;PSF-2.0"
+allow-only = "Apache-2.0;Apache-2.0 OR BSD-2-Clause;Apache-2.0 OR BSD-3-Clause;BSD License;BSD-2-Clause;BSD-3-Clause;MIT;MIT AND PSF-2.0;MIT License;MIT-0;PSF-2.0"
 
 # Boundary contracts (ADR-010 TQ-4; DEPENDENCY-RULES §1, §3.1, §5).
 [tool.importlinter]
@@ -116,6 +123,12 @@ name = "Only infrastructure layers and the composition root import SQLAlchemy or
 type = "protected"
 protected_modules = ["sqlalchemy", "alembic"]
 allowed_importers = ["flakepilot.*.infrastructure", "flakepilot.interface.composition_root"]
+
+[[tool.importlinter.contracts]]
+name = "Only integration adapters use cryptography"
+type = "protected"
+protected_modules = ["cryptography"]
+allowed_importers = ["flakepilot.integrations.infrastructure"]
 
 # With the domain, application and shared-kernel bans, only infrastructure may import asyncpg.
 [[tool.importlinter.contracts]]

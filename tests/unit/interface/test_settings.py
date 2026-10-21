@@ -1,3 +1,4 @@
+import base64
 import os
 import subprocess
 import sys
@@ -106,3 +107,65 @@ def test_entry_point_fails_fast_on_invalid_settings(
     assert "80s3cret" not in result.stderr
     assert not any(part in result.stderr for part in DSN_PARTS)
     assert "Traceback" not in result.stderr
+
+
+GITHUB = {
+    "FLAKEPILOT_DATABASE_URL": DSN,
+    "FLAKEPILOT_PUBLIC_ORIGIN": "https://FlakePilot.Example:8443/",
+    "FLAKEPILOT_GITHUB_CLIENT_ID": "Iv1.abc123",
+    "FLAKEPILOT_GITHUB_CLIENT_SECRET": "gh-secret-SENTINEL-9",
+    "FLAKEPILOT_SECRET_KEY": base64.b64encode(b"k" * 32).decode(),
+}
+
+
+def test_sign_in_settings_are_read_and_never_revealed() -> None:
+    settings = Settings.from_environ(GITHUB)
+    assert settings.public_origin == "https://flakepilot.example:8443"
+    assert settings.github_app is not None
+    assert settings.github_app.client_id == "Iv1.abc123"
+    assert settings.github_app.client_secret.reveal() == "gh-secret-SENTINEL-9"
+    assert settings.secure_cookies
+    assert "SENTINEL" not in repr(settings) and "a2tr" not in repr(settings)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"FLAKEPILOT_GITHUB_CLIENT_SECRET": ""}, "FLAKEPILOT_GITHUB_CLIENT_SECRET is"),
+        ({"FLAKEPILOT_GITHUB_CLIENT_ID": ""}, "FLAKEPILOT_GITHUB_CLIENT_ID is"),
+        ({"FLAKEPILOT_PUBLIC_ORIGIN": ""}, "FLAKEPILOT_PUBLIC_ORIGIN is required"),
+        ({"FLAKEPILOT_GITHUB_CLIENT_ID": "id with spaces"}, "not a valid client ID"),
+        ({"FLAKEPILOT_PUBLIC_ORIGIN": "http://fp.example"}, "must use https"),
+        ({"FLAKEPILOT_PUBLIC_ORIGIN": "https://fp.example/app"}, "only scheme"),
+        ({"FLAKEPILOT_PUBLIC_ORIGIN": "https://u:p@fp.example"}, "only scheme"),
+        ({"FLAKEPILOT_PUBLIC_ORIGIN": "ftp://fp.example"}, "http(s) origin"),
+        ({"FLAKEPILOT_ALLOW_INSECURE_COOKIES": "yes"}, "must be true or false"),
+        ({"FLAKEPILOT_SECRET_KEY": "not base64!"}, "not valid base64"),
+        ({"FLAKEPILOT_SECRET_KEY": base64.b64encode(b"short").decode()}, "32 bytes"),
+    ],
+)
+def test_invalid_sign_in_settings_fail_closed(
+    overrides: dict[str, str], message: str
+) -> None:
+    with pytest.raises(SettingsError) as excinfo:
+        Settings.from_environ({**GITHUB, **overrides})
+    assert message in str(excinfo.value)
+    assert "SENTINEL" not in str(excinfo.value)
+    assert excinfo.value.__cause__ is None
+
+
+def test_plain_http_is_only_allowed_with_insecure_cookies() -> None:
+    settings = Settings.from_environ(
+        {
+            **GITHUB,
+            "FLAKEPILOT_PUBLIC_ORIGIN": "http://localhost:8000",
+            "FLAKEPILOT_ALLOW_INSECURE_COOKIES": "true",
+        }
+    )
+    assert settings.public_origin == "http://localhost:8000"
+    assert not settings.secure_cookies
+
+
+def test_sign_in_is_off_without_github_settings() -> None:
+    settings = Settings.from_environ({"FLAKEPILOT_DATABASE_URL": DSN})
+    assert settings.github_app is None and settings.secret_key is None

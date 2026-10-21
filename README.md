@@ -20,9 +20,17 @@ Settings come from environment variables only (see [`.env.example`](.env.example
 
 Database timeouts are constants in `src/flakepilot/interface/composition_root/database.py` (local-development defaults: 30s per statement, 60s idle in a transaction, 5s to connect or get a pooled connection, 2s for readiness). Pooled connections are pinged on checkout, so connections dropped by the server are replaced transparently.
 
-Errors are JSON `{"error": {"code", "message", "request_id"}}` with stable codes (`unauthenticated`, `forbidden`, `not_found`, `method_not_allowed`, `validation_error`, `http_error`, `internal_error`); the request id is also in the `X-Request-ID` header. API conventions and deferred decisions (idempotency, pagination): `src/flakepilot/interface/http/__init__.py`.
+Sign-in uses the GitHub App (`GET /auth/github/login`, `GET /auth/github/callback`, `POST /auth/logout`; ADR-011). It is enabled only when `FLAKEPILOT_PUBLIC_ORIGIN`, `FLAKEPILOT_GITHUB_CLIENT_ID` and `FLAKEPILOT_GITHUB_CLIENT_SECRET` are set; otherwise those endpoints answer 503 `auth_not_configured`. Session cookies are `Secure` with the `__Host-` prefix; for local plain-HTTP development only, set `FLAKEPILOT_ALLOW_INSECURE_COOKIES=true` (never in production). `FLAKEPILOT_SECRET_KEY` (32 bytes, base64) is the key for the encrypted secret store.
 
-Migrations are an explicit step, never run at startup. They read `FLAKEPILOT_DATABASE_URL`:
+Signing in grants nothing by itself. An operator creates the first org and its org admin (after migrations); it prints only the new org ID and is not yet audited (audit is deferred):
+
+```sh
+uv run python -m flakepilot.interface.composition_root bootstrap-org --name "Acme" --admin-github-id 12345 --admin-login octocat
+```
+
+Errors are JSON `{"error": {"code", "message", "request_id"}}` with stable codes (`unauthenticated`, `forbidden`, `not_found`, `method_not_allowed`, `validation_error`, `http_error`, `internal_error`, `auth_not_configured`, `auth_provider_unavailable`); the request id is also in the `X-Request-ID` header. API conventions and deferred decisions (idempotency, pagination): `src/flakepilot/interface/http/__init__.py`.
+
+Migrations are an explicit step, never run at startup. They read `FLAKEPILOT_DATABASE_URL`; each context keeps its revisions in its own `infrastructure/migrations` directory and its tables in its own schema (`iam`, `int_secrets`):
 
 ```sh
 uv run alembic upgrade head

@@ -7,43 +7,19 @@ import socket
 import subprocess
 import sys
 import time
-import uuid
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 from sqlalchemy import exc, text
-from sqlalchemy.engine import URL, make_url
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
-from support import request
+from sqlalchemy.engine import make_url
+from sqlalchemy.ext.asyncio import AsyncEngine
+from support import admin_execute, request
 
 from flakepilot.interface.composition_root import Secret, Settings, create_app
 from flakepilot.interface.composition_root.database import create_engine, transaction
 
 pytestmark = pytest.mark.integration
 ROOT = Path(__file__).resolve().parents[2]
-
-
-async def _admin(url: URL, statement: str) -> None:
-    engine = create_async_engine(
-        url.set(drivername="postgresql+asyncpg"), isolation_level="AUTOCOMMIT"
-    )
-    try:
-        async with engine.connect() as connection:
-            await connection.execute(text(statement))
-    finally:
-        await engine.dispose()
-
-
-@pytest.fixture
-def database_url() -> Iterator[str]:
-    admin = make_url(os.environ["FLAKEPILOT_TEST_DATABASE_URL"])
-    name = f"flakepilot_test_{uuid.uuid4().hex[:12]}"
-    asyncio.run(_admin(admin, f'CREATE DATABASE "{name}"'))
-    try:
-        yield admin.set(database=name).render_as_string(hide_password=False)
-    finally:
-        asyncio.run(_admin(admin, f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
 
 
 def _leaks(url: str) -> list[str]:
@@ -252,7 +228,7 @@ def test_pre_ping_replaces_a_connection_the_server_dropped(
                 pid = (
                     await session.execute(text("SELECT pg_backend_pid()"))
                 ).scalar_one()
-            await _admin(make_url(database_url), f"SELECT pg_terminate_backend({pid})")
+            await admin_execute(database_url, f"SELECT pg_terminate_backend({pid})")
             await asyncio.sleep(0.2)
             try:
                 async with transaction(engine) as session:
