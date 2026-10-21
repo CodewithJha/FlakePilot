@@ -34,6 +34,7 @@ script_location = "flakepilot.interface.composition_root:migrations"
 version_locations = [
     "flakepilot.identity.infrastructure:migrations",
     "flakepilot.integrations.infrastructure:migrations",
+    "flakepilot.test_intelligence.infrastructure:migrations",
 ]
 
 [tool.ruff.lint]

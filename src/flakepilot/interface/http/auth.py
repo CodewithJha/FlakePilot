@@ -96,7 +96,7 @@ def _clear_cookie(response: Response, config: AuthConfig, name: str) -> None:
     )
 
 
-def _origin() -> Origin:
+def request_origin() -> Origin:
     """Audit origin: the HTTP channel and this request's ID (set by the middleware)."""
     request_id = request_id_var.get()
     if request_id is None:
@@ -175,7 +175,7 @@ async def github_callback(
             code_verifier=verifier,
             error=error,
             previous_session=request.cookies.get(config.session_cookie),
-            origin=_origin(),
+            origin=request_origin(),
         )
     except SignInFailed:
         body = error_body(UNAUTHENTICATED, "Sign-in failed", request_id_var.get())
@@ -198,7 +198,7 @@ async def logout(
 ) -> Response:
     config = _config(request)
     await _iam(request).sign_out(
-        request.cookies[config.session_cookie], origin=_origin()
+        request.cookies[config.session_cookie], origin=request_origin()
     )
     response = Response(status_code=204)
     _clear_cookie(response, config, config.session_cookie)

@@ -2,6 +2,7 @@
 throwaway PostgreSQL databases for integration tests."""
 
 import asyncio
+import hashlib
 import json
 import os
 import subprocess
@@ -18,6 +19,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from starlette.types import Message
 
+from flakepilot.integrations.application.ports import ArtifactRef, ArtifactStoreError
 from flakepilot.interface.composition_root import Secret, Settings
 
 FAKE_PASSWORD = "Zx9-fake-pw-7Qk"
@@ -168,6 +170,35 @@ class FakeEngine:
 
     def as_engine(self) -> AsyncEngine:
         return cast(AsyncEngine, self)
+
+
+class InMemoryArtifactStore:
+    """The artifact port's test fake: content-addressed, immutable, hash-checked."""
+
+    def __init__(self) -> None:
+        self.objects: dict[str, bytes] = {}
+
+    async def put(
+        self, *, owner: str, org_id: str, repo_id: str, data: bytes
+    ) -> ArtifactRef:
+        try:
+            canonical = is_uuid(org_id) and is_uuid(repo_id) and owner.isalpha()
+        except ValueError:
+            canonical = False
+        if not canonical:
+            raise ArtifactStoreError("invalid_request")
+        digest = hashlib.sha256(data).hexdigest()
+        key = f"{owner}/{org_id}/{repo_id}/sha256/{digest}"
+        self.objects.setdefault(key, data)
+        return ArtifactRef(key, digest, len(data))
+
+    async def get(self, ref: ArtifactRef) -> bytes:
+        if ref.key not in self.objects:
+            raise ArtifactStoreError("not_found")
+        data = self.objects[ref.key]
+        if hashlib.sha256(data).hexdigest() != ref.sha256 or len(data) != ref.size:
+            raise ArtifactStoreError("integrity")
+        return data
 
 
 class FakeEngineFactory:

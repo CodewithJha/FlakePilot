@@ -5,6 +5,7 @@ from flakepilot.identity.infrastructure.tables import metadata as iam_metadata
 from flakepilot.integrations.infrastructure.secret_store import (
     metadata as secret_store_metadata,
 )
+from flakepilot.test_intelligence.infrastructure.tables import metadata as ti_metadata
 
 SRC = Path(__file__).resolve().parents[2] / "src" / "flakepilot"
 
@@ -60,4 +61,28 @@ def test_outbound_http_lives_only_in_integration_adapters() -> None:
 
 
 def test_every_context_uses_the_same_constraint_naming_convention() -> None:
-    assert iam_metadata.naming_convention == secret_store_metadata.naming_convention
+    assert (
+        iam_metadata.naming_convention
+        == secret_store_metadata.naming_convention
+        == ti_metadata.naming_convention
+    )
+
+
+def test_xml_parsing_lives_only_in_integration_adapters() -> None:
+    """Untrusted XML is parsed only by the hardened INT report adapter (ADR-009)."""
+    allowed = SRC / "integrations" / "infrastructure"
+    imports = [
+        f"{path.relative_to(SRC)}:{node.lineno}"
+        for path, tree in _modules(SRC)
+        if allowed not in path.parents
+        for node in ast.walk(tree)
+        if (
+            isinstance(node, ast.Import)
+            and any(a.name.split(".")[0] == "xml" for a in node.names)
+        )
+        or (
+            isinstance(node, ast.ImportFrom)
+            and (node.module or "").split(".")[0] == "xml"
+        )
+    ]
+    assert imports == []

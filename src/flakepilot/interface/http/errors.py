@@ -31,13 +31,19 @@ from flakepilot.interface.http.request_context import (
     AUTH_PROVIDER_UNAVAILABLE,
     FORBIDDEN,
     HTTP_ERROR,
+    IDEMPOTENCY_CONFLICT,
+    INGESTION_NOT_CONFIGURED,
+    INVALID_REPORT,
     METHOD_NOT_ALLOWED,
     NOT_FOUND,
+    PAYLOAD_TOO_LARGE,
     UNAUTHENTICATED,
+    UNSUPPORTED_MEDIA_TYPE,
     VALIDATION_ERROR,
     error_body,
     request_id_var,
 )
+from flakepilot.test_intelligence.application import ingestion
 
 
 class Unauthenticated(Exception):
@@ -57,6 +63,12 @@ _ACCESS_ERRORS: dict[type[Exception], tuple[int, str]] = {
     ResourceNotFound: (404, NOT_FOUND),
     AuthNotConfigured: (503, AUTH_NOT_CONFIGURED),
     AuthProviderUnavailable: (503, AUTH_PROVIDER_UNAVAILABLE),
+    ingestion.IngestionNotConfigured: (503, INGESTION_NOT_CONFIGURED),
+}
+_UPLOAD_REJECTIONS = {
+    ingestion.TOO_LARGE: (413, PAYLOAD_TOO_LARGE),
+    ingestion.UNSUPPORTED_MEDIA_TYPE: (415, UNSUPPORTED_MEDIA_TYPE),
+    ingestion.IDEMPOTENCY_CONFLICT: (409, IDEMPOTENCY_CONFLICT),
 }
 
 
@@ -105,8 +117,24 @@ async def _validation_error(request: Request, exc: Exception) -> JSONResponse:
     return JSONResponse(body, 422)
 
 
+async def _upload_rejected(request: Request, exc: Exception) -> JSONResponse:
+    """Reasons are fixed codes; submitted values (headers, report content) never appear."""
+    assert isinstance(exc, ingestion.UploadRejected)
+    request_id = request_id_var.get()
+    if exc.reason == ingestion.INVALID_METADATA:
+        body = error_body(VALIDATION_ERROR, "Invalid upload metadata", request_id)
+        body["error"]["fields"] = [{"loc": ["header", exc.header], "type": "invalid"}]
+        return JSONResponse(body, 422)
+    status, code = _UPLOAD_REJECTIONS.get(exc.reason, (422, INVALID_REPORT))
+    body = error_body(code, HTTPStatus(status).phrase, request_id)
+    if code == INVALID_REPORT:
+        body["error"]["reason"] = exc.reason
+    return JSONResponse(body, status)
+
+
 def register_error_handlers(app: FastAPI) -> None:
     app.add_exception_handler(HTTPException, _http_error)
     app.add_exception_handler(RequestValidationError, _validation_error)
+    app.add_exception_handler(ingestion.UploadRejected, _upload_rejected)
     for error in _ACCESS_ERRORS:
         app.add_exception_handler(error, _access_error)

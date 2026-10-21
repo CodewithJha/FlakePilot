@@ -17,7 +17,9 @@ from flakepilot.identity.application.iam import (
     UnitOfWork,
 )
 from flakepilot.identity.infrastructure.store import SqlIamStore
+from flakepilot.integrations.infrastructure.artifact_store import LocalFsArtifactStore
 from flakepilot.integrations.infrastructure.github import GitHubIdentityProvider
+from flakepilot.integrations.infrastructure.junit import JUnitParser
 from flakepilot.interface.composition_root.database import (
     CONNECT_TIMEOUT,
     EngineFactory,
@@ -34,11 +36,17 @@ from flakepilot.interface.composition_root.settings import (
     Settings,
     SettingsError,
 )
-from flakepilot.interface.http import auth, errors, health
+from flakepilot.interface.http import auth, errors, health, ingestion
 from flakepilot.interface.http.request_context import (
     RequestContextMiddleware,
     request_id_var,
 )
+from flakepilot.test_intelligence.application.ingestion import Ingestion
+from flakepilot.test_intelligence.application.store import TiStore
+from flakepilot.test_intelligence.application.store import (
+    UnitOfWork as TiUnitOfWork,
+)
+from flakepilot.test_intelligence.infrastructure.store import SqlTiStore
 
 __all__ = ["GitHubApp", "Secret", "Settings", "SettingsError", "create_app"]
 
@@ -108,6 +116,15 @@ def iam_unit_of_work(engine: AsyncEngine) -> UnitOfWork:
     return unit_of_work
 
 
+def ti_unit_of_work(engine: AsyncEngine) -> TiUnitOfWork:
+    @asynccontextmanager
+    async def unit_of_work() -> AsyncIterator[TiStore]:
+        async with transaction(engine) as session:
+            yield SqlTiStore(session)
+
+    return unit_of_work
+
+
 def create_app(
     settings: Settings,
     engine_factory: EngineFactory = create_engine,
@@ -123,6 +140,11 @@ def create_app(
     """
     configure_logging(settings.log_level)
     identity_provider = identity_provider_factory(settings)
+    artifacts = (
+        LocalFsArtifactStore(settings.artifact_dir)
+        if settings.artifact_dir is not None
+        else None
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -139,6 +161,11 @@ def create_app(
             raise
         app.state.readiness_probe = ReadinessCheck(engine)
         app.state.iam = Iam(iam_unit_of_work(engine), identity_provider)
+        app.state.ingestion = (
+            Ingestion(ti_unit_of_work(engine), artifacts, JUnitParser())
+            if artifacts is not None
+            else None
+        )
         app.state.ready = True
         try:
             yield
@@ -166,4 +193,5 @@ def create_app(
     register_database_error_handler(app)
     app.include_router(health.router)
     app.include_router(auth.router)
+    app.include_router(ingestion.router)
     return app

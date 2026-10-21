@@ -2,9 +2,11 @@
 
 import base64
 import ipaddress
+import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from urllib.parse import urlsplit
 
 LOG_LEVELS = ("CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG")
@@ -49,6 +51,8 @@ class Settings:
     secure_cookies: bool = True
     # 32-byte key for the encrypted secret store (ADR-009), base64; not wired yet.
     secret_key: Secret | None = None
+    # Artifact storage root (ADR-013). Ingestion answers 503 while it is unset.
+    artifact_dir: Path | None = None
 
     @classmethod
     def from_environ(cls, environ: Mapping[str, str]) -> "Settings":
@@ -108,6 +112,7 @@ class Settings:
                 "FLAKEPILOT_SECRET_KEY must be 32 bytes, base64-encoded"
             )
 
+        artifact_dir = environ.get("FLAKEPILOT_ARTIFACT_DIR") or None
         return cls(
             Secret(database_url),
             log_level=log_level,
@@ -117,7 +122,21 @@ class Settings:
             github_app=github_app,
             secure_cookies=secure_cookies,
             secret_key=Secret(secret_key) if secret_key else None,
+            artifact_dir=_artifact_dir(artifact_dir) if artifact_dir else None,
         )
+
+
+def _artifact_dir(value: str) -> Path:
+    path = Path(value)
+    if not (
+        path.is_absolute()
+        and path.is_dir()
+        and os.access(path, os.R_OK | os.W_OK | os.X_OK)
+    ):
+        raise SettingsError(
+            "FLAKEPILOT_ARTIFACT_DIR must be an existing, writable absolute directory"
+        )
+    return path
 
 
 def _origin(value: str, secure_cookies: bool) -> str:

@@ -28,9 +28,11 @@ Signing in grants nothing by itself. An operator creates the first org and its o
 uv run python -m flakepilot.interface.composition_root bootstrap-org --name "Acme" --admin-github-id 12345 --admin-login octocat
 ```
 
-Errors are JSON `{"error": {"code", "message", "request_id"}}` with stable codes (`unauthenticated`, `forbidden`, `not_found`, `method_not_allowed`, `validation_error`, `http_error`, `internal_error`, `auth_not_configured`, `auth_provider_unavailable`); the request id is also in the `X-Request-ID` header. API conventions and deferred decisions (idempotency, pagination): `src/flakepilot/interface/http/__init__.py`.
+CI uploads JUnit XML with a CI upload token: `POST /ingest/junit` with `Authorization: Bearer fpi_…`, `Content-Type: application/xml`, the report as the body (10 MiB at most), and the headers `X-FlakePilot-CI-Source`, `-CI-Run-Id`, `-CI-Attempt`, `-Job-Name`, `-Commit-Sha`, `-Ref`, `-Environment`, `-Started-At`, `-Finished-At`. The token decides the org and repo. Answers: 201 accepted, 200 duplicate of an earlier upload with the same idempotency key and content, 409 `idempotency_conflict` for the same key with other content. Raw reports go to `FLAKEPILOT_ARTIFACT_DIR`. Formats, limits and deviations: ADR-013.
 
-Migrations are an explicit step, never run at startup. They read `FLAKEPILOT_DATABASE_URL`; each context keeps its revisions in its own `infrastructure/migrations` directory and its tables in its own schema (`iam`, `int_secrets`):
+Errors are JSON `{"error": {"code", "message", "request_id"}}` with stable codes (`unauthenticated`, `forbidden`, `not_found`, `method_not_allowed`, `validation_error`, `http_error`, `internal_error`, `auth_not_configured`, `auth_provider_unavailable`, `idempotency_conflict`, `payload_too_large`, `unsupported_media_type`, `invalid_report` (with a `reason`), `ingestion_not_configured`); the request id is also in the `X-Request-ID` header. API conventions and deferred decisions (idempotency, pagination): `src/flakepilot/interface/http/__init__.py`.
+
+Migrations are an explicit step, never run at startup. They read `FLAKEPILOT_DATABASE_URL`; each context keeps its revisions in its own `infrastructure/migrations` directory and its tables in its own schema (`iam`, `int_secrets`, `ti`):
 
 ```sh
 uv run alembic upgrade head

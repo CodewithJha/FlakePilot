@@ -2,6 +2,7 @@ import base64
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -169,3 +170,28 @@ def test_plain_http_is_only_allowed_with_insecure_cookies() -> None:
 def test_sign_in_is_off_without_github_settings() -> None:
     settings = Settings.from_environ({"FLAKEPILOT_DATABASE_URL": DSN})
     assert settings.github_app is None and settings.secret_key is None
+
+
+def test_artifact_dir_must_be_an_existing_writable_absolute_directory(
+    tmp_path: Path,
+) -> None:
+    environ = {"FLAKEPILOT_DATABASE_URL": DSN}
+    settings = Settings.from_environ(
+        {**environ, "FLAKEPILOT_ARTIFACT_DIR": str(tmp_path)}
+    )
+    assert settings.artifact_dir == tmp_path
+    assert Settings.from_environ(environ).artifact_dir is None
+    a_file = tmp_path / "file"
+    a_file.write_text("x")
+    read_only = tmp_path / "read-only"
+    read_only.mkdir(mode=0o500)
+    for value in (
+        "relative/dir",
+        str(tmp_path / "missing"),
+        str(a_file),
+        str(read_only),
+    ):
+        with pytest.raises(SettingsError) as excinfo:
+            Settings.from_environ({**environ, "FLAKEPILOT_ARTIFACT_DIR": value})
+        assert "FLAKEPILOT_ARTIFACT_DIR" in str(excinfo.value)
+        assert value not in str(excinfo.value)

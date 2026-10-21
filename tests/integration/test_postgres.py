@@ -268,7 +268,8 @@ def test_migrations_upgrade_and_check_cleanly(database_url: str) -> None:
                 found = await session.execute(
                     text(
                         "SELECT to_regclass('alembic_version'), "
-                        "to_regclass('iam.outbox'), to_regnamespace('int_secrets')"
+                        "to_regclass('iam.outbox'), to_regnamespace('int_secrets'), "
+                        "to_regclass('ti.uploads')"
                     )
                 )
                 return list(found.one())
@@ -289,5 +290,10 @@ def test_migrations_upgrade_and_check_cleanly(database_url: str) -> None:
         assert "No new upgrade operations detected." in check.stdout + check.stderr
     output = "".join(r.stdout + r.stderr for r in runs)
     assert not any(leak in output for leak in _leaks(database_url))
-    assert emptied == ["alembic_version", None, None]
-    assert asyncio.run(schemas()) == ["alembic_version", "iam.outbox", "int_secrets"]
+    assert emptied == ["alembic_version", None, None, None]
+    assert asyncio.run(schemas()) == [
+        "alembic_version",
+        "iam.outbox",
+        "int_secrets",
+        "ti.uploads",
+    ]

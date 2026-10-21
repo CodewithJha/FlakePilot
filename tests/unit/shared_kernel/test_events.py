@@ -35,6 +35,7 @@ def test_envelopes_get_a_fresh_event_id_and_the_schema_version() -> None:
         lambda: Actor(ActorType.CI_TOKEN),
         lambda: Actor(ActorType.OPERATOR_CLI, "someone"),
         lambda: Event("iam.a.b", SYSTEM, CLI, SUBJECT, payload={"Bad": 1}),
+        lambda: Event("iam.a.b", SYSTEM, CLI, SUBJECT, payload={"1st": 1}),
         lambda: Event("iam.a.b", SYSTEM, CLI, SUBJECT, payload={"k": "x" * 101}),
         lambda: Event("iam.a.b", SYSTEM, CLI, SUBJECT, payload={"k": 1.5}),  # type: ignore[dict-item]
         lambda: Event("iam.a.b", SYSTEM, CLI, SUBJECT, payload={"k": b"raw"}),  # type: ignore[dict-item]

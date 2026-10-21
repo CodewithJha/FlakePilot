@@ -44,6 +44,61 @@ class SecretScope:
             raise ValueError("a repo-scoped secret needs its org")
 
 
+@dataclass(frozen=True)
+class ArtifactRef:
+    """A stored object: its key, SHA-256 (hex) and size. Keys are content-addressed."""
+
+    key: str
+    sha256: str
+    size: int
+
+
+class ArtifactStoreError(Exception):
+    """`kind`: `not_found`, `integrity` (content does not match its hash) or
+    `invalid_request`. Never carries content or paths."""
+
+    def __init__(self, kind: str) -> None:
+        super().__init__(kind)
+        self.kind = kind
+
+
+class ArtifactStore(Protocol):
+    """Immutable blob storage (SYSTEM-ARCHITECTURE §4). Objects are never overwritten;
+    the hash is checked on every read; keys are namespaced by owner, org and repo."""
+
+    async def put(
+        self, *, owner: str, org_id: str, repo_id: str, data: bytes
+    ) -> ArtifactRef: ...
+
+    async def get(self, ref: ArtifactRef) -> bytes: ...
+
+
+@dataclass(frozen=True)
+class ParsedTestCase:
+    """One test case from a report. `attempts` are outcomes in order: `passed`,
+    `failed`, `errored` or `skipped`."""
+
+    classname: str
+    name: str
+    attempts: tuple[str, ...]
+
+
+class ReportRejected(Exception):
+    """The report is refused. `reason` is a short machine-readable code; the report's
+    content is never included."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+class ReportParser(Protocol):
+    """CI/report port (SYSTEM-ARCHITECTURE §4): deterministic, bounded parsing of
+    untrusted bytes. Same bytes, same result."""
+
+    def parse(self, data: bytes) -> list[ParsedTestCase]: ...
+
+
 class SecretStore(Protocol):
     """Write-only for domain and application layers: no operation returns a secret value
     (ADR-003 decision 3). Values are resolved only inside INT adapters."""

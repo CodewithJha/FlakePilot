@@ -18,6 +18,7 @@ The ADR index, plus the Stage 1.4 technology decision inventory. ADRs are number
 | [ADR-010](ADR-010-engineering-toolchain-and-quality-gates.md) | Engineering toolchain, repository conventions, and CI quality gates | Accepted |
 | [ADR-011](ADR-011-authentication-sessions-and-tokens.md) | Authentication sessions, CI upload tokens, and access-check details | Accepted |
 | [ADR-012](ADR-012-event-envelope-and-outbox.md) | Event envelope, per-context outbox, and IAM event names | Accepted |
+| [ADR-013](ADR-013-stage-4-ingestion-scope-and-deviations.md) | Stage 4 ingestion scope and deviations | Accepted |
 
 ## Stage 1.4 decision inventory (2026-10-20)
 

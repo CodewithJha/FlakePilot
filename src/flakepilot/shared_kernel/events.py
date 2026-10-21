@@ -14,7 +14,7 @@ from enum import StrEnum
 
 SCHEMA_VERSION = 1
 _NAME = re.compile(r"[a-z]+(?:\.[a-z_]+){2}")  # <context>.<entity>.<verb>
-_KEY = re.compile(r"[a-z_]{1,40}")
+_KEY = re.compile(r"[a-z][a-z0-9_]{0,39}")
 _MAX_TEXT = 100
 
 PayloadValue = str | int | bool | None
