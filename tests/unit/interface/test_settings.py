@@ -259,3 +259,31 @@ def test_worker_limits_default_and_reject_out_of_range() -> None:
         assert name in str(excinfo.value)
         if not value.isdigit():
             assert value not in str(excinfo.value)
+
+
+def test_execution_defaults_closed_and_evaluation_needs_a_digest() -> None:
+    environ = {"FLAKEPILOT_DATABASE_URL": DSN}
+    settings = Settings.from_environ(environ)
+    assert settings.execution_mode == "closed"
+    assert settings.execution_image is None
+    image = "ghcr.io/example/reproduce@sha256:" + ("ab" * 32)
+    evaluation = Settings.from_environ(
+        {
+            **environ,
+            "FLAKEPILOT_EXECUTION_MODE": "evaluation",
+            "FLAKEPILOT_EXECUTION_IMAGE": image,
+        }
+    )
+    assert evaluation.execution_mode == "evaluation"
+    assert evaluation.execution_image == image
+    for name, value in (
+        ("FLAKEPILOT_EXECUTION_MODE", "host"),
+        ("FLAKEPILOT_EXECUTION_IMAGE", "python:latest"),
+    ):
+        with pytest.raises(SettingsError) as excinfo:
+            Settings.from_environ({**environ, name: value})
+        assert name in str(excinfo.value)
+        assert value not in str(excinfo.value)
+    with pytest.raises(SettingsError) as excinfo:
+        Settings.from_environ({**environ, "FLAKEPILOT_EXECUTION_MODE": "evaluation"})
+    assert "FLAKEPILOT_EXECUTION_IMAGE" in str(excinfo.value)

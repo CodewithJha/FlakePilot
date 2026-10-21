@@ -9,6 +9,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from flakepilot.integrations.infrastructure.artifact_store import root_problem
+from flakepilot.integrations.infrastructure.sandbox import image_ok
 
 LOG_LEVELS = ("CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG")
 
@@ -58,6 +59,13 @@ class Settings:
     worker_poll_seconds: int = 2
     worker_batch_size: int = 10
     worker_lease_seconds: int = 30
+    # closed: never start a container. evaluation: explicit opt-in, not production.
+    execution_mode: str = "closed"
+    execution_runtime: str = "docker"
+    execution_image: str | None = None
+    execution_wall_seconds: int = 30
+    execution_memory_mb: int = 512
+    execution_pids: int = 64
 
     @classmethod
     def from_environ(cls, environ: Mapping[str, str]) -> "Settings":
@@ -137,6 +145,16 @@ class Settings:
             worker_lease_seconds=_bounded(
                 environ, "FLAKEPILOT_WORKER_LEASE_SECONDS", 30, 5, 3600
             ),
+            execution_mode=_execution_mode(environ),
+            execution_runtime=_execution_runtime(environ),
+            execution_image=_execution_image(environ),
+            execution_wall_seconds=_bounded(
+                environ, "FLAKEPILOT_EXECUTION_WALL_SECONDS", 30, 5, 120
+            ),
+            execution_memory_mb=_bounded(
+                environ, "FLAKEPILOT_EXECUTION_MEMORY_MB", 512, 64, 2048
+            ),
+            execution_pids=_bounded(environ, "FLAKEPILOT_EXECUTION_PIDS", 64, 8, 256),
         )
 
 
@@ -147,6 +165,32 @@ def _bounded(
     if not re.fullmatch(r"[0-9]{1,4}", raw) or not low <= int(raw) <= high:
         raise SettingsError(f"{name} must be an integer from {low} to {high}")
     return int(raw)
+
+
+def _execution_mode(environ: Mapping[str, str]) -> str:
+    mode = environ.get("FLAKEPILOT_EXECUTION_MODE") or "closed"
+    if mode not in ("closed", "evaluation"):
+        raise SettingsError("FLAKEPILOT_EXECUTION_MODE must be closed or evaluation")
+    return mode
+
+
+def _execution_runtime(environ: Mapping[str, str]) -> str:
+    runtime = environ.get("FLAKEPILOT_EXECUTION_RUNTIME") or "docker"
+    if runtime not in ("docker", "podman"):
+        raise SettingsError("FLAKEPILOT_EXECUTION_RUNTIME must be docker or podman")
+    return runtime
+
+
+def _execution_image(environ: Mapping[str, str]) -> str | None:
+    image = environ.get("FLAKEPILOT_EXECUTION_IMAGE") or None
+    mode = environ.get("FLAKEPILOT_EXECUTION_MODE") or "closed"
+    if image is not None and not image_ok(image):
+        raise SettingsError(
+            "FLAKEPILOT_EXECUTION_IMAGE must be a digest-pinned reference"
+        )
+    if mode == "evaluation" and image is None:
+        raise SettingsError("FLAKEPILOT_EXECUTION_IMAGE is required for evaluation")
+    return image
 
 
 def _artifact_dir(value: str) -> Path:
