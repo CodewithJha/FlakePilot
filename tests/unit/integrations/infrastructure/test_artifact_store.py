@@ -13,7 +13,10 @@ from flakepilot.integrations.application.ports import (
     ArtifactStore,
     ArtifactStoreError,
 )
-from flakepilot.integrations.infrastructure.artifact_store import LocalFsArtifactStore
+from flakepilot.integrations.infrastructure.artifact_store import (
+    LocalFsArtifactStore,
+    reconcile,
+)
 
 ORG, REPO, OTHER = (str(uuid.uuid4()) for _ in range(3))
 
@@ -190,3 +193,38 @@ def test_concurrent_puts_of_the_same_bytes_store_one_object(tmp_path: Path) -> N
 def test_the_root_must_be_an_existing_absolute_directory(root: str) -> None:
     with pytest.raises(ValueError):
         LocalFsArtifactStore(Path(root))
+
+
+def test_reconcile_reports_orphans_and_missing_keys_and_deletes_nothing(
+    tmp_path: Path,
+) -> None:
+    store = LocalFsArtifactStore(tmp_path)
+
+    async def scenario() -> ArtifactRef:
+        return await store.put(owner="exec", org_id=ORG, repo_id=REPO, data=b"kept")
+
+    ref = asyncio.run(scenario())
+    stray = tmp_path / "exec" / ORG / REPO / "sha256" / ("ab" * 32)
+    stray.write_bytes(b"orphan")
+    link = tmp_path / "exec" / ORG / REPO / "sha256" / ("cd" * 32)
+    link.symlink_to(stray)
+    temporary = stray.parent / ".tmp-left"
+    temporary.write_bytes(b"temp")
+    before = {
+        path: path.read_bytes()
+        for path in (tmp_path.joinpath(*ref.key.split("/")), stray)
+    }
+
+    orphans, missing = reconcile(tmp_path, frozenset())
+    assert ref.key in orphans
+    assert stray.relative_to(tmp_path).as_posix() in orphans
+    assert link.name not in "".join(orphans)
+    assert missing == ()
+
+    absent = f"exec/{ORG}/{REPO}/sha256/{'ef' * 32}"
+    orphans, missing = reconcile(tmp_path, frozenset({ref.key, absent}))
+    assert ref.key not in orphans
+    assert missing == (absent,)
+    assert before[tmp_path.joinpath(*ref.key.split("/"))] == b"kept"
+    assert stray.read_bytes() == b"orphan"
+    assert temporary.read_bytes() == b"temp"

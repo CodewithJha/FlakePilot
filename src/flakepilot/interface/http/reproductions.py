@@ -8,6 +8,10 @@ returns the same id.
 
 `GET /orgs/{org_id}/reproductions/{execution_id}` returns state and artifact
 names. It does not return artifact bytes.
+
+`GET /orgs/{org_id}/reproductions/{execution_id}/artifacts/{kind}` returns
+bytes only after the same view check, and only for a key owned by that
+execution. `kind` is `result` or `screenshot`.
 """
 
 from datetime import UTC, datetime
@@ -15,7 +19,7 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from flakepilot.execution.application.reproduction import (
@@ -100,3 +104,28 @@ async def read_reproduction(
         access=access, org_id=str(org_id), execution_id=str(execution_id)
     )
     return JSONResponse(_public(record, artifacts))
+
+
+@router.get(
+    "/orgs/{org_id}/reproductions/{execution_id}/artifacts/{kind}",
+    response_model=None,
+)
+async def download_artifact(
+    org_id: UUID,
+    execution_id: UUID,
+    kind: str,
+    request: Request,
+    access: Annotated[OrgAccess, Depends(org_access)],
+) -> Response:
+    kind_name, data = await _service(request).read_artifact(
+        access=access,
+        org_id=str(org_id),
+        execution_id=str(execution_id),
+        kind=kind,
+    )
+    media = "application/json" if kind_name == "result" else "image/png"
+    return Response(
+        content=data,
+        media_type=media,
+        headers={"cache-control": "private, no-store"},
+    )

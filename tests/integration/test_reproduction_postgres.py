@@ -12,7 +12,11 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from flakepilot.execution.application.reproduction import schedule
 from flakepilot.execution.domain.reproduction import finish as terminal
 from flakepilot.execution.infrastructure.store import SqlExecutionStore
-from flakepilot.identity.application.authorization import CodeHostAccess, OrgAccess
+from flakepilot.identity.application.authorization import (
+    CodeHostAccess,
+    OrgAccess,
+    ResourceNotFound,
+)
 from flakepilot.integrations.application.ports import (
     ArtifactRef,
     ArtifactStoreError,
@@ -23,8 +27,12 @@ from flakepilot.integrations.application.ports import (
 from flakepilot.integrations.infrastructure.artifact_store import LocalFsArtifactStore
 from flakepilot.integrations.infrastructure.sandbox import PNG_MAGIC, ClosedSandbox
 from flakepilot.interface.composition_root.database import create_engine, transaction
-from flakepilot.interface.composition_root.reproduction import reproduce
+from flakepilot.interface.composition_root.reproduction import (
+    read_execution_artifact,
+    reproduce,
+)
 from flakepilot.interface.composition_root.scheduling import enqueue_missing
+from flakepilot.interface.composition_root.settings import Secret, Settings
 from flakepilot.orchestration.application.jobs import RetryableJob
 from flakepilot.repository.application.source import new_binding
 from flakepilot.repository.infrastructure.store import SqlRepoDirectory
@@ -734,6 +742,114 @@ def test_a_pass_after_a_committed_cancel_is_discarded(
     assert outcome == "cancelled"
     assert calls == 1
     assert artifacts == 0
+
+
+def test_artifact_bytes_are_readable_only_for_the_owning_org(
+    migrated_database_url: str, tmp_path: Path
+) -> None:
+    selector = "tests.login.TestLogin.test_read"
+
+    async def scenario(engine: AsyncEngine) -> tuple[bytes, str]:
+        host = _Host(SHA)
+        sandbox = _Sandbox(
+            SandboxReport(
+                "finished",
+                "finished",
+                (
+                    SandboxFile(
+                        "result",
+                        b'{"status":"passed","selector":"' + selector.encode() + b'"}',
+                    ),
+                ),
+            )
+        )
+        execution_id = await _schedule(engine, host, selector)
+        root = _root(tmp_path)
+        await reproduce(
+            engine,
+            execution_id,
+            owner="worker-a",
+            now=NOW,
+            lease=timedelta(seconds=30),
+            sandbox=sandbox,
+            host=host,
+            artifacts=LocalFsArtifactStore(root),
+            wall_seconds=5,
+            memory_mb=128,
+            pids=16,
+        )
+        settings = Settings(Secret(migrated_database_url), artifact_dir=root)
+        access = OrgAccess(USER, ORG, org_admin=True)
+        kind, data = await read_execution_artifact(
+            engine,
+            settings,
+            access=access,
+            org_id=ORG,
+            execution_id=execution_id,
+            kind="result",
+        )
+        assert kind == "result"
+        for denied_kind in ("screenshot", "logs"):
+            with pytest.raises(ResourceNotFound):
+                await read_execution_artifact(
+                    engine,
+                    settings,
+                    access=access,
+                    org_id=ORG,
+                    execution_id=execution_id,
+                    kind=denied_kind,
+                )
+        with pytest.raises(ResourceNotFound):
+            await read_execution_artifact(
+                engine,
+                settings,
+                access=OrgAccess(
+                    USER, "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee", org_admin=True
+                ),
+                org_id="eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+                execution_id=execution_id,
+                kind="result",
+            )
+        with pytest.raises(ResourceNotFound):
+            await read_execution_artifact(
+                engine,
+                Settings(Secret(migrated_database_url)),
+                access=access,
+                org_id=ORG,
+                execution_id=execution_id,
+                kind="result",
+            )
+        foreign = await _schedule(engine, host, "tests.login.TestLogin.test_foreign")
+        digest = "ab" * 32
+        key = (
+            "exec/dddddddd-dddd-dddd-dddd-dddddddddddd/"
+            f"ffffffff-ffff-ffff-ffff-ffffffffffff/sha256/{digest}"
+        )
+        blob = root.joinpath(*key.split("/"))
+        blob.parent.mkdir(parents=True, mode=0o700)
+        blob.write_bytes(b"other-tenant")
+        async with transaction(engine) as session:
+            await SqlExecutionStore(session).add_artifact(
+                execution_id=foreign,
+                kind="result",
+                digest=bytes.fromhex(digest),
+                size=12,
+                artifact_key=key,
+            )
+        with pytest.raises(ResourceNotFound):
+            await read_execution_artifact(
+                engine,
+                settings,
+                access=access,
+                org_id=ORG,
+                execution_id=foreign,
+                kind="result",
+            )
+        return data, blob.read_bytes().decode()
+
+    data, foreign = run(migrated_database_url, scenario)
+    assert data == b'{"selector":"tests.login.TestLogin.test_read","status":"passed"}'
+    assert foreign == "other-tenant"
 
 
 class _LiveCancel:

@@ -12,8 +12,10 @@ resolved path must stay under the root, so a key can never traverse out of it.
   already present.
 - Idempotent: the same bytes in the same namespace give the same key and no new object.
   An object whose database transaction later rolls back stays as an orphan; a retry reuses
-  it. Orphans and retention deletion are cleaned up with the retention job (deferred).
-- Not yet: encryption at rest, deletion, scoped read handles (ADR-013).
+  it. `reconcile` reports orphans and missing keys. It does not delete them.
+- Local files are plaintext. A production deployment must put this directory on an
+  encrypted volume, or replace this adapter with encrypted object storage. This process
+  does not encrypt, and it does not choose a retention duration.
 """
 
 import asyncio
@@ -23,6 +25,7 @@ import os
 import re
 import time
 import uuid
+from collections.abc import Collection
 from pathlib import Path
 
 from flakepilot.integrations.application.ports import (
@@ -36,6 +39,7 @@ __all__ = [
     "ArtifactStore",
     "ArtifactStoreError",
     "LocalFsArtifactStore",
+    "reconcile",
     "root_problem",
 ]
 
@@ -53,6 +57,46 @@ def _canonical_uuid(value: str) -> bool:
         return str(uuid.UUID(value)) == value
     except ValueError:
         return False
+
+
+def reconcile(
+    root: Path, known: Collection[str]
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Content-addressed files with no row, and known keys with no regular file.
+
+    Symlinks and temporary files are ignored. Nothing is deleted.
+    """
+    problem = root_problem(root)
+    if problem is not None:
+        raise ValueError(f"the artifact root {problem}")
+    base = root.resolve()
+    present: set[str] = set()
+    seen = 0
+    for directory, dirnames, files in os.walk(base, followlinks=False):
+        dirnames[:] = [
+            name for name in dirnames if not Path(directory, name).is_symlink()
+        ]
+        for name in files:
+            seen += 1
+            if seen > SWEEP_MAX_FILES:
+                break
+            if name.startswith(".tmp-"):
+                continue
+            path = Path(directory, name)
+            if path.is_symlink():
+                continue
+            try:
+                relative = path.resolve().relative_to(base).as_posix()
+            except ValueError:
+                continue
+            if _KEY.fullmatch(relative):
+                present.add(relative)
+        if seen > SWEEP_MAX_FILES:
+            break
+    recorded = set(known)
+    orphans = tuple(sorted(present - recorded))
+    missing = tuple(sorted(key for key in recorded if key not in present))
+    return orphans, missing
 
 
 def root_problem(root: Path) -> str | None:

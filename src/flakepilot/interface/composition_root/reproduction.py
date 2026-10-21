@@ -26,8 +26,9 @@ from flakepilot.execution.application.reproduction import (
     screenshot_ok,
 )
 from flakepilot.execution.infrastructure.store import SqlExecutionStore
-from flakepilot.identity.application.authorization import OrgAccess
+from flakepilot.identity.application.authorization import OrgAccess, ResourceNotFound
 from flakepilot.integrations.infrastructure.artifact_store import (
+    ArtifactRef,
     ArtifactStore,
     ArtifactStoreError,
     LocalFsArtifactStore,
@@ -55,6 +56,8 @@ from flakepilot.shared_kernel.events import Actor, ActorType, Channel, Origin
 
 _logger = logging.getLogger("flakepilot.worker")
 _Evidence = tuple[str, str, bytes, int]
+_ARTIFACT_KINDS = frozenset({"result", "screenshot"})
+_HEX = frozenset("0123456789abcdef")
 
 
 def reproduction_handlers(
@@ -432,6 +435,23 @@ class Reproductions:
                 execution_id=execution_id,
             )
 
+    async def read_artifact(
+        self,
+        *,
+        access: OrgAccess,
+        org_id: str,
+        execution_id: str,
+        kind: str,
+    ) -> tuple[str, bytes]:
+        return await read_execution_artifact(
+            self._engine,
+            self._settings,
+            access=access,
+            org_id=org_id,
+            execution_id=execution_id,
+            kind=kind,
+        )
+
 
 async def request_reproduction(
     engine: AsyncEngine,
@@ -480,6 +500,46 @@ async def request_reproduction(
     if record.state == "scheduled":
         await enqueue_browser_job(engine, record.id, now)
     return record, created
+
+
+async def read_execution_artifact(
+    engine: AsyncEngine,
+    settings: Settings,
+    *,
+    access: OrgAccess,
+    org_id: str,
+    execution_id: str,
+    kind: str,
+) -> tuple[str, bytes]:
+    """Bytes for one artifact of this execution. Another org is not found."""
+    if kind not in _ARTIFACT_KINDS:
+        raise ResourceNotFound
+    async with transaction(engine) as session:
+        record, refs = await inspect(
+            SqlExecutionStore(session),
+            access=access,
+            org_id=org_id,
+            execution_id=execution_id,
+        )
+    match = next((item for item in refs if item.kind == kind), None)
+    if match is None or record.org_id != org_id:
+        raise ResourceNotFound
+    prefix = f"exec/{record.org_id}/{record.repo_id}/sha256/"
+    digest = match.key.removeprefix(prefix)
+    if not (
+        match.key.startswith(prefix)
+        and len(digest) == 64
+        and all(char in _HEX for char in digest)
+    ):
+        raise ResourceNotFound
+    store = _artifacts(settings)
+    if store is None:
+        raise ResourceNotFound
+    try:
+        data = await store.get(ArtifactRef(match.key, digest, match.size))
+    except ArtifactStoreError:
+        raise ResourceNotFound from None
+    return kind, data
 
 
 def _artifacts(settings: Settings) -> LocalFsArtifactStore | None:

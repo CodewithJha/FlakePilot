@@ -91,6 +91,7 @@ def test_only_expected_routes_are_registered() -> None:
         "/ingest/junit",
         "/orgs/{org_id}/reproductions",
         "/orgs/{org_id}/reproductions/{execution_id}",
+        "/orgs/{org_id}/reproductions/{execution_id}/artifacts/{kind}",
     }
     assert [getattr(r, "path", None) for r in app.routes if hasattr(r, "path")] == [
         "/openapi.json"
