@@ -27,7 +27,7 @@ DIAG is the only path to an AI provider. The port, a null adapter, and a determi
 | 2 | **No HTTP route** for policy or assist. Both are application methods | A later interface, with code-host access from `CodeHostAccessVerifier` |
 | 3 | **No evidence bundles.** The citation check uses a caller-supplied ID set. Unknown or absent citations are `unverified`. `contradicted` is not produced | Workflows C and E, when evidence is sealed and can be compared |
 | 4 | **The request row and the outbox rows are written in one transaction after the in-process port call.** `NullAiAssist` and `FakeAiAssist` have no network side effect. A future network adapter must record intent before the call | That adapter, recording intent first |
-| 5 | **The outbox relay is still deferred** ([ADR-006](ADR-006-durable-jobs-in-the-database.md), [ADR-012](ADR-012-event-envelope-and-outbox.md)). `diag.outbox` is not delivered | The relay and AUD |
+| 5 | **`diag.outbox` is delivered to AUD only.** The relay does not run diagnosis as a job and does not call other subscribers ([ADR-006](ADR-006-durable-jobs-in-the-database.md) Stage 6) | Matrix subscribers, if a later stage needs them |
 | 6 | **No raw-output retention deletion job** | The ADR-006 retention job |
 | 7 | **Diagnosis runs in the use case**, not as an ORCH durable stage job | ORCH's diagnosis stage |
 

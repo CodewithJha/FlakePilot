@@ -106,7 +106,7 @@ Rows hold explicit grants only; implications and the org-admin rule are applied 
 
 ### `iam.outbox` (event envelopes, [ADR-012](../adr/ADR-012-event-envelope-and-outbox.md))
 
-Added 2026-10-21 by ADR-012. One row per IAM state change, inserted in the same transaction as the change. The columns are the envelope fields: `event_id` (primary key), `seq` (identity, insertion order), `name`, `schema_version`, `occurred_at`, `org_id`, `repo_id`, `actor_type`, `actor_id`, `channel`, `correlation_id`, `subject_type`, `subject_id`, `before`, `after`, `reason`, `payload` (jsonb), and `published_at` (set by the future relay). Checks cover `actor_type`, `channel`, and "an actor ID exactly for `user` and `ci_token` actors". A partial index on `seq` covers unpublished rows. No foreign keys: events outlive the rows they describe.
+Added 2026-10-21 by ADR-012. One row per IAM state change, inserted in the same transaction as the change. The columns are the envelope fields: `event_id` (primary key), `seq` (identity, insertion order), `name`, `schema_version`, `occurred_at`, `org_id`, `repo_id`, `actor_type`, `actor_id`, `channel`, `correlation_id`, `subject_type`, `subject_id`, `before`, `after`, `reason`, `payload` (jsonb), `published_at` (set by the relay when `aud.events` has the envelope), `attempts`, `last_error`, and `dead_at` (set when the envelope is invalid; the row is kept). Checks cover `actor_type`, `channel`, and "an actor ID exactly for `user` and `ci_token` actors". A partial index on `seq` covers rows that are neither published nor parked. No foreign keys: events outlive the rows they describe.
 
 ## Queries it must support
 

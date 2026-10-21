@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Status | **Accepted** by the project owner, 2026-10-21. Decision B (session lifetimes) is **provisional**. Decision G is accepted in [IAM-DATA-MODEL](../architecture/IAM-DATA-MODEL.md) and the `iam` tables exist. IAM envelopes are written to `iam.outbox` ([ADR-012](ADR-012-event-envelope-and-outbox.md)). The outbox relay and the audit-log table are still deferred. Decision F's encrypted table exists and has no production caller |
+| Status | **Accepted** by the project owner, 2026-10-21. Decision B (session lifetimes) is **provisional**. Decision G is accepted in [IAM-DATA-MODEL](../architecture/IAM-DATA-MODEL.md) and the `iam` tables exist. IAM envelopes are written to `iam.outbox` ([ADR-012](ADR-012-event-envelope-and-outbox.md)). The worker copies them to `aud.events`. There is no audit query. Decision F's encrypted table exists and has no production caller |
 | Related | [PRODUCT-SCOPE §3, §4, D2](../product/PRODUCT-SCOPE.md), [SYSTEM-ARCHITECTURE §7](../architecture/SYSTEM-ARCHITECTURE.md#7-tenancy-authorization-data-ownership-secrets), [ADR-005](ADR-005-system-of-record-database.md), [ADR-007](ADR-007-implementation-stack-and-licensing.md), [ADR-009](ADR-009-initial-provider-adapters.md), [ADR-010](ADR-010-engineering-toolchain-and-quality-gates.md) |
 
 ## Context
@@ -29,7 +29,7 @@
 
 **Later implementation (not still pending review):**
 - G was accepted in [IAM-DATA-MODEL](../architecture/IAM-DATA-MODEL.md). The `iam` tables, sessions, CSRF check, CI upload tokens, and GitHub adapter are implemented.
-- Audit storage: IAM writes the envelope to `iam.outbox` in the same transaction as the change and fails closed ([ADR-012](ADR-012-event-envelope-and-outbox.md)). The relay and the audit-log table are still deferred. The SYSTEM-ARCHITECTURE §5 contract is unchanged.
+- Audit storage: IAM writes the envelope to `iam.outbox` in the same transaction as the change and fails closed ([ADR-012](ADR-012-event-envelope-and-outbox.md)). The worker copies the envelope to `aud.events`. There is no audit query. The SYSTEM-ARCHITECTURE §5 contract is unchanged.
 
 ## Alternatives considered
 
@@ -48,4 +48,4 @@
 
 - **Positive:** sessions and tokens can be revoked immediately and never stored in recoverable form. Denials never reveal resources in other orgs. The original decision added no dependency; `cryptography` arrived later with the unused secret store.
 - **Negative:** one database lookup per authenticated request. A CSRF check is needed on every unsafe method. Synchronous `urllib` calls take a worker thread each.
-- **Follow-ups:** calibrate B. Wire the secret store only together with `int_secrets.outbox`. The outbox relay is still deferred.
+- **Follow-ups:** calibrate B. Wire the secret store only together with `int_secrets.outbox`. Outbox pruning and an authorized audit query are still deferred.

@@ -69,4 +69,13 @@ Requirements for any solution:
 - **Positive:** the only infrastructure is the database. Every durable step, timer, and event is visible and transactional. It works the same in a single-node self-hosted install.
 - **Negative:** job, outbox, and business load share one database. Throughput is bounded by it, which is accepted until measured otherwise. Polling adds some pickup latency (not quantified; it's tuned against the §10 targets).
 - **Reliability:** lease expiry and idempotent steps recover from worker crashes (PRODUCT-SCOPE §10 recovery metric). Sandbox teardown on a control-plane crash still relies on the sandbox port's self-expiry guarantee (ADR-004).
-- **Follow-ups:** decide between an in-house module and a library during implementation design. Re-evaluate this ADR only with measurements.
+- **Follow-ups:** re-evaluate this ADR only with measurements. Stage 6 chose the in-house module (no new dependency).
+
+## Stage 6 implementation
+
+The module is in-house. Two points differ from the wording above; both are recorded here rather than by a new ADR.
+
+1. **The job table is `orch.jobs`, not a shared-kernel table.** The shared kernel cannot hold SQL. ORCH owns the generic mechanism and has no business rules in it. The composition root is the only importer of that store. Other contexts do not enqueue into it yet. Outbox tables stay in their own schemas. The relay lives in the composition root so it can read each outbox without a cross-context infrastructure import.
+2. **The relay delivers to AUD only.** Decision 3 names matrix subscribers plus AUD. No matrix subscriber is registered. Delivery is still at-least-once, and `aud.events` dedupes on `event_id`. `published_at` and the audit insert commit in one transaction. See [DURABLE-JOBS](../operations/DURABLE-JOBS.md).
+
+Polling is implemented. `LISTEN/NOTIFY` is not; decision 9 already makes polling the source of truth. Lease instants are the worker's clock, passed into SQL, so tests advance time without sleeping. No retention or cleanup job is registered. Outbox rows are not pruned.

@@ -9,7 +9,7 @@ Evidence-based investigation and verification of recurring test failures. See [P
 - **No UI.** The API is the only interface.
 - **CI upload tokens can't be issued yet.** The use case exists, but there is no HTTP route or CLI for it.
 - **Classification isn't exposed over HTTP.** It exists only as an application use case (ADR-013).
-- **Parsing is synchronous.** Reports are parsed inside the upload request; there is no job runtime yet.
+- **Parsing is synchronous.** Reports are parsed inside the upload request. A separate worker process runs durable jobs and delivers outbox rows to the audit log. No retention or stage job is registered. See [DURABLE-JOBS](docs/operations/DURABLE-JOBS.md).
 - **No quotas or rate limits.** AI spend is not checked either (ADR-014).
 - **AI assist is off unless an org admin enables it.** The use case exists, the process wires only `NullAiAssist`, and there is no HTTP route. A missing provider answers `unavailable`. See ADR-014.
 - **Artifacts are not encrypted at rest, and never cleaned up.** Raw reports are plain files under `FLAKEPILOT_ARTIFACT_DIR`, and there is no retention job.
@@ -48,6 +48,9 @@ Settings come from environment variables only (see [`.env.example`](.env.example
 | `FLAKEPILOT_ALLOW_INSECURE_COOKIES` | no | `false` | `true` only for local plain-HTTP development: drops `Secure` and the `__Host-` cookie prefix. Never in production |
 | `FLAKEPILOT_SECRET_KEY` | no | — | 32 random bytes, base64, for the encrypted secret store. Validated if set, but **not used yet** |
 | `FLAKEPILOT_ARTIFACT_DIR` | for ingestion | — | Where raw test reports are stored. Must be an existing absolute directory, owned by the service user, not group- or world-writable, and outside the repository. Unset: `POST /ingest/junit` answers 503 `ingestion_not_configured` |
+| `FLAKEPILOT_WORKER_POLL_SECONDS` | no | `2` | Worker poll interval, 1–300. The API process ignores it |
+| `FLAKEPILOT_WORKER_BATCH_SIZE` | no | `10` | Jobs and outbox rows per tick, 1–100 |
+| `FLAKEPILOT_WORKER_LEASE_SECONDS` | no | `30` | Job lease length, 5–3600 |
 
 ### GitHub App sign-in
 
@@ -80,6 +83,12 @@ Sign-in endpoints: `GET /auth/github/login`, `GET /auth/github/callback` and `PO
 uv run python -m flakepilot.interface.composition_root bootstrap-org --name "Acme" --admin-github-id 12345 --admin-login octocat
 ```
 
+The worker is a second process. It does not serve HTTP. Stop it with `SIGINT` or `SIGTERM`; it finishes the batch it has already claimed.
+
+```sh
+uv run python -m flakepilot.interface.composition_root worker
+```
+
 CI uploads JUnit XML with a CI upload token (no issuance route yet, see Status):
 
 - **Request:** `POST /ingest/junit` with `Authorization: Bearer fpi_…`, `Content-Type: application/xml`, and the report as the body (10 MiB at most).
@@ -109,7 +118,7 @@ Errors are JSON `{"error": {"code", "message", "request_id"}}`; the request ID i
 
 API conventions: `src/flakepilot/interface/http/__init__.py`.
 
-Each context keeps its migrations in its own `infrastructure/migrations` directory and its tables in its own schema (`iam`, `int_secrets`, `ti`, `diag`). `uv run alembic check` verifies that the models and migrations match.
+Each context keeps its migrations in its own `infrastructure/migrations` directory and its tables in its own schema (`iam`, `int_secrets`, `ti`, `diag`, `orch`, `aud`). `uv run alembic check` verifies that the models and migrations match.
 
 ## Quality gates
 

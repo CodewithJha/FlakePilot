@@ -210,7 +210,7 @@ The 11 bounded contexts are the 11 domains, using the codes already defined in [
 | Consumes | IAM (authorize). Every event envelope, through the shared kernel |
 | Depends on | IAM |
 | Excludes | Every context's business state. Interpreting payloads. Storage backends (delegated) |
-| Failure boundaries | If the outbox write fails, the originating action aborts. That's the originator's transaction, not an AUD call. Appending is at least once and deduped by event ID. A failed export is retried, and no partial export becomes visible |
+| Failure boundaries | If the outbox write fails, the originating action aborts. That's the originator's transaction, not an AUD call. Appending is at least once and deduped by event ID. A failed export is retried, and no partial export becomes visible. `aud.events` stores the envelope and rejects a second insert of the same event id. No query or export route exists yet |
 
 ---
 

@@ -11,7 +11,7 @@
 - PRODUCT-SCOPE §7 adds **the request origin** to the audit record. Membership, grants, ingestion (CI upload) tokens and secrets must be audited.
 - ADR-011 deferred audit storage "to the first state-changing use case". Stage 3 now has several: sign-in, session rotation, sign-out, CI upload token creation and revocation, and operator org bootstrap.
 - The envelope and the outbox contract are shared-kernel items. DEPENDENCY-RULES §6 requires an ADR to change the shared kernel; this is that ADR.
-- No job runtime exists yet (ADR-006), so nothing can relay outbox rows into an audit log.
+- The relay and `aud.events` now exist (ADR-006 Stage 6). They deliver `iam`, `ti`, and `diag` only. `int_secrets.outbox` is still absent.
 
 ## Decision
 
@@ -19,7 +19,7 @@
 |---|---|---|
 | 1 | Envelope | A pure shared-kernel value type (`flakepilot.shared_kernel.events`): no I/O, no clock, no vendor types. Fields are listed below |
 | 2 | Outbox | **One outbox table per context, in that context's own schema** (ADR-005 decision 2). It is written by the context's store **in the same transaction** as the change, after the change it describes. If the insert fails, the whole change rolls back. The first one is `iam.outbox` |
-| 3 | Relay and audit log | The relay that delivers outbox rows to AUD's append-only audit log arrives **with the ADR-006 job runtime** (deferred). Until then audit is **delayed, never lost** (RELIABILITY-AND-SLOS F-3a). Delivery is at least once, and AUD dedupes by `event_id`. `published_at` is set by the relay |
+| 3 | Relay and audit log | The worker delivers `iam.outbox`, `ti.outbox`, and `diag.outbox` to `aud.events`. Delivery is at least once. AUD dedupes by `event_id`. `published_at` is set in the same transaction as the insert. Invalid envelopes set `dead_at` and stay in the outbox. There is no audit query. Other subscribers are not called. Outbox pruning is still deferred |
 | 4 | Event names | `<context>.<entity>.<verb>`, lowercase. The context prefix is required because BOUNDED-CONTEXTS lists the same unprefixed name under several publishers (for example `integration.config_changed`). IAM's names are listed below |
 | 5 | What events never contain | Secret values, credentials (session IDs, CI upload tokens), **hashes of credentials** (session `id_hash`, `token_hash`), token display prefixes, raw untrusted content, IP addresses, and raw headers. Payloads hold only IDs, enum values, booleans and counts |
 | 6 | Order | `iam.outbox.seq` (an identity column) records insertion order, including within one transaction. How the relay handles commit order across concurrent transactions is a relay design detail |
@@ -74,6 +74,6 @@ The encrypted secret store has no production caller yet. When it gets one, `put`
 
 ## Consequences
 
-- **Positive:** every IAM state change is durably recorded atomically with the change, and fails closed. The relay and audit log can be added later without changing writers.
-- **Negative:** no audit query or export exists until the relay and AUD's log are built. Outbox rows accumulate until then (small; IAM events only).
-- **Follow-ups:** the relay and AUD's audit-log schema (with the ADR-006 job runtime); outbox pruning; the `int_secrets.outbox` when the secret store gets a caller; calibrate retention.
+- **Positive:** every IAM, TI, and diagnosis state change is durably recorded atomically with the change, and fails closed. The relay copies those envelopes to `aud.events` without the writers calling AUD.
+- **Negative:** there is still no audit query or export. Outbox rows are not pruned. A crash before the relay commits delays the audit row; it does not drop it.
+- **Follow-ups:** outbox pruning after AUD (and any later subscriber) has consumed the row; an authorized audit query; `int_secrets.outbox` when the secret store gets a caller; calibrate retention.
