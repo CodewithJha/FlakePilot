@@ -84,6 +84,10 @@ Owner answer to OQ-3: **one trusted org per deployment**.
 - **Negative:** production self-hosters must provide a dedicated execution host. Container isolation carries kernel-sharing risk. Evaluation installs give up host separation.
 - **Follow-ups:** the implementation details above. The Docker-based deployment artifacts and docs come in a later stage.
 
+## Stage 10 feasibility
+
+No dedicated execution host was provisioned. There is no cloud account, no second machine, and no authority to create one. Paid infrastructure is out of scope. The control-plane process was not given a container runtime or a microVM monitor. `/dev/kvm` is not usable by this user, and using it here would still place the hypervisor next to control-plane secrets. The worker no longer selects the container client when execution mode is `evaluation`. The handoff type carries no database URL or GitHub key, and its only adapter refuses the call. The runtime reaper reports `runtime_reaper_unavailable` and removes nothing but expired `fp-` directories. No isolation check was executed. Local artifacts remain plaintext. Untrusted execution stays disabled. See [EXECUTION](../operations/EXECUTION.md).
+
 ## Stage 9 feasibility
 
 Checked again on the control-plane host used for this stage: no `docker`, `podman`, `firecracker`, or `qemu-system-x86_64`, and no runtime socket. `/dev/kvm` is not usable by this user. No runtime was installed, and no isolation suite was executed. The production placement rule in this ADR is unmet. Untrusted execution stays disabled. The operator route records `execution_closed` or, in evaluation, `source_unverified`, and starts nothing. Job leases are renewed while a handler runs. A committed cancel is read again before artifacts are stored. Artifact bytes require the owning org and a matching hash. Local artifact files are plaintext and require an encrypted volume in production. There is no container reaper and no patch proposal. See [EXECUTION](../operations/EXECUTION.md).

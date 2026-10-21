@@ -50,6 +50,10 @@ SYSTEM-ARCHITECTURE §4 defines vendor-neutral ports with required guarantees. A
   - GitHub's permission model needs the R6 mitigations.
 - **Follow-ups:** the implementation details in the last column.
 
+## Stage 10 implementation note
+
+Live GitHub App minting and a live per-user repository ACL remain unverified: no app id or private key is configured, and none was created. Artifact bytes are still plaintext on the local filesystem. An encrypted volume or encrypted object store was not available, so this adapter still does not encrypt and still does not delete content-addressed objects. Evidence acceptance is unchanged and stays ineligible without isolation checks this deployment cannot produce.
+
 ## Stage 9 implementation note
 
 The operator route does not treat a repository binding as a live GitHub ACL. Without a confirmed read it stores `source_unverified` and does not mint a token or fetch an archive. Installation minting remains `contents:read` for one repository, tested with a fake transport and an ephemeral key. No live GitHub credential was available, so minting against GitHub is unverified. The static contents bearer is still not sent. There is no write tier. Local artifact storage is plaintext; `reconcile` reports orphans and does not delete them. Encryption at rest is an operator requirement (encrypted volume or encrypted object storage), not something this adapter performs.
