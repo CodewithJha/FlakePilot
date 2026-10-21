@@ -18,7 +18,11 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from flakepilot.execution.application.reproduction import EvidenceRef, Execution
+from flakepilot.execution.application.reproduction import (
+    EvidenceRef,
+    Execution,
+    evidence_of,
+)
 from flakepilot.identity.application.authorization import OrgAccess
 from flakepilot.interface.composition_root.reproduction import Reproductions
 from flakepilot.interface.http.auth import org_access, request_origin
@@ -43,12 +47,15 @@ def _service(request: Request) -> Reproductions:
 
 
 def _public(record: Execution, artifacts: tuple[EvidenceRef, ...]) -> dict[str, object]:
+    verdict = evidence_of(record)
     return {
         "id": record.id,
         "state": record.state,
         "outcome": record.outcome,
         "reason": record.reason,
         "evidence_partial": record.evidence_partial,
+        "evidence_status": verdict.status,
+        "evidence_reason": verdict.reason,
         "selector": record.selector,
         "sha": record.sha,
         "artifacts": [

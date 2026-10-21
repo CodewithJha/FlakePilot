@@ -10,6 +10,12 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Protocol
 
+from flakepilot.execution.domain.evidence import (
+    EvidenceVerdict,
+    IsolationChecks,
+    accept,
+    unavailable,
+)
 from flakepilot.execution.domain.reproduction import (
     JOB_TYPE,
     Decision,
@@ -40,15 +46,22 @@ __all__ = [
     "JOB_TYPE",
     "Decision",
     "EvidenceRef",
+    "EvidenceVerdict",
     "Execution",
     "ExecutionStore",
     "InvalidExecution",
+    "IsolationChecks",
+    "IsolationProvider",
+    "UnavailableIsolation",
+    "accept",
     "classify",
+    "evidence_of",
     "inspect",
     "record_closed",
     "schedule",
     "schedule_registered",
     "screenshot_ok",
+    "unavailable",
 ]
 
 _TOKEN = re.compile(r"[A-Za-z0-9._:-]{1,100}")
@@ -61,6 +74,19 @@ class EvidenceRef:
     kind: str
     key: str
     size: int
+
+
+class IsolationProvider(Protocol):
+    """Host facts for one execution. Production has no implementation that passes."""
+
+    def current(self) -> IsolationChecks: ...
+
+
+class UnavailableIsolation:
+    """The only production attestation. Every required check is false."""
+
+    def current(self) -> IsolationChecks:
+        return unavailable()
 
 
 class InvalidExecution(ValueError):
@@ -110,6 +136,29 @@ class Execution:
         )
         self.lease_expires_at = row["lease_expires_at"]
         self.correlation_id = str(row["correlation_id"])
+
+
+def evidence_of(
+    record: Execution,
+    provider: IsolationProvider | None = None,
+    *,
+    superseded: bool = False,
+) -> EvidenceVerdict:
+    """Eligibility of one row. Omitted provider means the checks were not run."""
+    checks = (
+        UnavailableIsolation().current() if provider is None else provider.current()
+    )
+    return accept(
+        outcome=record.outcome,
+        state=record.state,
+        reason=record.reason,
+        sha=record.sha,
+        org_id=record.org_id,
+        repo_id=record.repo_id,
+        evidence_partial=record.evidence_partial,
+        superseded=superseded,
+        checks=checks,
+    )
 
 
 class ExecutionStore(Protocol):

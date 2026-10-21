@@ -209,6 +209,8 @@ def test_closed_mode_records_one_row_and_does_not_fetch_or_enqueue(
         assert created == 201
         assert first["reason"] == "execution_closed"
         assert first["outcome"] == "inconclusive"
+        assert first["evidence_status"] == "ineligible"
+        assert first["evidence_reason"] == "execution_closed"
         assert first["artifacts"] == []
         assert again == 200 and second["id"] == first["id"]
         assert status == 200 and viewed["id"] == first["id"]
