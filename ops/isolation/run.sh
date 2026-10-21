@@ -41,7 +41,26 @@ docker version || true
 docker info --format 'Server={{.ServerVersion}} Cgroup={{.CgroupVersion}} Driver={{.CgroupDriver}} Security={{json .SecurityOptions}}' || true
 
 echo "=== image ==="
-docker pull "$IMAGE"
+set +e
+timeout 90 docker pull -q "$IMAGE"
+pull_code=$?
+set -e
+echo "pull_exit=$pull_code"
+if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+  echo "HARNESS image not present"
+  echo "CHECK 1 outbound_network NOT_EXECUTED image_pull_did_not_finish"
+  echo "CHECK 2 metadata_endpoints NOT_EXECUTED image_pull_did_not_finish"
+  echo "CHECK 3 host_mounts NOT_EXECUTED image_pull_did_not_finish"
+  echo "CHECK 4 credentials NOT_EXECUTED image_pull_did_not_finish"
+  echo "CHECK 5 privileges NOT_EXECUTED image_pull_did_not_finish"
+  echo "CHECK 6 limits NOT_EXECUTED image_pull_did_not_finish"
+  echo "CHECK 7 outputs NOT_EXECUTED image_pull_did_not_finish"
+  echo "CHECK 8 cleanup NOT_EXECUTED image_pull_did_not_finish"
+  echo "CHECK 9 stale_worker NOT_EXECUTED image_pull_did_not_finish"
+  echo "CHECK 10 artifact_scope NOT_EXECUTED image_pull_did_not_finish"
+  echo "HARNESS complete fail=1"
+  exit 1
+fi
 digests=$(docker image inspect --format '{{json .RepoDigests}}' "$IMAGE")
 identity=$(docker image inspect --format '{{.Id}} {{.Os}}/{{.Architecture}}' "$IMAGE")
 echo "REPO_DIGESTS $digests"
@@ -102,7 +121,7 @@ run_probe() {
   local tmpfs=$5
   shift 5
   docker rm -f "$name" >/dev/null 2>&1 || true
-  docker run -i --name "$name" \
+  timeout 30 docker run -i --name "$name" \
     "${base_args[@]}" \
     --pids-limit="$pids" \
     --memory="$memory" \
@@ -224,7 +243,7 @@ echo "cpu=$cpu_status"
 echo "=== check 6 memory ==="
 swap_args=()
 set +e
-docker run --rm --name fp-probe-swap --pull=never --network=none --cap-drop=ALL \
+timeout 20 docker run --rm --name fp-probe-swap --pull=never --network=none --cap-drop=ALL \
   --security-opt=no-new-privileges --user=65534:65534 \
   --memory=64m --memory-swap=64m --pids-limit=32 \
   "$IMAGE" python -c 'print("swap-ok")' >/tmp/fp-swap.out 2>/tmp/fp-swap.err
@@ -239,7 +258,7 @@ else
 fi
 docker rm -f fp-probe-mem >/dev/null 2>&1 || true
 set +e
-docker run -i --name fp-probe-mem \
+timeout 30 docker run -i --name fp-probe-mem \
   "${base_args[@]}" \
   --pids-limit=64 \
   --memory=64m \
