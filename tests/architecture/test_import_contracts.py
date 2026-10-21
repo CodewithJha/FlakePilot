@@ -1,3 +1,4 @@
+import ast
 import os
 import re
 import shutil
@@ -103,3 +104,23 @@ def test_matrix_contracts_match_dependency_rules() -> None:
     for context, deps in allowed.items():
         assert forbidden[context] == set(PACKAGES.values()) - deps - {context}, context
     assert sum(map(len, forbidden.values())) == 74
+
+
+def test_shared_kernel_imports_only_the_standard_library() -> None:
+    """DEPENDENCY-RULES §6: no business rules, no I/O, no vendor types (ADR-012)."""
+    kernel = ROOT / "src" / "flakepilot" / "shared_kernel"
+    imported = {
+        name.split(".")[0]
+        for path in kernel.rglob("*.py")
+        for node in ast.walk(ast.parse(path.read_text()))
+        for name in (
+            [alias.name for alias in node.names]
+            if isinstance(node, ast.Import)
+            else [node.module or ""]
+            if isinstance(node, ast.ImportFrom) and node.level == 0
+            else []
+        )
+    }
+    io = {"asyncio", "http", "io", "os", "shutil", "socket", "subprocess", "urllib"}
+    assert imported, "the shared kernel has modules"
+    assert imported <= sys.stdlib_module_names - io

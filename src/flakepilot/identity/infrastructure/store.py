@@ -6,7 +6,7 @@ Times come from PostgreSQL (`now()`), so expiry and idle checks agree across pro
 import uuid
 from datetime import timedelta
 
-from sqlalchemy import func, select, update
+from sqlalchemy import ColumnElement, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,30 +16,80 @@ from flakepilot.identity.infrastructure.tables import (
     ci_upload_tokens,
     memberships,
     orgs,
+    outbox,
     repo_grants,
     sessions,
     users,
 )
+from flakepilot.shared_kernel.events import Event
+
+_IDENTITY = [users.c.idp_issuer, users.c.idp_subject]
 
 
 class SqlIamStore:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    async def upsert_user(self, *, issuer: str, subject: str, login: str) -> str:
-        new_user = insert(users).values(
-            id=str(uuid.uuid4()),
-            idp_issuer=issuer,
-            idp_subject=subject,
-            github_login=login,
-            created_at=func.now(),
+    async def append_event(self, event: Event) -> None:
+        await self._session.execute(
+            outbox.insert().values(
+                event_id=event.event_id,
+                name=event.name,
+                schema_version=event.schema_version,
+                occurred_at=func.now(),
+                org_id=event.org_id,
+                repo_id=event.repo_id,
+                actor_type=event.actor.type.value,
+                actor_id=event.actor.id,
+                channel=event.origin.channel.value,
+                correlation_id=event.origin.correlation_id,
+                subject_type=event.subject.type,
+                subject_id=event.subject.id,
+                before=event.before,
+                after=event.after,
+                reason=event.reason,
+                payload=dict(event.payload),
+            )
         )
-        statement = new_user.on_conflict_do_update(
-            index_elements=[users.c.idp_issuer, users.c.idp_subject],
-            set_={"github_login": new_user.excluded.github_login},
-        ).returning(users.c.id)
-        user_id: str = (await self._session.execute(statement)).scalar_one()
+
+    async def _create_user(
+        self, *, issuer: str, subject: str, login: str
+    ) -> str | None:
+        """The new user's ID, or None if (issuer, subject) already exists."""
+        statement = (
+            insert(users)
+            .values(
+                id=str(uuid.uuid4()),
+                idp_issuer=issuer,
+                idp_subject=subject,
+                github_login=login,
+                created_at=func.now(),
+            )
+            .on_conflict_do_nothing(index_elements=_IDENTITY)
+            .returning(users.c.id)
+        )
+        user_id: str | None = (
+            await self._session.execute(statement)
+        ).scalar_one_or_none()
         return user_id
+
+    def _identity(self, issuer: str, subject: str) -> ColumnElement[bool]:
+        return (users.c.idp_issuer == issuer) & (users.c.idp_subject == subject)
+
+    async def upsert_user(
+        self, *, issuer: str, subject: str, login: str
+    ) -> tuple[str, bool]:
+        created = await self._create_user(issuer=issuer, subject=subject, login=login)
+        if created is not None:
+            return created, True
+        refreshed = await self._session.execute(
+            update(users)
+            .where(self._identity(issuer, subject))
+            .values(github_login=login)
+            .returning(users.c.id)
+        )
+        user_id: str = refreshed.scalar_one()
+        return user_id, False
 
     async def create_session(
         self, *, id_hash: bytes, user_id: str, lifetime: timedelta
@@ -54,12 +104,15 @@ class SqlIamStore:
             )
         )
 
-    async def revoke_session(self, *, id_hash: bytes, reason: str) -> None:
-        await self._session.execute(
+    async def revoke_session(self, *, id_hash: bytes, reason: str) -> str | None:
+        revoked = await self._session.execute(
             update(sessions)
             .where(sessions.c.id_hash == id_hash, sessions.c.revoked_at.is_(None))
             .values(revoked_at=func.now(), revoke_reason=reason)
+            .returning(sessions.c.user_id)
         )
+        user_id: str | None = revoked.scalar_one_or_none()
+        return user_id
 
     async def active_session_user(
         self, *, id_hash: bytes, idle: timedelta, touch_after: timedelta
@@ -136,43 +189,36 @@ class SqlIamStore:
         )
         return revoked.first() is not None
 
-    async def org_name_exists(self, *, name: str) -> bool:
-        found = await self._session.execute(
-            select(orgs.c.id).where(orgs.c.name == name)
+    async def create_org(self, *, org_id: str, name: str) -> bool:
+        # Arbitrates on uq_orgs_lower_name: a concurrent insert of an equal name waits
+        # for the other transaction, then inserts nothing (no error, nothing partial).
+        created = await self._session.execute(
+            insert(orgs)
+            .values(id=org_id, name=name, created_at=func.now())
+            .on_conflict_do_nothing(index_elements=[func.lower(orgs.c.name)])
+            .returning(orgs.c.id)
         )
-        return found.first() is not None
+        return created.first() is not None
 
-    async def create_org(self, *, org_id: str, name: str) -> None:
-        await self._session.execute(
-            orgs.insert().values(id=org_id, name=name, created_at=func.now())
-        )
-
-    async def ensure_user(self, *, issuer: str, subject: str, login: str | None) -> str:
+    async def ensure_user(
+        self, *, issuer: str, subject: str, login: str | None
+    ) -> tuple[str, bool]:
         """Find or create; a new user without a login gets the subject until sign-in."""
-        new_user = insert(users).values(
-            id=str(uuid.uuid4()),
-            idp_issuer=issuer,
-            idp_subject=subject,
-            github_login=login or subject,
-            created_at=func.now(),
+        created = await self._create_user(
+            issuer=issuer, subject=subject, login=login or subject
         )
-        keys = [users.c.idp_issuer, users.c.idp_subject]
-        statement = (
-            new_user.on_conflict_do_update(
-                index_elements=keys,
-                set_={"github_login": new_user.excluded.github_login},
-            )
+        if created is not None:
+            return created, True
+        found = (
+            update(users)
+            .where(self._identity(issuer, subject))
+            .values(github_login=login)
+            .returning(users.c.id)
             if login
-            else new_user.on_conflict_do_nothing(index_elements=keys)
+            else select(users.c.id).where(self._identity(issuer, subject))
         )
-        await self._session.execute(statement)
-        found = await self._session.execute(
-            select(users.c.id).where(
-                users.c.idp_issuer == issuer, users.c.idp_subject == subject
-            )
-        )
-        user_id: str = found.scalar_one()
-        return user_id
+        user_id: str = (await self._session.execute(found)).scalar_one()
+        return user_id, False
 
     async def add_membership(
         self, *, org_id: str, user_id: str, org_admin: bool
@@ -185,6 +231,15 @@ class SqlIamStore:
                 created_at=func.now(),
             )
         )
+
+    async def revoke_user_sessions(self, *, user_id: str, reason: str) -> int:
+        revoked = await self._session.execute(
+            update(sessions)
+            .where(sessions.c.user_id == user_id, sessions.c.revoked_at.is_(None))
+            .values(revoked_at=func.now(), revoke_reason=reason)
+            .returning(sessions.c.user_id)
+        )
+        return len(revoked.all())
 
     async def active_ci_upload_token(
         self, *, token_hash: bytes

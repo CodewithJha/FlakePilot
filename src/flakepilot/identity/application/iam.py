@@ -3,10 +3,12 @@
 Credentials are random, returned raw only to the caller that created them, and stored only
 as SHA-256 hashes. Each use case is one unit of work (one transaction); stores never commit.
 
-Not audited yet (AUD is deferred). These state changes need durable audit when it lands:
-sign-in (user created or login refreshed, session created), session rotation, sign-out,
-CI upload token creation and revocation; later also grant and membership changes,
-privilege-change session revocation, and secret writes.
+Invariant for every use case that changes a user's memberships or grants: revoke that
+user's sessions (`privilege_change`) in the same unit of work (ADR-011 B, IAM-DATA-MODEL).
+
+Audit (ADR-012): every state change appends one event to IAM's outbox in the same unit of
+work, after the change it describes, so a failed append rolls the change back. Events
+never carry session IDs, tokens or their hashes. Session-last-seen touches are not events.
 """
 
 import base64
@@ -31,6 +33,7 @@ from flakepilot.integrations.application.ports import (
     IdentityProvider,
     IdentityProviderError,
 )
+from flakepilot.shared_kernel.events import Actor, ActorType, Event, Origin, Subject
 
 __all__ = [  # IdentityProvider is re-exported: it is the port this API is built with
     "AuthNotConfigured",
@@ -112,13 +115,21 @@ class SignInStart:
 class IamStore(Protocol):
     """IAM persistence inside one unit of work. Implementations never commit."""
 
-    async def upsert_user(self, *, issuer: str, subject: str, login: str) -> str: ...
+    async def append_event(self, event: Event) -> None: ...
+
+    async def upsert_user(
+        self, *, issuer: str, subject: str, login: str
+    ) -> tuple[str, bool]:
+        """(user ID, whether the user was created)."""
+        ...
 
     async def create_session(
         self, *, id_hash: bytes, user_id: str, lifetime: timedelta
     ) -> None: ...
 
-    async def revoke_session(self, *, id_hash: bytes, reason: str) -> None: ...
+    async def revoke_session(self, *, id_hash: bytes, reason: str) -> str | None:
+        """The owning user's ID if an active session was revoked, else None."""
+        ...
 
     async def active_session_user(
         self, *, id_hash: bytes, idle: timedelta, touch_after: timedelta
@@ -145,17 +156,23 @@ class IamStore(Protocol):
         self, *, token_hash: bytes
     ) -> CiUploadPrincipal | None: ...
 
-    async def org_name_exists(self, *, name: str) -> bool: ...
-
-    async def create_org(self, *, org_id: str, name: str) -> None: ...
+    async def create_org(self, *, org_id: str, name: str) -> bool:
+        """False, writing nothing, if an org name equal ignoring case exists."""
+        ...
 
     async def ensure_user(
         self, *, issuer: str, subject: str, login: str | None
-    ) -> str: ...
+    ) -> tuple[str, bool]:
+        """(user ID, whether the user was created)."""
+        ...
 
     async def add_membership(
         self, *, org_id: str, user_id: str, org_admin: bool
     ) -> None: ...
+
+    async def revoke_user_sessions(self, *, user_id: str, reason: str) -> int:
+        """The number of active sessions revoked."""
+        ...
 
 
 UnitOfWork = Callable[[], AbstractAsyncContextManager[IamStore]]
@@ -189,6 +206,7 @@ class Iam:
         code_verifier: str,
         error: str | None,
         previous_session: str | None,
+        origin: Origin,
     ) -> str:
         """Verify the callback, then create or refresh the user and a new session.
 
@@ -214,15 +232,38 @@ class Iam:
             _fail(exc.reason)
         session_id = secrets.token_urlsafe(32)
         async with self._unit_of_work() as store:
-            user_id = await store.upsert_user(
+            user_id, created = await store.upsert_user(
                 issuer=identity.issuer, subject=identity.subject, login=identity.login
             )
+            actor = Actor(ActorType.USER, user_id)
+            await store.append_event(
+                Event(
+                    "iam.user.signed_in",
+                    actor,
+                    origin,
+                    Subject("user", user_id),
+                    payload={"user_created": created},
+                )
+            )
             if previous_session and _SESSION_ID.fullmatch(previous_session):
-                await store.revoke_session(
+                owner = await store.revoke_session(
                     id_hash=digest(previous_session), reason="rotated"
                 )
+                if owner is not None:
+                    await store.append_event(
+                        _sessions_revoked(actor, origin, owner, "rotated", 1)
+                    )
             await store.create_session(
                 id_hash=digest(session_id), user_id=user_id, lifetime=SESSION_LIFETIME
+            )
+            await store.append_event(
+                Event(
+                    "iam.session.created",
+                    actor,
+                    origin,
+                    Subject("user", user_id),
+                    after="active",
+                )
             )
         return session_id
 
@@ -237,12 +278,17 @@ class Iam:
             )
         return SessionPrincipal(user_id) if user_id else None
 
-    async def sign_out(self, session_id: str) -> None:
+    async def sign_out(self, session_id: str, *, origin: Origin) -> None:
         if _SESSION_ID.fullmatch(session_id):
             async with self._unit_of_work() as store:
-                await store.revoke_session(
+                owner = await store.revoke_session(
                     id_hash=digest(session_id), reason="signed_out"
                 )
+                if owner is not None:
+                    actor = Actor(ActorType.USER, owner)
+                    await store.append_event(
+                        _sessions_revoked(actor, origin, owner, "signed_out", 1)
+                    )
 
     async def org_access(self, principal: SessionPrincipal, org_id: str) -> OrgAccess:
         """The principal's standing in the org, from IAM's records. Not a member, or no
@@ -260,20 +306,33 @@ class Iam:
         org_id: str,
         repo_id: str,
         code_host: CodeHostAccess,
+        origin: Origin,
     ) -> str:
         """Needs `repo.configure`. Returns the raw token: shown once, never stored."""
         authorize(
             access, Grant.CONFIGURE, org_id=org_id, repo_id=repo_id, code_host=code_host
         )
         token = CI_UPLOAD_TOKEN_PREFIX + secrets.token_urlsafe(32)
+        token_id = str(uuid.uuid4())
         async with self._unit_of_work() as store:
             await store.create_ci_upload_token(
-                token_id=str(uuid.uuid4()),
+                token_id=token_id,
                 org_id=org_id,
                 repo_id=repo_id,
                 token_hash=digest(token),
                 display_prefix=token[len(CI_UPLOAD_TOKEN_PREFIX) :][:8],
                 created_by=access.principal_id,
+            )
+            await store.append_event(
+                Event(
+                    "iam.ci_upload_token.created",
+                    Actor(ActorType.USER, access.principal_id),
+                    origin,
+                    Subject("ci_upload_token", token_id),
+                    org_id=org_id,
+                    repo_id=repo_id,
+                    after="active",
+                )
             )
         return token
 
@@ -285,6 +344,7 @@ class Iam:
         repo_id: str,
         token_id: str,
         code_host: CodeHostAccess,
+        origin: Origin,
     ) -> None:
         authorize(
             access, Grant.CONFIGURE, org_id=org_id, repo_id=repo_id, code_host=code_host
@@ -293,6 +353,19 @@ class Iam:
             revoked = await store.revoke_ci_upload_token(
                 org_id=org_id, repo_id=repo_id, token_id=token_id
             )
+            if revoked:
+                await store.append_event(
+                    Event(
+                        "iam.ci_upload_token.revoked",
+                        Actor(ActorType.USER, access.principal_id),
+                        origin,
+                        Subject("ci_upload_token", token_id),
+                        org_id=org_id,
+                        repo_id=repo_id,
+                        before="active",
+                        after="revoked",
+                    )
+                )
         if not revoked:
             raise ResourceNotFound
 
@@ -303,12 +376,16 @@ class Iam:
         admin_issuer: str,
         admin_subject: str,
         admin_login: str | None,
+        origin: Origin,
     ) -> str:
         """Operator bootstrap: a new org with one org admin, in one transaction.
 
         The admin user is found or created by (issuer, subject); an existing user keeps
-        their login unless one is given. Refuses if any org already has this name.
-        Not audited yet (AUD is deferred). Returns the new org's ID.
+        their login unless one is given. Becoming org admin is a privilege change, so the
+        user's active sessions are revoked (`privilege_change`) in the same transaction:
+        sessions are per user, not per org. Refuses, writing nothing, if an org name
+        equal ignoring case exists (enforced by a unique index, so concurrent runs are
+        safe). Returns the new org's ID.
         """
         if name != name.strip() or not _ORG_NAME.fullmatch(name):
             raise InvalidBootstrapInput(
@@ -319,14 +396,33 @@ class Iam:
         if admin_login is not None and not _LOGIN.fullmatch(admin_login):
             raise InvalidBootstrapInput("--admin-login is not a valid GitHub login")
         org_id = str(uuid.uuid4())
+        operator = Actor(ActorType.OPERATOR_CLI)
         async with self._unit_of_work() as store:
-            if await store.org_name_exists(name=name):
+            if not await store.create_org(org_id=org_id, name=name):
                 raise OrgAlreadyExists("an org with this name already exists")
-            await store.create_org(org_id=org_id, name=name)
-            user_id = await store.ensure_user(
+            user_id, created = await store.ensure_user(
                 issuer=admin_issuer, subject=admin_subject, login=admin_login
             )
             await store.add_membership(org_id=org_id, user_id=user_id, org_admin=True)
+            await store.append_event(
+                Event(
+                    "iam.org.bootstrapped",
+                    operator,
+                    origin,
+                    Subject("org", org_id),
+                    org_id=org_id,
+                    payload={"admin_user_id": user_id, "admin_user_created": created},
+                )
+            )
+            revoked = await store.revoke_user_sessions(
+                user_id=user_id, reason="privilege_change"
+            )
+            if revoked:
+                await store.append_event(
+                    _sessions_revoked(
+                        operator, origin, user_id, "privilege_change", revoked
+                    )
+                )
         return org_id
 
     async def verify_ci_upload_token(self, token: str) -> CiUploadPrincipal | None:
@@ -334,6 +430,22 @@ class Iam:
             return None
         async with self._unit_of_work() as store:
             return await store.active_ci_upload_token(token_hash=digest(token))
+
+
+def _sessions_revoked(
+    actor: Actor, origin: Origin, user_id: str, reason: str, count: int
+) -> Event:
+    """Sessions are identified only by their owner: no session ID or hash in events."""
+    return Event(
+        "iam.session.revoked",
+        actor,
+        origin,
+        Subject("user", user_id),
+        before="active",
+        after="revoked",
+        reason=reason,
+        payload={"sessions": count},
+    )
 
 
 def _fail(reason: str) -> NoReturn:

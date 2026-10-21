@@ -9,6 +9,7 @@ import sys
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from functools import partial
 from typing import Annotated, Any
 from uuid import UUID
 
@@ -31,6 +32,7 @@ from flakepilot.identity.application.iam import (
     CiUploadPrincipal,
     Iam,
     IamStore,
+    OrgAlreadyExists,
     SessionPrincipal,
     digest,
 )
@@ -48,6 +50,7 @@ from flakepilot.interface.composition_root import (
 )
 from flakepilot.interface.composition_root.database import create_engine, transaction
 from flakepilot.interface.http.auth import ci_upload_principal, org_access
+from flakepilot.shared_kernel.events import Channel, Event, Origin
 
 pytestmark = pytest.mark.integration
 
@@ -59,6 +62,7 @@ REPO_1, REPO_2, REPO_3 = (str(uuid.uuid4()) for _ in range(3))
 USER_A, USER_B = str(uuid.uuid4()), str(uuid.uuid4())
 DUPLICATE_HASH = os.urandom(32)
 READ = CodeHostAccess.READ
+HTTP = Origin(Channel.HTTP, "test-request-1")
 
 
 def run[T](url: str, scenario: Callable[[AsyncEngine], Awaitable[T]]) -> T:
@@ -96,7 +100,9 @@ def iam(engine: AsyncEngine) -> Iam:
     return Iam(unit_of_work, FakeGitHub())
 
 
-async def sign_in(service: Iam, previous: str | None = None) -> str:
+async def sign_in(
+    service: Iam, previous: str | None = None, origin: Origin = HTTP
+) -> str:
     return await service.complete_sign_in(
         expected_state="s",
         received_state="s",
@@ -104,7 +110,25 @@ async def sign_in(service: Iam, previous: str | None = None) -> str:
         code_verifier="v",
         error=None,
         previous_session=previous,
+        origin=origin,
     )
+
+
+async def outbox_rows(engine: AsyncEngine, where: str, **params: object) -> list[Any]:
+    return await sql(
+        engine,
+        "SELECT name, org_id::text, repo_id::text, actor_type, actor_id::text, channel, "
+        "correlation_id, subject_type, subject_id::text, before, after, reason, "
+        f"payload::text, published_at FROM iam.outbox WHERE {where} ORDER BY seq",
+        **params,
+    )
+
+
+def assert_no_secrets(rows: list[Any], *secrets: str | bytes) -> None:
+    text_of_rows = repr([tuple(row) for row in rows])
+    for secret in secrets:
+        shown = secret.hex() if isinstance(secret, bytes) else secret
+        assert shown not in text_of_rows
 
 
 @pytest.fixture(scope="module")
@@ -168,6 +192,11 @@ SESSION = (
     "INSERT INTO iam.sessions (id_hash, user_id, created_at, last_seen_at, expires_at, "
     "revoked_at, revoke_reason) VALUES (:h, :ua, now(), now(), now(), {})"
 )
+OUTBOX = (
+    "INSERT INTO iam.outbox (event_id, name, schema_version, occurred_at, actor_type, "
+    "actor_id, channel, correlation_id, subject_type, subject_id, payload) "
+    "VALUES (:id, 'iam.org.bootstrapped', 1, now(), {}, 'c', 'org', :a, '{{}}')"
+)
 
 
 @pytest.mark.parametrize(
@@ -199,6 +228,11 @@ SESSION = (
             "display_prefix, created_by, created_at) "
             "VALUES (:id, :a, :r1, :dup, 'abcdefgh', :ua, now())"
         ),
+        "INSERT INTO iam.orgs (id, name, created_at) VALUES (:id, 'oRG a', now())",
+        OUTBOX.format("'user', NULL, 'http'"),
+        OUTBOX.format("'operator_cli', :ua, 'cli'"),
+        OUTBOX.format("'admin', NULL, 'cli'"),
+        OUTBOX.format("'system', NULL, 'email'"),
     ],
     ids=[
         "duplicate-identity",
@@ -210,6 +244,11 @@ SESSION = (
         "short-session-hash",
         "short-display-prefix",
         "duplicate-token-hash",
+        "org-name-equal-ignoring-case",
+        "user-actor-without-id",
+        "cli-actor-with-id",
+        "unknown-actor-type",
+        "unknown-channel",
     ],
 )
 def test_schema_rejects_invalid_rows(url: str, statement: str) -> None:
@@ -234,15 +273,42 @@ def test_schema_rejects_invalid_rows(url: str, statement: str) -> None:
 
 
 def test_session_lifecycle_rotation_and_sign_out(url: str) -> None:
+    origin = Origin(Channel.HTTP, str(uuid.uuid4()))
+
     async def scenario(engine: AsyncEngine) -> list[Any]:
         service = iam(engine)
-        first = await sign_in(service)
+        first = await sign_in(service, origin=origin)
         assert await service.authenticate(first) == SessionPrincipal(USER_A)
-        second = await sign_in(service, previous=first)
+        second = await sign_in(service, previous=first, origin=origin)
         assert await service.authenticate(first) is None
         assert await service.authenticate(second) == SessionPrincipal(USER_A)
-        await service.sign_out(second)
+        await service.sign_out(second, origin=origin)
+        await service.sign_out(second, origin=origin)  # already revoked: no event
         assert await service.authenticate(second) is None
+
+        events = await outbox_rows(
+            engine, "correlation_id = :c", c=origin.correlation_id
+        )
+        user_events = [
+            (e.name, e.reason, e.payload) for e in events if e.subject_id == USER_A
+        ]
+        assert user_events == [
+            ("iam.user.signed_in", None, '{"user_created": false}'),
+            ("iam.session.created", None, "{}"),
+            ("iam.user.signed_in", None, '{"user_created": false}'),
+            ("iam.session.revoked", "rotated", '{"sessions": 1}'),
+            ("iam.session.created", None, "{}"),
+            ("iam.session.revoked", "signed_out", '{"sessions": 1}'),
+        ]
+        # Sessions are per user, not tenant-owned: no org; the actor is the user.
+        assert len(events) == 6
+        assert {(e.org_id, e.repo_id, e.actor_type, e.actor_id) for e in events} == {
+            (None, None, "user", USER_A)
+        }
+        assert {(e.channel, e.subject_type, e.published_at) for e in events} == {
+            ("http", "user", None)
+        }
+        assert_no_secrets(events, first, second, digest(first), digest(second))
         rows = await sql(
             engine,
             "SELECT id_hash, revoke_reason FROM iam.sessions WHERE id_hash IN (:f, :s)",
@@ -346,12 +412,9 @@ def test_ci_upload_tokens_are_scoped_hashed_and_revocable(url: str) -> None:
         service = iam(engine)
         access_a = await service.org_access(SessionPrincipal(USER_A), ORG_A)
         access_b = await service.org_access(SessionPrincipal(USER_B), ORG_B)
-        token = await service.create_ci_upload_token(
-            access_a, org_id=ORG_A, repo_id=REPO_1, code_host=READ
-        )
-        token_b = await service.create_ci_upload_token(
-            access_b, org_id=ORG_B, repo_id=REPO_1, code_host=READ
-        )
+        create = partial(service.create_ci_upload_token, origin=HTTP)
+        token = await create(access_a, org_id=ORG_A, repo_id=REPO_1, code_host=READ)
+        token_b = await create(access_b, org_id=ORG_B, repo_id=REPO_1, code_host=READ)
         principal = await service.verify_ci_upload_token(token)
         assert principal is not None
         assert (principal.org_id, principal.repo_id) == (ORG_A, REPO_1)
@@ -367,10 +430,8 @@ def test_ci_upload_tokens_are_scoped_hashed_and_revocable(url: str) -> None:
         assert token not in repr(tuple(row))
 
         with pytest.raises(PermissionDenied):  # view only on REPO_2
-            await service.create_ci_upload_token(
-                access_a, org_id=ORG_A, repo_id=REPO_2, code_host=READ
-            )
-        revoke = service.revoke_ci_upload_token
+            await create(access_a, org_id=ORG_A, repo_id=REPO_2, code_host=READ)
+        revoke = partial(service.revoke_ci_upload_token, origin=HTTP)
         with pytest.raises(ResourceNotFound):  # another org cannot even see it
             await revoke(
                 access_b,
@@ -403,6 +464,21 @@ def test_ci_upload_tokens_are_scoped_hashed_and_revocable(url: str) -> None:
                 token_id=principal.token_id,
                 code_host=READ,
             )
+
+        events = await outbox_rows(
+            engine,
+            "subject_id IN (:a, :b)",
+            a=principal.token_id,
+            b=principal_b.token_id,
+        )
+        assert [
+            (e.name, e.org_id, e.repo_id, e.actor_id, e.before, e.after) for e in events
+        ] == [
+            ("iam.ci_upload_token.created", ORG_A, REPO_1, USER_A, None, "active"),
+            ("iam.ci_upload_token.created", ORG_B, REPO_1, USER_B, None, "active"),
+            ("iam.ci_upload_token.revoked", ORG_A, REPO_1, USER_A, "active", "revoked"),
+        ]
+        assert_no_secrets(events, token, token_b, digest(token), digest(token_b))
 
     run(url, scenario)
 
@@ -472,7 +548,7 @@ def test_bootstrap_org_creates_an_org_admin_once(url: str) -> None:
     org_id = created.stdout.strip()
     assert str(uuid.UUID(org_id)) == org_id and created.stderr == ""
 
-    again = bootstrap_org(url, "--name", name, "--admin-github-id", "7007")
+    again = bootstrap_org(url, "--name", name.swapcase(), "--admin-github-id", "7007")
     assert again.returncode == 1 and again.stdout == ""
     assert again.stderr == "bootstrap-org: an org with this name already exists\n"
 
@@ -482,9 +558,55 @@ def test_bootstrap_org_creates_an_org_admin_once(url: str) -> None:
         )
         return str(login)
 
+    async def sign_in_1001(engine: AsyncEngine) -> str:
+        return await sign_in(iam(engine))
+
+    live_session = run(url, sign_in_1001)
     before = run(url, login_of_1001)
     existing = bootstrap_org(url, "--name", f"{name} 2", "--admin-github-id", "1001")
     assert existing.returncode == 0, existing.stderr
+
+    async def after_privilege_change(engine: AsyncEngine) -> tuple[bool, list[Any]]:
+        principal = await iam(engine).authenticate(live_session)
+        reason = await sql(
+            engine,
+            "SELECT revoke_reason FROM iam.sessions WHERE id_hash = :h",
+            h=digest(live_session),
+        )
+        return principal is None, [tuple(row) for row in reason]
+
+    assert run(url, after_privilege_change) == (True, [("privilege_change",)])
+    existing_org = existing.stdout.strip()
+
+    async def bootstrap_events(engine: AsyncEngine) -> list[Any]:
+        return await outbox_rows(
+            engine,
+            "channel = 'cli' AND (org_id IN (:a, :b) OR subject_id = :u)",
+            a=org_id,
+            b=existing_org,
+            u=USER_A,
+        )
+
+    events = run(url, bootstrap_events)
+    assert [
+        (e.name, e.org_id, e.subject_type, e.subject_id, e.reason) for e in events
+    ] == [
+        ("iam.org.bootstrapped", org_id, "org", org_id, None),
+        ("iam.org.bootstrapped", existing_org, "org", existing_org, None),
+        ("iam.session.revoked", None, "user", USER_A, "privilege_change"),
+    ]
+    assert {(e.actor_type, e.actor_id) for e in events} == {("operator_cli", None)}
+    first_run, second_run, revocation = events
+    assert json.loads(first_run.payload)["admin_user_created"] is True
+    assert json.loads(second_run.payload) == {
+        "admin_user_id": USER_A,
+        "admin_user_created": False,
+    }
+    assert json.loads(revocation.payload)["sessions"] >= 1
+    # One correlation ID per CLI run.
+    assert second_run.correlation_id == revocation.correlation_id
+    assert first_run.correlation_id != second_run.correlation_id
+    assert_no_secrets(events, live_session, digest(live_session))
 
     async def scenario(engine: AsyncEngine) -> tuple[OrgAccess, int, list[Any]]:
         [[user_id]] = await sql(
@@ -494,7 +616,9 @@ def test_bootstrap_org_creates_an_org_admin_once(url: str) -> None:
         )
         access = await iam(engine).org_access(SessionPrincipal(str(user_id)), org_id)
         [[orgs]] = await sql(
-            engine, "SELECT count(*) FROM iam.orgs WHERE name = :n", n=name
+            engine,
+            "SELECT count(*) FROM iam.orgs WHERE lower(name) = lower(:n)",
+            n=name,
         )
         logins = await sql(
             engine,
@@ -511,6 +635,143 @@ def test_bootstrap_org_creates_an_org_admin_once(url: str) -> None:
     for result in (created, again, existing):
         output = result.stdout + result.stderr
         assert url not in output and "postgresql" not in output
+
+
+def test_concurrent_bootstraps_of_names_equal_ignoring_case_create_one_org(
+    url: str,
+) -> None:
+    name = f"Race {uuid.uuid4().hex[:8]}x"
+    variants = [name.lower(), name.upper(), name.title(), name.swapcase()]
+    subjects = ["8001", "8002", "8003", "8004"]
+    origin = Origin(Channel.CLI, str(uuid.uuid4()))
+
+    async def scenario(engine: AsyncEngine) -> tuple[list[object], list[Any]]:
+        service = iam(engine)
+        results = await asyncio.gather(  # one connection and transaction each
+            *(
+                service.bootstrap_org(
+                    name=variant,
+                    admin_issuer=ISSUER,
+                    admin_subject=subject,
+                    admin_login=None,
+                    origin=origin,
+                )
+                for variant, subject in zip(variants, subjects, strict=True)
+            ),
+            return_exceptions=True,
+        )
+        rows = await sql(
+            engine,
+            "SELECT o.id::text, u.idp_subject FROM iam.orgs o "
+            "JOIN iam.memberships m ON m.org_id = o.id "
+            "JOIN iam.users u ON u.id = m.user_id WHERE lower(o.name) = lower(:n)",
+            n=name,
+        )
+        users = await sql(
+            engine,
+            "SELECT idp_subject FROM iam.users WHERE idp_subject IN "
+            "('8001', '8002', '8003', '8004')",
+        )
+        events = await outbox_rows(
+            engine, "correlation_id = :c", c=origin.correlation_id
+        )
+        facts = [[tuple(r) for r in rows], [r[0] for r in users], events]
+        return list(results), facts
+
+    results, (org_rows, users, events) = run(url, scenario)
+    winners = [r for r in results if isinstance(r, str)]
+    losers = [r for r in results if isinstance(r, OrgAlreadyExists)]
+    assert len(winners) == 1 and len(losers) == 3
+    winner_subject = subjects[results.index(winners[0])]
+    assert org_rows == [(winners[0], winner_subject)]
+    assert users == [winner_subject]  # losers left no user, org or membership
+    assert [(e.name, e.org_id) for e in events] == [
+        ("iam.org.bootstrapped", winners[0])
+    ]
+
+
+class FailingOutbox(SqlIamStore):
+    """Appends every event twice: the second insert violates the primary key."""
+
+    async def append_event(self, event: Event) -> None:
+        await super().append_event(event)
+        await super().append_event(event)
+
+
+def test_a_failed_outbox_write_rolls_back_the_change(url: str) -> None:
+    origin = Origin(Channel.HTTP, str(uuid.uuid4()))
+    name = f"Rollback {uuid.uuid4().hex[:8]}"
+
+    def failing(engine: AsyncEngine) -> Iam:
+        @asynccontextmanager
+        async def unit_of_work() -> AsyncIterator[IamStore]:
+            async with transaction(engine) as session:
+                yield FailingOutbox(session)
+
+        return Iam(unit_of_work, FakeGitHub())
+
+    async def counts(engine: AsyncEngine) -> tuple[int, ...]:
+        [row] = await sql(
+            engine,
+            "SELECT (SELECT count(*) FROM iam.sessions), "
+            "(SELECT count(*) FROM iam.ci_upload_tokens), "
+            "(SELECT count(*) FROM iam.orgs), (SELECT count(*) FROM iam.users), "
+            "(SELECT count(*) FROM iam.memberships), "
+            "(SELECT count(*) FROM iam.sessions WHERE revoked_at IS NOT NULL), "
+            "(SELECT count(*) FROM iam.ci_upload_tokens WHERE revoked_at IS NOT NULL)",
+        )
+        return tuple(row)
+
+    async def scenario(engine: AsyncEngine) -> tuple[tuple[int, ...], ...]:
+        good, bad = iam(engine), failing(engine)
+        session_id = await sign_in(good)
+        access = await good.org_access(SessionPrincipal(USER_A), ORG_A)
+        token = await good.create_ci_upload_token(
+            access, org_id=ORG_A, repo_id=REPO_1, code_host=READ, origin=HTTP
+        )
+        principal = await good.verify_ci_upload_token(token)
+        assert principal is not None
+        before = await counts(engine)
+
+        attempts: list[Callable[[], Awaitable[object]]] = [
+            lambda: sign_in(bad, previous=session_id, origin=origin),
+            lambda: bad.sign_out(session_id, origin=origin),
+            lambda: bad.create_ci_upload_token(
+                access, org_id=ORG_A, repo_id=REPO_1, code_host=READ, origin=origin
+            ),
+            lambda: bad.revoke_ci_upload_token(
+                access,
+                org_id=ORG_A,
+                repo_id=REPO_1,
+                token_id=principal.token_id,
+                code_host=READ,
+                origin=origin,
+            ),
+            lambda: bad.bootstrap_org(
+                name=name,
+                admin_issuer=ISSUER,
+                admin_subject="9009",
+                admin_login=None,
+                origin=origin,
+            ),
+        ]
+        for attempt in attempts:
+            with pytest.raises(exc.IntegrityError):
+                await attempt()
+        after = await counts(engine)
+        still_valid = (
+            await good.authenticate(session_id) == SessionPrincipal(USER_A),
+            await good.verify_ci_upload_token(token) is not None,
+        )
+        events = await outbox_rows(
+            engine, "correlation_id = :c", c=origin.correlation_id
+        )
+        return before, after, still_valid, (len(events),)
+
+    before, after, still_valid, (events,) = run(url, scenario)
+    assert after == before
+    assert still_valid == (True, True)
+    assert events == 0
 
 
 def set_cookie(headers: list[tuple[str, str]], name: str) -> str:
@@ -629,6 +890,21 @@ def test_sign_in_sessions_csrf_and_protected_routes_over_http(
             assert response[0] == 204
             assert "Max-Age=0" in set_cookie(response[1], "__Host-flakepilot_session")
             assert code(await call("GET", f"{repo}/{REPO_1}", jar))[0] == 401
+            # The audit event carries the request ID the client saw.
+            request_id = dict(response[1])["x-request-id"]
+            engine = create_engine(url)
+            try:
+                [logout] = await outbox_rows(
+                    engine, "correlation_id = :c", c=request_id
+                )
+            finally:
+                await engine.dispose()
+            assert (logout.name, logout.channel, logout.reason) == (
+                "iam.session.revoked",
+                "http",
+                "signed_out",
+            )
+            assert_no_secrets([logout], session, digest(session), CLIENT_SECRET)
 
             jar = [("cookie", f"__Host-flakepilot_session={await sign_in_over_http()}")]
             referer = [("referer", f"{ORIGIN}/settings")]
@@ -637,7 +913,7 @@ def test_sign_in_sessions_csrf_and_protected_routes_over_http(
             iam_service: Iam = app.state.iam
             access = await iam_service.org_access(SessionPrincipal(USER_A), ORG_A)
             token = await iam_service.create_ci_upload_token(
-                access, org_id=ORG_A, repo_id=REPO_1, code_host=READ
+                access, org_id=ORG_A, repo_id=REPO_1, code_host=READ, origin=HTTP
             )
             secrets_seen.append(token)
             bearer = [("authorization", f"Bearer {token}")]
@@ -655,6 +931,7 @@ def test_sign_in_sessions_csrf_and_protected_routes_over_http(
                 repo_id=REPO_1,
                 token_id=principal.token_id,
                 code_host=READ,
+                origin=HTTP,
             )
             assert code(await call("GET", "/test-only/ci-upload", bearer))[0] == 401
 

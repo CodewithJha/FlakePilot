@@ -25,6 +25,23 @@ def test_interface_never_builds_access_from_request_input() -> None:
     assert calls == []
 
 
+def test_interface_never_supplies_code_host_access() -> None:
+    """Code-host permission comes from REPO (`CodeHostAccessVerifier`, DEPENDENCY-RULES §4),
+    never from a value the interface or composition root chooses, such as a literal READ."""
+    uses = [
+        f"{path.name}:{node.lineno}"
+        for path, tree in _modules(SRC / "interface")
+        for node in ast.walk(tree)
+        if (isinstance(node, ast.Name) and node.id == "CodeHostAccess")
+        or (isinstance(node, ast.Attribute) and node.attr == "CodeHostAccess")
+        or (
+            isinstance(node, ast.ImportFrom)
+            and any(alias.name == "CodeHostAccess" for alias in node.names)
+        )
+    ]
+    assert uses == []
+
+
 def test_outbound_http_lives_only_in_integration_adapters() -> None:
     """urllib.request (outbound HTTP) only in INT infrastructure (ADR-003)."""
     allowed = SRC / "integrations" / "infrastructure"

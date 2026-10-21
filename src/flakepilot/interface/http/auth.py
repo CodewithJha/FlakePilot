@@ -39,6 +39,7 @@ from flakepilot.interface.http.request_context import (
     error_body,
     request_id_var,
 )
+from flakepilot.shared_kernel.events import Channel, Origin
 
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 SIGN_IN_SECONDS = 600
@@ -93,6 +94,14 @@ def _clear_cookie(response: Response, config: AuthConfig, name: str) -> None:
     response.delete_cookie(
         name, path="/", secure=config.secure_cookies, httponly=True, samesite="lax"
     )
+
+
+def _origin() -> Origin:
+    """Audit origin: the HTTP channel and this request's ID (set by the middleware)."""
+    request_id = request_id_var.get()
+    if request_id is None:
+        raise RuntimeError("no request ID outside RequestContextMiddleware")
+    return Origin(Channel.HTTP, request_id)
 
 
 def _same_origin(request: Request, origin: str) -> bool:
@@ -166,6 +175,7 @@ async def github_callback(
             code_verifier=verifier,
             error=error,
             previous_session=request.cookies.get(config.session_cookie),
+            origin=_origin(),
         )
     except SignInFailed:
         body = error_body(UNAUTHENTICATED, "Sign-in failed", request_id_var.get())
@@ -187,7 +197,9 @@ async def logout(
     principal: Annotated[SessionPrincipal, Depends(session_principal)],
 ) -> Response:
     config = _config(request)
-    await _iam(request).sign_out(request.cookies[config.session_cookie])
+    await _iam(request).sign_out(
+        request.cookies[config.session_cookie], origin=_origin()
+    )
     response = Response(status_code=204)
     _clear_cookie(response, config, config.session_cookie)
     return response

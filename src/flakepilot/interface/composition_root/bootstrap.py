@@ -5,12 +5,14 @@
 
 Reads FLAKEPILOT_DATABASE_URL through Settings (never printed). Prints only the new org
 ID; on failure exits 1 with a message that names the problem, never a value or a
-database detail. Run migrations first. Not audited yet (AUD is deferred).
+database detail. Run migrations first. Audited as `iam.org.bootstrapped` (ADR-012), with
+actor `operator_cli` and one correlation ID per run.
 """
 
 import argparse
 import asyncio
 import sys
+import uuid
 from collections.abc import Sequence
 
 from flakepilot.identity.application.iam import (
@@ -21,6 +23,7 @@ from flakepilot.identity.application.iam import (
 from flakepilot.integrations.infrastructure.github import ISSUER as GITHUB_ISSUER
 from flakepilot.interface.composition_root import Settings, iam_unit_of_work
 from flakepilot.interface.composition_root.database import create_engine, dispose_engine
+from flakepilot.shared_kernel.events import Channel, Origin
 
 
 def run_bootstrap_org(settings: Settings, argv: Sequence[str]) -> int:
@@ -59,6 +62,7 @@ async def _bootstrap(
             admin_issuer=GITHUB_ISSUER,
             admin_subject=github_id,
             admin_login=login,
+            origin=Origin(Channel.CLI, str(uuid.uuid4())),
         )
     finally:
         await dispose_engine(engine)

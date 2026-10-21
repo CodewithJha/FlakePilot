@@ -22,7 +22,7 @@ Database timeouts are constants in `src/flakepilot/interface/composition_root/da
 
 Sign-in uses the GitHub App (`GET /auth/github/login`, `GET /auth/github/callback`, `POST /auth/logout`; ADR-011). It is enabled only when `FLAKEPILOT_PUBLIC_ORIGIN`, `FLAKEPILOT_GITHUB_CLIENT_ID` and `FLAKEPILOT_GITHUB_CLIENT_SECRET` are set; otherwise those endpoints answer 503 `auth_not_configured`. Session cookies are `Secure` with the `__Host-` prefix; for local plain-HTTP development only, set `FLAKEPILOT_ALLOW_INSECURE_COOKIES=true` (never in production). `FLAKEPILOT_SECRET_KEY` (32 bytes, base64) is the key for the encrypted secret store.
 
-Signing in grants nothing by itself. An operator creates the first org and its org admin (after migrations); it prints only the new org ID and is not yet audited (audit is deferred):
+Signing in grants nothing by itself. An operator creates the first org and its org admin (after migrations); it prints only the new org ID. Org names are unique ignoring case. The change is recorded in IAM's outbox as `iam.org.bootstrapped` (ADR-012):
 
 ```sh
 uv run python -m flakepilot.interface.composition_root bootstrap-org --name "Acme" --admin-github-id 12345 --admin-login octocat

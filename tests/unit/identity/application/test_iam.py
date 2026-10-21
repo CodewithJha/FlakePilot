@@ -22,6 +22,7 @@ from flakepilot.identity.application.iam import (
     Iam,
     IamStore,
     InvalidBootstrapInput,
+    OrgAlreadyExists,
     SignInFailed,
     digest,
 )
@@ -29,8 +30,11 @@ from flakepilot.integrations.application.ports import (
     IdentityProviderError,
     VerifiedIdentity,
 )
+from flakepilot.shared_kernel.events import Actor, ActorType, Channel, Event, Origin
 
 TOKEN_FORMAT = re.compile(r"[A-Za-z0-9_-]{43}")
+HTTP = Origin(Channel.HTTP, "request-1")
+CLI = Origin(Channel.CLI, "run-1")
 
 
 class FakeProvider:
@@ -50,21 +54,33 @@ class FakeProvider:
 
 
 class FakeStore:
-    def __init__(self, access: OrgAccess | None = None) -> None:
+    def __init__(self, access: OrgAccess | None = None, live_sessions: int = 0) -> None:
         self.access = access
+        self.live_sessions = live_sessions
+        self.org_names: set[str] = set()
         self.writes: list[tuple[str, dict[str, object]]] = []
 
-    async def upsert_user(self, *, issuer: str, subject: str, login: str) -> str:
+    @property
+    def events(self) -> list[Event]:
+        return [row["event"] for name, row in self.writes if name == "event"]  # type: ignore[misc]
+
+    async def append_event(self, event: Event) -> None:
+        self.writes.append(("event", {"event": event}))
+
+    async def upsert_user(
+        self, *, issuer: str, subject: str, login: str
+    ) -> tuple[str, bool]:
         self.writes.append(("upsert_user", {"subject": subject, "login": login}))
-        return "user-1"
+        return "user-1", True
 
     async def create_session(
         self, *, id_hash: bytes, user_id: str, lifetime: timedelta
     ) -> None:
         self.writes.append(("create_session", {"id_hash": id_hash, "user_id": user_id}))
 
-    async def revoke_session(self, *, id_hash: bytes, reason: str) -> None:
+    async def revoke_session(self, *, id_hash: bytes, reason: str) -> str | None:
         self.writes.append(("revoke_session", {"id_hash": id_hash, "reason": reason}))
+        return "user-0"
 
     async def active_session_user(
         self, *, id_hash: bytes, idle: timedelta, touch_after: timedelta
@@ -89,21 +105,29 @@ class FakeStore:
         self.writes.append(("active_ci_upload_token", {"token_hash": token_hash}))
         return None
 
-    async def org_name_exists(self, *, name: str) -> bool:
-        self.writes.append(("org_name_exists", {"name": name}))
-        return False
-
-    async def create_org(self, *, org_id: str, name: str) -> None:
+    async def create_org(self, *, org_id: str, name: str) -> bool:
+        if name.lower() in self.org_names:
+            return False
+        self.org_names.add(name.lower())
         self.writes.append(("create_org", {"org_id": org_id, "name": name}))
+        return True
 
-    async def ensure_user(self, *, issuer: str, subject: str, login: str | None) -> str:
+    async def ensure_user(
+        self, *, issuer: str, subject: str, login: str | None
+    ) -> tuple[str, bool]:
         self.writes.append(("ensure_user", {"subject": subject, "login": login}))
-        return "user-1"
+        return "user-1", False
 
     async def add_membership(
         self, *, org_id: str, user_id: str, org_admin: bool
     ) -> None:
         self.writes.append(("add_membership", {"user_id": user_id, "admin": org_admin}))
+
+    async def revoke_user_sessions(self, *, user_id: str, reason: str) -> int:
+        self.writes.append(
+            ("revoke_user_sessions", {"user_id": user_id, "reason": reason})
+        )
+        return self.live_sessions
 
 
 def iam(store: FakeStore, provider: FakeProvider | None = None) -> Iam:
@@ -122,6 +146,7 @@ def complete(service: Iam, **overrides: object) -> str:
         "code_verifier": "verifier-1",
         "error": None,
         "previous_session": None,
+        "origin": HTTP,
     }
     arguments.update(overrides)
     return asyncio.run(service.complete_sign_in(**arguments))  # type: ignore[arg-type]
@@ -186,22 +211,60 @@ def bootstrap(store: FakeStore, **overrides: object) -> str:
         "admin_issuer": "https://github.com",
         "admin_subject": "12345",
         "admin_login": "octo-cat",
+        "origin": CLI,
     }
     arguments.update(overrides)
     return asyncio.run(iam(store).bootstrap_org(**arguments))  # type: ignore[arg-type]
 
 
 def test_bootstrap_creates_org_admin_in_one_unit_of_work() -> None:
-    store = FakeStore()
+    store = FakeStore(live_sessions=2)
     org_id = bootstrap(store)
     assert [name for name, _ in store.writes] == [
-        "org_name_exists",
         "create_org",
         "ensure_user",
         "add_membership",
+        "event",
+        "revoke_user_sessions",
+        "event",
     ]
-    assert store.writes[1][1] == {"org_id": org_id, "name": "Acme Inc."}
-    assert store.writes[3][1] == {"user_id": "user-1", "admin": True}
+    assert store.writes[0][1] == {"org_id": org_id, "name": "Acme Inc."}
+    assert store.writes[2][1] == {"user_id": "user-1", "admin": True}
+    assert store.writes[4][1] == {"user_id": "user-1", "reason": "privilege_change"}
+    bootstrapped, revoked = store.events
+    operator = Actor(ActorType.OPERATOR_CLI)
+    assert (bootstrapped.name, bootstrapped.actor, bootstrapped.origin) == (
+        "iam.org.bootstrapped",
+        operator,
+        CLI,
+    )
+    assert (bootstrapped.org_id, bootstrapped.subject.id) == (org_id, org_id)
+    assert bootstrapped.payload == {
+        "admin_user_id": "user-1",
+        "admin_user_created": False,
+    }
+    assert (revoked.name, revoked.actor, revoked.org_id, revoked.reason) == (
+        "iam.session.revoked",
+        operator,
+        None,
+        "privilege_change",
+    )
+    assert (revoked.subject.id, revoked.payload) == ("user-1", {"sessions": 2})
+
+
+def test_bootstrap_without_live_sessions_emits_no_revocation() -> None:
+    store = FakeStore()
+    bootstrap(store)
+    assert [event.name for event in store.events] == ["iam.org.bootstrapped"]
+
+
+def test_bootstrap_refuses_a_name_equal_ignoring_case() -> None:
+    store = FakeStore()
+    bootstrap(store, name="Acme Inc.")
+    writes = len(store.writes)
+    with pytest.raises(OrgAlreadyExists):
+        bootstrap(store, name="ACME inc.")
+    assert len(store.writes) == writes
 
 
 @pytest.mark.parametrize(
@@ -236,12 +299,47 @@ def test_sign_in_stores_only_a_hash_and_rotates_the_previous_session() -> None:
     assert TOKEN_FORMAT.fullmatch(session_id)
     assert [name for name, _ in store.writes] == [
         "upsert_user",
+        "event",
         "revoke_session",
+        "event",
         "create_session",
+        "event",
     ]
-    assert store.writes[1][1] == {"id_hash": digest(previous), "reason": "rotated"}
-    assert store.writes[2][1]["id_hash"] == digest(session_id)
+    assert store.writes[2][1] == {"id_hash": digest(previous), "reason": "rotated"}
+    assert store.writes[4][1]["id_hash"] == digest(session_id)
     assert session_id not in repr(store.writes)
+
+    signed_in, rotated, created = store.events
+    user = Actor(ActorType.USER, "user-1")
+    assert [(e.name, e.actor, e.origin, e.org_id) for e in store.events] == [
+        ("iam.user.signed_in", user, HTTP, None),
+        ("iam.session.revoked", user, HTTP, None),
+        ("iam.session.created", user, HTTP, None),
+    ]
+    assert signed_in.payload == {"user_created": True}
+    # The rotated session belonged to whoever held the cookie: its owner is the subject.
+    assert (rotated.subject.id, rotated.reason) == ("user-0", "rotated")
+    assert (created.subject.id, created.after) == ("user-1", "active")
+    for secret in (
+        session_id,
+        previous,
+        digest(session_id).hex(),
+        digest(previous).hex(),
+    ):
+        assert secret not in repr(store.events)
+
+
+def test_sign_out_emits_one_revocation_by_the_session_owner() -> None:
+    store = FakeStore()
+    session_id = "s" * 43
+    asyncio.run(iam(store).sign_out(session_id, origin=HTTP))
+    [event] = store.events
+    assert (event.name, event.actor, event.reason) == (
+        "iam.session.revoked",
+        Actor(ActorType.USER, "user-0"),
+        "signed_out",
+    )
+    assert session_id not in repr(event) and digest(session_id).hex() not in repr(event)
 
 
 def test_malformed_credentials_are_rejected_without_a_lookup() -> None:
@@ -262,7 +360,11 @@ VIEWER = OrgAccess("user-2", "org-1", grants=frozenset({("repo-1", Grant.VIEW)})
 def create_token(service: Iam, access: OrgAccess, repo_id: str = "repo-1") -> str:
     return asyncio.run(
         service.create_ci_upload_token(
-            access, org_id="org-1", repo_id=repo_id, code_host=CodeHostAccess.READ
+            access,
+            org_id="org-1",
+            repo_id=repo_id,
+            code_host=CodeHostAccess.READ,
+            origin=HTTP,
         )
     )
 
@@ -271,8 +373,21 @@ def test_ci_upload_tokens_are_shown_once_and_stored_as_hashes() -> None:
     store = FakeStore()
     token = create_token(iam(store), CONFIGURER)
     assert token.startswith("fpi_") and TOKEN_FORMAT.fullmatch(token[4:])
-    [(name, row)] = store.writes
-    assert name == "create_ci_upload_token"
+    [(name, row), (appended, _)] = store.writes
+    assert (name, appended) == ("create_ci_upload_token", "event")
+    [event] = store.events
+    assert (event.name, event.actor, event.org_id, event.repo_id) == (
+        "iam.ci_upload_token.created",
+        Actor(ActorType.USER, "user-1"),
+        "org-1",
+        "repo-1",
+    )
+    assert (event.subject.type, event.subject.id) == (
+        "ci_upload_token",
+        row["token_id"],
+    )
+    for secret in (token, token[4:12], digest(token).hex()):
+        assert secret not in repr(event)
     assert row["token_hash"] == digest(token)
     assert row["display_prefix"] == token[4:12]
     assert (row["org_id"], row["repo_id"], row["created_by"]) == (
@@ -290,3 +405,24 @@ def test_ci_upload_tokens_need_repo_configure() -> None:
     with pytest.raises(ResourceNotFound):
         create_token(iam(store), VIEWER, repo_id="repo-2")
     assert store.writes == []
+
+
+def test_revoking_a_ci_upload_token_emits_its_revocation() -> None:
+    store = FakeStore()
+    asyncio.run(
+        iam(store).revoke_ci_upload_token(
+            CONFIGURER,
+            org_id="org-1",
+            repo_id="repo-1",
+            token_id="token-1",
+            code_host=CodeHostAccess.READ,
+            origin=HTTP,
+        )
+    )
+    [event] = store.events
+    assert (event.name, event.subject.id, event.before, event.after) == (
+        "iam.ci_upload_token.revoked",
+        "token-1",
+        "active",
+        "revoked",
+    )

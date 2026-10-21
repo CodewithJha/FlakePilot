@@ -261,23 +261,33 @@ def test_migrations_upgrade_and_check_cleanly(database_url: str) -> None:
             check=False,
         )
 
-    upgrade = alembic("upgrade", "head")
-    check = alembic("check")
-    assert upgrade.returncode == 0, upgrade.stderr
-    assert check.returncode == 0, check.stderr
-    assert "No new upgrade operations detected." in check.stdout + check.stderr
-    output = upgrade.stdout + upgrade.stderr + check.stdout + check.stderr
-    assert not any(leak in output for leak in _leaks(database_url))
-
-    async def version_table() -> object:
+    async def schemas() -> list[object]:
         engine = create_engine(database_url)
         try:
             async with transaction(engine) as session:
                 found = await session.execute(
-                    text("SELECT to_regclass('alembic_version')")
+                    text(
+                        "SELECT to_regclass('alembic_version'), "
+                        "to_regclass('iam.outbox'), to_regnamespace('int_secrets')"
+                    )
                 )
-                return found.scalar_one()
+                return list(found.one())
         finally:
             await engine.dispose()
 
-    assert asyncio.run(version_table()) == "alembic_version"
+    # Up, check, down to nothing, up again, check again.
+    runs = [
+        alembic("upgrade", "head"),
+        alembic("check"),
+        alembic("downgrade", "base"),
+    ]
+    emptied = asyncio.run(schemas())
+    runs += [alembic("upgrade", "head"), alembic("check")]
+    for result in runs:
+        assert result.returncode == 0, result.stderr
+    for check in (runs[1], runs[4]):
+        assert "No new upgrade operations detected." in check.stdout + check.stderr
+    output = "".join(r.stdout + r.stderr for r in runs)
+    assert not any(leak in output for leak in _leaks(database_url))
+    assert emptied == ["alembic_version", None, None]
+    assert asyncio.run(schemas()) == ["alembic_version", "iam.outbox", "int_secrets"]

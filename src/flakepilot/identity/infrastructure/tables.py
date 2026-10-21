@@ -3,22 +3,28 @@
 from datetime import datetime
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     Column,
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
+    Identity,
     Index,
     LargeBinary,
     MetaData,
     PrimaryKeyConstraint,
+    SmallInteger,
     Table,
     Text,
     UniqueConstraint,
     Uuid,
     false,
+    func,
+    text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 
 # Same convention in every context's metadata (tests/architecture checks they match).
 NAMING_CONVENTION = {
@@ -51,6 +57,8 @@ orgs = Table(
     Column("name", Text, nullable=False),
     _time("created_at"),
 )
+# Org names are unique case-insensitively (owner decision B, 2026-10-21).
+Index("uq_orgs_lower_name", func.lower(orgs.c.name), unique=True)
 
 users = Table(
     "users",
@@ -134,4 +142,44 @@ ci_upload_tokens = Table(
     CheckConstraint("octet_length(token_hash) = 32", name="token_hash_length"),
     CheckConstraint("char_length(display_prefix) = 8", name="display_prefix_length"),
     Index(None, "org_id", "repo_id"),
+)
+
+# ADR-012: IAM's event envelopes, appended in the same transaction as the change.
+# `published_at` is set by the relay (ADR-006 job runtime, not built yet).
+outbox = Table(
+    "outbox",
+    metadata,
+    _id("event_id", primary_key=True),
+    # Insertion order, also within one transaction (occurred_at is per transaction).
+    Column("seq", BigInteger, Identity(always=True), nullable=False),
+    Column("name", Text, nullable=False),
+    Column("schema_version", SmallInteger, nullable=False),
+    _time("occurred_at"),
+    _id("org_id", nullable=True),
+    _id("repo_id", nullable=True),
+    Column("actor_type", Text, nullable=False),
+    _id("actor_id", nullable=True),
+    Column("channel", Text, nullable=False),
+    Column("correlation_id", Text, nullable=False),
+    Column("subject_type", Text, nullable=False),
+    _id("subject_id", nullable=False),
+    Column("before", Text),
+    Column("after", Text),
+    Column("reason", Text),
+    Column("payload", JSONB, nullable=False),
+    _time("published_at", nullable=True),
+    CheckConstraint(
+        "actor_type IN ('user', 'ci_token', 'operator_cli', 'system')",
+        name="actor_type",
+    ),
+    CheckConstraint(
+        "(actor_type IN ('user', 'ci_token')) = (actor_id IS NOT NULL)",
+        name="actor_id",
+    ),
+    CheckConstraint("channel IN ('http', 'cli')", name="channel"),
+    Index(
+        "ix_iam_outbox_unpublished",
+        "seq",
+        postgresql_where=text("published_at IS NULL"),
+    ),
 )
