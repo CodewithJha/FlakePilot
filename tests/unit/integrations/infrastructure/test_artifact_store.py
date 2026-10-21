@@ -1,6 +1,7 @@
 import asyncio
 import os
 import stat
+import time
 import uuid
 from pathlib import Path
 
@@ -98,12 +99,54 @@ def test_a_reference_with_the_wrong_hash_fails_the_integrity_check(
 # Local filesystem specifics.
 
 
+def test_every_directory_level_is_private(tmp_path: Path) -> None:
+    previous = os.umask(0o002)  # a permissive umask must not leak through
+    try:
+        store = LocalFsArtifactStore(tmp_path)
+        ref = asyncio.run(store.put(owner="ti", org_id=ORG, repo_id=REPO, data=b"x"))
+    finally:
+        os.umask(previous)
+    path = tmp_path.joinpath(*ref.key.split("/"))
+    assert stat.S_IMODE(path.stat().st_mode) == 0o400
+    levels = list(path.relative_to(tmp_path).parents)[:-1]  # every directory below root
+    assert len(levels) == 4
+    for level in levels:
+        assert stat.S_IMODE((tmp_path / level).stat().st_mode) == 0o700, level
+
+
+@pytest.mark.parametrize("mode", [0o777, 0o770, 0o757])
+def test_a_shared_or_foreign_root_is_refused(tmp_path: Path, mode: int) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    root.chmod(mode)
+    with pytest.raises(ValueError) as excinfo:
+        LocalFsArtifactStore(root)
+    assert str(root) not in str(excinfo.value)
+
+
+def test_stale_temporary_files_are_swept_at_startup(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    directory = tmp_path / "ti" / ORG
+    directory.mkdir(parents=True)
+    stale, fresh, kept = (directory / n for n in (".tmp-old", ".tmp-new", "object"))
+    for path in (stale, fresh, kept):
+        path.write_bytes(b"x")
+    old = time.time() - 2 * 3600
+    os.utime(stale, (old, old))
+    os.utime(kept, (old, old))
+    with caplog.at_level("INFO", logger="flakepilot.artifacts"):
+        LocalFsArtifactStore(tmp_path)
+    assert (stale.exists(), fresh.exists(), kept.exists()) == (False, True, True)
+    assert [r.getMessage() for r in caplog.records] == [
+        "removed 1 stale temporary artifact files"
+    ]
+
+
 def test_tampered_objects_are_detected_on_read_and_on_put(tmp_path: Path) -> None:
     store = LocalFsArtifactStore(tmp_path)
     ref = asyncio.run(store.put(owner="ti", org_id=ORG, repo_id=REPO, data=b"good"))
     path = tmp_path.joinpath(*ref.key.split("/"))
-    assert stat.S_IMODE(path.stat().st_mode) == 0o400
-    assert stat.S_IMODE(path.parent.stat().st_mode) == 0o700
     path.chmod(0o600)
     path.write_bytes(b"evil")
     for attempt in (

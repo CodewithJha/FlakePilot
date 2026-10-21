@@ -68,7 +68,9 @@ class TiStore(Protocol):
 
     async def processed_upload(
         self, *, org_id: str, repo_id: str, metadata: UploadMetadata
-    ) -> ProcessedUpload: ...
+    ) -> ProcessedUpload | None:
+        """The processed upload with this idempotency key, if any."""
+        ...
 
     async def record_rejection(self, upload: RejectedUpload) -> None: ...
 

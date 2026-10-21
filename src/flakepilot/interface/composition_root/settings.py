@@ -2,12 +2,13 @@
 
 import base64
 import ipaddress
-import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
+
+from flakepilot.integrations.infrastructure.artifact_store import root_problem
 
 LOG_LEVELS = ("CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG")
 
@@ -128,14 +129,9 @@ class Settings:
 
 def _artifact_dir(value: str) -> Path:
     path = Path(value)
-    if not (
-        path.is_absolute()
-        and path.is_dir()
-        and os.access(path, os.R_OK | os.W_OK | os.X_OK)
-    ):
-        raise SettingsError(
-            "FLAKEPILOT_ARTIFACT_DIR must be an existing, writable absolute directory"
-        )
+    problem = root_problem(path)
+    if problem is not None:
+        raise SettingsError(f"FLAKEPILOT_ARTIFACT_DIR {problem}")
     return path
 
 

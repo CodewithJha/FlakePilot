@@ -104,7 +104,7 @@ class SqlTiStore:
 
     async def processed_upload(
         self, *, org_id: str, repo_id: str, metadata: UploadMetadata
-    ) -> ProcessedUpload:
+    ) -> ProcessedUpload | None:
         key = _metadata_columns(metadata)
         found = await self._session.execute(
             select(
@@ -126,7 +126,9 @@ class SqlTiStore:
                 *(uploads.c[name] == key[name] for name in KEY_COLUMNS[2:]),
             )
         )
-        row = found.one()
+        row = found.one_or_none()
+        if row is None:
+            return None
         return ProcessedUpload(
             row.id,
             row.run_id,

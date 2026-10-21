@@ -5,7 +5,9 @@ validated (owner word, canonical UUIDs, hex digest) before it touches a path, an
 resolved path must stay under the root, so a key can never traverse out of it.
 
 - Immutable: an object is written to a private temporary file and hard-linked into place;
-  linking never replaces an existing file. Files are read-only (0400), directories 0700.
+  linking never replaces an existing file. Files are read-only (0400), every directory
+  level 0700. The root must be owned by this user and not group- or world-writable.
+  Temporary files left by a crash (older than an hour) are swept at startup.
 - Integrity: the SHA-256 is checked on every read, and on a put that finds the object
   already present.
 - Idempotent: the same bytes in the same namespace give the same key and no new object.
@@ -16,13 +18,19 @@ resolved path must stay under the root, so a key can never traverse out of it.
 
 import asyncio
 import hashlib
+import logging
 import os
 import re
+import time
 import uuid
 from pathlib import Path
 
 from flakepilot.integrations.application.ports import ArtifactRef, ArtifactStoreError
 
+STALE_TEMPORARY_SECONDS = 3600
+SWEEP_MAX_FILES = 100_000
+
+_logger = logging.getLogger("flakepilot.artifacts")
 _UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 _OWNER = re.compile(r"[a-z]{2,10}")
 _KEY = re.compile(rf"[a-z]{{2,10}}/{_UUID}/{_UUID}/sha256/[0-9a-f]{{64}}")
@@ -35,11 +43,46 @@ def _canonical_uuid(value: str) -> bool:
         return False
 
 
+def root_problem(root: Path) -> str | None:
+    """Why `root` can't hold artifacts, or None. Never mentions the path."""
+    if not root.is_absolute() or not root.is_dir():
+        return "must be an existing absolute directory"
+    status = root.stat()
+    if status.st_uid != os.getuid() or status.st_mode & 0o022:
+        return "must be owned by this user and not writable by group or others"
+    if not os.access(root, os.R_OK | os.W_OK | os.X_OK):
+        return "must be readable and writable by this user"
+    return None
+
+
 class LocalFsArtifactStore:
     def __init__(self, root: Path) -> None:
-        if not root.is_absolute() or not root.is_dir():
-            raise ValueError("the artifact root must be an existing absolute directory")
+        problem = root_problem(root)
+        if problem is not None:
+            raise ValueError(f"the artifact root {problem}")
         self._root = root.resolve()
+        self._sweep_stale_temporaries()
+
+    def _sweep_stale_temporaries(self) -> None:
+        """Best effort: temporary files left by a crash mid-write. Bounded walk."""
+        cutoff = time.time() - STALE_TEMPORARY_SECONDS
+        removed = seen = 0
+        for directory, _, files in os.walk(self._root):
+            for name in files:
+                seen += 1
+                if seen > SWEEP_MAX_FILES:
+                    break
+                path = Path(directory, name)
+                try:
+                    if name.startswith(".tmp-") and path.lstat().st_mtime < cutoff:
+                        path.unlink()
+                        removed += 1
+                except OSError:
+                    continue
+            if seen > SWEEP_MAX_FILES:
+                break
+        if removed:
+            _logger.info("removed %d stale temporary artifact files", removed)
 
     async def put(
         self, *, owner: str, org_id: str, repo_id: str, data: bytes
@@ -73,7 +116,7 @@ class LocalFsArtifactStore:
         if path.exists():
             self._read(ref)  # present already: it must be intact
             return
-        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self._make_directories(path.parent)
         temporary = path.parent / f".tmp-{uuid.uuid4().hex}"
         descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o400)
         try:
@@ -87,6 +130,16 @@ class LocalFsArtifactStore:
                 self._read(ref)  # a concurrent writer stored it first
         finally:
             temporary.unlink(missing_ok=True)
+
+    def _make_directories(self, directory: Path) -> None:
+        """Every level 0700 (mkdir's `parents` would give intermediates the umask)."""
+        current = self._root
+        for part in directory.relative_to(self._root).parts:
+            current = current / part
+            try:
+                os.mkdir(current, 0o700)
+            except FileExistsError:
+                pass
 
     def _read(self, ref: ArtifactRef) -> bytes:
         path = self._path(ref.key)

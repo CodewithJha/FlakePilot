@@ -2,6 +2,7 @@
 Artifacts go to a pytest temporary directory, never into the repository."""
 
 import asyncio
+import hashlib
 import json
 import secrets
 import time
@@ -276,6 +277,11 @@ def test_duplicates_return_the_original_and_conflicts_are_rejected(
             )
             assert repeat["tests"] == 1
         assert conflict[0] == 409
+        # The conflicting content was refused before anything was written.
+        conflicting = hashlib.sha256(report(("c", "t", FAIL))).hexdigest()
+        assert not (
+            artifact_dir / "ti" / ORG_A / REPO_1 / "sha256" / conflicting
+        ).exists()
         assert conflict[1]["error"]["code"] == "idempotency_conflict"
         ci_run_id = dict(key)[HEADERS["ci_run_id"]]
         rows = await sql(

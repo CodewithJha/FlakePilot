@@ -185,11 +185,19 @@ def test_artifact_dir_must_be_an_existing_writable_absolute_directory(
     a_file.write_text("x")
     read_only = tmp_path / "read-only"
     read_only.mkdir(mode=0o500)
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    shared.chmod(0o777)
+    group_writable = tmp_path / "group-writable"
+    group_writable.mkdir()
+    group_writable.chmod(0o770)
     for value in (
         "relative/dir",
         str(tmp_path / "missing"),
         str(a_file),
         str(read_only),
+        str(shared),
+        str(group_writable),
     ):
         with pytest.raises(SettingsError) as excinfo:
             Settings.from_environ({**environ, "FLAKEPILOT_ARTIFACT_DIR": value})

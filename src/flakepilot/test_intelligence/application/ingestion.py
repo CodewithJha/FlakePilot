@@ -34,6 +34,7 @@ from flakepilot.shared_kernel.events import (
 )
 from flakepilot.test_intelligence.application.store import (
     NewUpload,
+    ProcessedUpload,
     RejectedUpload,
     RunSummary,
     UnitOfWork,
@@ -220,6 +221,15 @@ class Ingestion:
     ) -> IngestionResult:
         principal = attempt.principal
         org_id, repo_id = principal.org_id, principal.repo_id
+        digest = hashlib.sha256(body).digest()
+        # Pre-check, so a duplicate or conflicting submission never writes an artifact.
+        # The unique claim below stays the source of truth: a concurrent one can win.
+        async with self._unit_of_work() as store:
+            existing = await store.processed_upload(
+                org_id=org_id, repo_id=repo_id, metadata=metadata
+            )
+        if existing is not None:
+            return await self._repeat(attempt, existing, metadata, digest)
         artifact = await self._artifacts.put(
             owner=ARTIFACT_OWNER, org_id=org_id, repo_id=repo_id, data=body
         )
@@ -233,8 +243,6 @@ class Ingestion:
             skipped=finals.count(Outcome.SKIPPED),
         )
         upload_id, run_id = str(uuid.uuid4()), str(uuid.uuid4())
-        digest = hashlib.sha256(body).digest()
-        conflict: str | None = None
         async with self._unit_of_work() as store:
             claimed = await store.claim_upload(
                 NewUpload(
@@ -249,30 +257,7 @@ class Ingestion:
                     artifact_key=artifact.key,
                 )
             )
-            if not claimed:
-                existing = await store.processed_upload(
-                    org_id=org_id, repo_id=repo_id, metadata=metadata
-                )
-                if existing.content_sha256 == digest:
-                    await store.append_event(
-                        attempt.event("ti.upload.duplicate", existing.upload_id)
-                    )
-                    return IngestionResult(
-                        existing.upload_id, existing.run_id, True, existing.summary
-                    )
-                conflict = str(uuid.uuid4())
-                await store.record_rejection(
-                    attempt.rejection(conflict, IDEMPOTENCY_CONFLICT, metadata)
-                )
-                await store.append_event(
-                    attempt.event(
-                        "ti.upload.rejected",
-                        conflict,
-                        after="rejected",
-                        reason=IDEMPOTENCY_CONFLICT,
-                    )
-                )
-            else:
+            if claimed:
                 await store.append_event(
                     attempt.event("ti.upload.received", upload_id, after="received")
                 )
@@ -310,7 +295,43 @@ class Ingestion:
                         },
                     )
                 )
-        if conflict is not None:
-            _logger.warning("upload rejected: %s", IDEMPOTENCY_CONFLICT)
-            raise UploadRejected(IDEMPOTENCY_CONFLICT)
+        if not claimed:  # a concurrent submission with the same key claimed it first
+            async with self._unit_of_work() as store:
+                existing = await store.processed_upload(
+                    org_id=org_id, repo_id=repo_id, metadata=metadata
+                )
+            assert existing is not None
+            return await self._repeat(attempt, existing, metadata, digest)
         return IngestionResult(upload_id, run_id, False, summary)
+
+    async def _repeat(
+        self,
+        attempt: _Attempt,
+        existing: ProcessedUpload,
+        metadata: UploadMetadata,
+        digest: bytes,
+    ) -> IngestionResult:
+        """Same key as a processed upload: a duplicate if the content matches, otherwise
+        a recorded and audited idempotency conflict."""
+        async with self._unit_of_work() as store:
+            if existing.content_sha256 == digest:
+                await store.append_event(
+                    attempt.event("ti.upload.duplicate", existing.upload_id)
+                )
+                return IngestionResult(
+                    existing.upload_id, existing.run_id, True, existing.summary
+                )
+            conflict = str(uuid.uuid4())
+            await store.record_rejection(
+                attempt.rejection(conflict, IDEMPOTENCY_CONFLICT, metadata)
+            )
+            await store.append_event(
+                attempt.event(
+                    "ti.upload.rejected",
+                    conflict,
+                    after="rejected",
+                    reason=IDEMPOTENCY_CONFLICT,
+                )
+            )
+        _logger.warning("upload rejected: %s", IDEMPOTENCY_CONFLICT)
+        raise UploadRejected(IDEMPOTENCY_CONFLICT)
