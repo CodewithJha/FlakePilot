@@ -66,6 +66,8 @@ class Settings:
     execution_wall_seconds: int = 30
     execution_memory_mb: int = 512
     execution_pids: int = 64
+    # Optional bearer for GitHub contents reads. Empty means revisions stay unverified.
+    github_contents_token: Secret | None = None
 
     @classmethod
     def from_environ(cls, environ: Mapping[str, str]) -> "Settings":
@@ -155,6 +157,7 @@ class Settings:
                 environ, "FLAKEPILOT_EXECUTION_MEMORY_MB", 512, 64, 2048
             ),
             execution_pids=_bounded(environ, "FLAKEPILOT_EXECUTION_PIDS", 64, 8, 256),
+            github_contents_token=_contents_token(environ),
         )
 
 
@@ -191,6 +194,15 @@ def _execution_image(environ: Mapping[str, str]) -> str | None:
     if mode == "evaluation" and image is None:
         raise SettingsError("FLAKEPILOT_EXECUTION_IMAGE is required for evaluation")
     return image
+
+
+def _contents_token(environ: Mapping[str, str]) -> Secret | None:
+    token = environ.get("FLAKEPILOT_GITHUB_CONTENTS_TOKEN") or None
+    if token is None:
+        return None
+    if len(token) > 500 or any(character.isspace() for character in token):
+        raise SettingsError("FLAKEPILOT_GITHUB_CONTENTS_TOKEN is not a token")
+    return Secret(token)
 
 
 def _artifact_dir(value: str) -> Path:

@@ -287,3 +287,21 @@ def test_execution_defaults_closed_and_evaluation_needs_a_digest() -> None:
     with pytest.raises(SettingsError) as excinfo:
         Settings.from_environ({**environ, "FLAKEPILOT_EXECUTION_MODE": "evaluation"})
     assert "FLAKEPILOT_EXECUTION_IMAGE" in str(excinfo.value)
+
+
+def test_contents_token_stays_out_of_errors_and_repr() -> None:
+    environ = {"FLAKEPILOT_DATABASE_URL": DSN}
+    assert Settings.from_environ(environ).github_contents_token is None
+    token = "ghs_" + ("a" * 20)
+    settings = Settings.from_environ(
+        {**environ, "FLAKEPILOT_GITHUB_CONTENTS_TOKEN": token}
+    )
+    assert settings.github_contents_token is not None
+    assert settings.github_contents_token.reveal() == token
+    assert token not in repr(settings)
+    with pytest.raises(SettingsError) as excinfo:
+        Settings.from_environ(
+            {**environ, "FLAKEPILOT_GITHUB_CONTENTS_TOKEN": "bad token"}
+        )
+    assert "FLAKEPILOT_GITHUB_CONTENTS_TOKEN" in str(excinfo.value)
+    assert "bad token" not in str(excinfo.value)

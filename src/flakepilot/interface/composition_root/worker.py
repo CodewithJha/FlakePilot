@@ -2,8 +2,8 @@
 
     python -m flakepilot.interface.composition_root worker
 
-No product job types are registered yet: this process is the runtime, and handlers
-are the `handlers` argument, never a payload field. Cleanup jobs stay deferred.
+The registered job type is browser reproduction. Its payload is an execution id.
+Handlers are the `handlers` argument, never a payload field. Cleanup jobs stay deferred.
 """
 
 import asyncio
@@ -25,6 +25,8 @@ from flakepilot.interface.composition_root.database import (
     transaction,
 )
 from flakepilot.interface.composition_root.relay import deliver_batch
+from flakepilot.interface.composition_root.reproduction import reproduction_handlers
+from flakepilot.interface.composition_root.scheduling import enqueue_missing
 from flakepilot.interface.composition_root.settings import Settings
 from flakepilot.orchestration.application.jobs import Clock, JobStore
 from flakepilot.orchestration.application.worker import Handler, Jobs, Worker
@@ -85,11 +87,14 @@ async def run_worker(settings: Settings) -> int:
         except Exception as exc:  # noqa: BLE001 - driver errors can carry the host
             _logger.error("worker stopped: %s", type(exc).__name__)
             return 1
+        await enqueue_missing(engine, datetime.now(UTC))
         stop = asyncio.Event()
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, stop.set)
-        await build_worker(engine, settings).run(stop)
+        await build_worker(
+            engine, settings, reproduction_handlers(engine, settings)
+        ).run(stop)
     finally:
         await dispose_engine(engine)
     return 0

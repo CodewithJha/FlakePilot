@@ -25,7 +25,19 @@ import time
 import uuid
 from pathlib import Path
 
-from flakepilot.integrations.application.ports import ArtifactRef, ArtifactStoreError
+from flakepilot.integrations.application.ports import (
+    ArtifactRef,
+    ArtifactStore,
+    ArtifactStoreError,
+)
+
+__all__ = [
+    "ArtifactRef",
+    "ArtifactStore",
+    "ArtifactStoreError",
+    "LocalFsArtifactStore",
+    "root_problem",
+]
 
 STALE_TEMPORARY_SECONDS = 3600
 SWEEP_MAX_FILES = 100_000

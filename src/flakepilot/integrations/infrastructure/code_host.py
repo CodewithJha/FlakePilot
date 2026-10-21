@@ -18,6 +18,7 @@ from collections.abc import Callable
 from typing import Any
 
 from flakepilot.integrations.application.ports import (
+    CodeHost,
     CodeHostError,
     commit_sha_ok,
     github_name_ok,
@@ -30,6 +31,9 @@ MAX_ARCHIVE_BYTES = 5 * 1024 * 1024
 MAX_JSON_BYTES = 64 * 1024
 
 Transport = Callable[[urllib.request.Request, int], tuple[int, bytes]]
+
+
+__all__ = ["CodeHost", "CodeHostError", "GitHubCodeHost"]
 
 
 class _NoRedirects(urllib.request.HTTPRedirectHandler):

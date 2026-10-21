@@ -21,7 +21,11 @@ from flakepilot.execution.domain.reproduction import (
     SCHEDULED,
     Decision,
 )
-from flakepilot.execution.infrastructure.tables import executions, outbox
+from flakepilot.execution.infrastructure.tables import (
+    execution_artifacts,
+    executions,
+    outbox,
+)
 from flakepilot.shared_kernel.events import (
     SCHEMA_VERSION,
     Actor,
@@ -263,6 +267,28 @@ class SqlExecutionStore:
             .returning(executions.c.id)
         )
         return result.first() is not None
+
+    async def add_artifact(
+        self,
+        *,
+        execution_id: str,
+        kind: str,
+        digest: bytes,
+        size: int,
+        artifact_key: str,
+    ) -> None:
+        if kind not in ("result", "screenshot") or len(digest) != 32:
+            raise InvalidExecution("invalid_request")
+        await self._session.execute(
+            execution_artifacts.insert().values(
+                id=str(uuid.uuid4()),
+                execution_id=execution_id,
+                kind=kind,
+                sha256=digest,
+                size=size,
+                artifact_key=artifact_key,
+            )
+        )
 
     async def scheduled_without_job(self, limit: int) -> list[str]:
         if not 1 <= limit <= 100:

@@ -14,6 +14,8 @@ from flakepilot.execution.domain.reproduction import (
     Decision,
     born_inconclusive,
     born_scheduled,
+    classify,
+    screenshot_ok,
     selector_ok,
     sha_ok,
 )
@@ -33,7 +35,16 @@ from flakepilot.repository.application.source import (
 from flakepilot.shared_kernel.events import Actor, Origin
 
 # Re-exported for the composition root. The job type is not a request field.
-__all__ = ["JOB_TYPE", "Execution", "ExecutionStore", "InvalidExecution", "schedule"]
+__all__ = [
+    "JOB_TYPE",
+    "Decision",
+    "Execution",
+    "ExecutionStore",
+    "InvalidExecution",
+    "classify",
+    "schedule",
+    "screenshot_ok",
+]
 
 _TOKEN = re.compile(r"[A-Za-z0-9._:-]{1,100}")
 

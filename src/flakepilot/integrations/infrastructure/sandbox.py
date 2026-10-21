@@ -24,9 +24,23 @@ from typing import Protocol
 
 from flakepilot.integrations.application.ports import (
     CancelFlag,
+    Sandbox,
     SandboxFile,
     SandboxReport,
 )
+
+__all__ = [
+    "APPROVED_COMMAND",
+    "PNG_MAGIC",
+    "CancelFlag",
+    "ClosedSandbox",
+    "ContainerSandbox",
+    "Sandbox",
+    "SandboxFile",
+    "SandboxReport",
+    "image_ok",
+    "unverified_source",
+]
 
 APPROVED_COMMAND = "/opt/flakepilot/reproduce"
 MAX_RESULT_BYTES = 8192
@@ -37,6 +51,11 @@ MAX_ARCHIVE_BYTES = 5 * 1024 * 1024
 MAX_UNCOMPRESSED_BYTES = 20 * 1024 * 1024
 MAX_ARCHIVE_FILES = 500
 _IMAGE = re.compile(r"[a-z0-9][a-z0-9._/-]{0,180}@sha256:[0-9a-f]{64}")
+
+
+def unverified_source() -> SandboxReport:
+    """The control plane could not fetch a pinned archive. No process is started."""
+    return SandboxReport("infra", "source_unverified")
 
 
 def image_ok(value: str) -> bool:
