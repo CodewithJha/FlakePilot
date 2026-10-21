@@ -2,6 +2,27 @@
 
 Evidence-based investigation and verification of recurring test failures. See [PRODUCT-SCOPE](docs/product/PRODUCT-SCOPE.md).
 
+## Status
+
+**Pre-alpha. Not production-ready.** The backend foundations exist: sign-in, org bootstrap, CI upload tokens, JUnit ingestion and a failure classifier. Known gaps:
+
+- **No UI.** The API is the only interface.
+- **CI upload tokens can't be issued yet.** The use case exists, but there is no HTTP route or CLI for it.
+- **Classification isn't exposed over HTTP.** It exists only as an application use case (ADR-013).
+- **Parsing is synchronous.** Reports are parsed inside the upload request; there is no job runtime yet.
+- **No quotas or rate limits.**
+- **Artifacts are not encrypted at rest, and never cleaned up.** Raw reports are plain files under `FLAKEPILOT_ARTIFACT_DIR`, and there is no retention job.
+- **No Docker deployment yet.**
+- **TLS and request limits are your job.** Run it only behind a TLS-terminating reverse proxy that also enforces request size and time limits.
+
+## Architecture
+
+FlakePilot is a modular monolith: Python, FastAPI and PostgreSQL. It is split into bounded contexts, each with its own domain, application and infrastructure layers, its own database schema, and import boundaries enforced in CI.
+
+- **What it does and why:** [PRODUCT-SCOPE](docs/product/PRODUCT-SCOPE.md).
+- **System design, contexts and dependency rules:** [docs/architecture/](docs/architecture/).
+- **Decisions:** [docs/adr/README.md](docs/adr/README.md).
+
 ## Local setup
 
 Requires [uv](https://docs.astral.sh/uv/). uv uses its managed CPython 3.12 (`.python-version`), never the host default.
@@ -10,34 +31,84 @@ Requires [uv](https://docs.astral.sh/uv/). uv uses its managed CPython 3.12 (`.p
 uv sync --locked
 ```
 
+## Configuration
+
+Settings come from environment variables only (see [`.env.example`](.env.example)). Empty means unset. An invalid value stops startup with a message that names the variable but never shows its value.
+
+| Variable | Required | Default | Meaning |
+|---|---|---|---|
+| `FLAKEPILOT_DATABASE_URL` | yes | — | PostgreSQL URL, `postgresql://USER:PASSWORD@HOST:5432/DBNAME`. Never logged |
+| `FLAKEPILOT_LOG_LEVEL` | no | `INFO` | `CRITICAL`, `ERROR`, `WARNING`, `INFO` or `DEBUG` |
+| `FLAKEPILOT_HOST` | no | `127.0.0.1` | Bind address (an IP address) |
+| `FLAKEPILOT_PORT` | no | `8000` | Bind port |
+| `FLAKEPILOT_PUBLIC_ORIGIN` | for sign-in | — | The public `https://host[:port]` users reach. Used for the OAuth callback and the CSRF origin check |
+| `FLAKEPILOT_GITHUB_CLIENT_ID` | for sign-in | — | GitHub App client ID |
+| `FLAKEPILOT_GITHUB_CLIENT_SECRET` | for sign-in | — | GitHub App client secret. Never logged |
+| `FLAKEPILOT_ALLOW_INSECURE_COOKIES` | no | `false` | `true` only for local plain-HTTP development: drops `Secure` and the `__Host-` cookie prefix. Never in production |
+| `FLAKEPILOT_SECRET_KEY` | no | — | 32 random bytes, base64, for the encrypted secret store. Validated if set, but **not used yet** |
+| `FLAKEPILOT_ARTIFACT_DIR` | for ingestion | — | Where raw test reports are stored. Must be an existing absolute directory, owned by the service user, not group- or world-writable, and outside the repository. Unset: `POST /ingest/junit` answers 503 `ingestion_not_configured` |
+
+### GitHub App sign-in
+
+1. Create a GitHub App.
+2. Set its callback URL to `{FLAKEPILOT_PUBLIC_ORIGIN}/auth/github/callback`, for example `https://flakepilot.example.com/auth/github/callback`.
+3. Set `FLAKEPILOT_PUBLIC_ORIGIN`, `FLAKEPILOT_GITHUB_CLIENT_ID` and `FLAKEPILOT_GITHUB_CLIENT_SECRET`.
+
+Without a client ID and secret, sign-in is off and the auth endpoints answer 503 `auth_not_configured`; a public origin on its own changes nothing. If the client ID or secret is set but any of the three is missing, **startup fails** (fail closed). Sign-in only authenticates; access comes from FlakePilot's own org membership and grants (ADR-011).
+
 ## Run the API
 
 ```sh
+uv run alembic upgrade head        # migrations are an explicit step, never run at startup
 uv run python -m flakepilot.interface.composition_root
 ```
 
-Settings come from environment variables only (see [`.env.example`](.env.example)); invalid values stop startup with a message naming the variable. `FLAKEPILOT_DATABASE_URL` (`postgresql://USER:PASSWORD@HOST:5432/DBNAME`) is required. If PostgreSQL is unreachable at startup the process exits with code 3, so deployments must use a restart policy or wait on a database health check (to be implemented in the Docker deployment stage). Probes: `GET /health/live`, `GET /health/ready` (includes a bounded database check).
+If PostgreSQL is unreachable at startup, the process exits with code 3, so use a restart policy or wait on a database health check. Probes: `GET /health/live` and `GET /health/ready` (the latter includes a bounded database check).
 
-Database timeouts are constants in `src/flakepilot/interface/composition_root/database.py` (local-development defaults: 30s per statement, 60s idle in a transaction, 5s to connect or get a pooled connection, 2s for readiness). Pooled connections are pinged on checkout, so connections dropped by the server are replaced transparently.
+Database timeouts are constants in `src/flakepilot/interface/composition_root/database.py`. Local-development defaults:
+- 30 s per statement;
+- 60 s idle in a transaction;
+- 5 s to connect or to get a pooled connection;
+- 2 s for readiness.
 
-Sign-in uses the GitHub App (`GET /auth/github/login`, `GET /auth/github/callback`, `POST /auth/logout`; ADR-011). It is enabled only when `FLAKEPILOT_PUBLIC_ORIGIN`, `FLAKEPILOT_GITHUB_CLIENT_ID` and `FLAKEPILOT_GITHUB_CLIENT_SECRET` are set; otherwise those endpoints answer 503 `auth_not_configured`. Session cookies are `Secure` with the `__Host-` prefix; for local plain-HTTP development only, set `FLAKEPILOT_ALLOW_INSECURE_COOKIES=true` (never in production). `FLAKEPILOT_SECRET_KEY` (32 bytes, base64) is the key for the encrypted secret store.
+Pooled connections are pinged on checkout.
 
-Signing in grants nothing by itself. An operator creates the first org and its org admin (after migrations); it prints only the new org ID. Org names are unique ignoring case. The change is recorded in IAM's outbox as `iam.org.bootstrapped` (ADR-012):
+Sign-in endpoints: `GET /auth/github/login`, `GET /auth/github/callback` and `POST /auth/logout` (ADR-011). Signing in grants nothing by itself. An operator creates the first org and its org admin; the command prints only the new org ID. Org names are unique ignoring case:
 
 ```sh
 uv run python -m flakepilot.interface.composition_root bootstrap-org --name "Acme" --admin-github-id 12345 --admin-login octocat
 ```
 
-CI uploads JUnit XML with a CI upload token: `POST /ingest/junit` with `Authorization: Bearer fpi_…`, `Content-Type: application/xml`, the report as the body (10 MiB at most), and the headers `X-FlakePilot-CI-Source`, `-CI-Run-Id`, `-CI-Attempt`, `-Job-Name`, `-Commit-Sha`, `-Ref`, `-Environment`, `-Started-At`, `-Finished-At`. The token decides the org and repo. Answers: 201 accepted, 200 duplicate of an earlier upload with the same idempotency key and content, 409 `idempotency_conflict` for the same key with other content. Raw reports go to `FLAKEPILOT_ARTIFACT_DIR`. Formats, limits and deviations: ADR-013.
+CI uploads JUnit XML with a CI upload token (no issuance route yet, see Status):
 
-Errors are JSON `{"error": {"code", "message", "request_id"}}` with stable codes (`unauthenticated`, `forbidden`, `not_found`, `method_not_allowed`, `validation_error`, `http_error`, `internal_error`, `auth_not_configured`, `auth_provider_unavailable`, `idempotency_conflict`, `payload_too_large`, `unsupported_media_type`, `invalid_report` (with a `reason`), `ingestion_not_configured`); the request id is also in the `X-Request-ID` header. API conventions and deferred decisions (idempotency, pagination): `src/flakepilot/interface/http/__init__.py`.
+- **Request:** `POST /ingest/junit` with `Authorization: Bearer fpi_…`, `Content-Type: application/xml`, and the report as the body (10 MiB at most).
+- **Metadata headers**, each sent exactly once: `X-FlakePilot-CI-Source`, `-CI-Run-Id`, `-CI-Attempt`, `-Job-Name`, `-Commit-Sha`, `-Ref`, `-Environment`, `-Started-At` and `-Finished-At`.
+- **Scope:** the token decides the org and repo.
+- **Answers:** 201 accepted; 200 a duplicate of an earlier upload with the same idempotency key and content; 409 `idempotency_conflict` for the same key with other content.
+- **Details:** formats, limits and deviations are in ADR-013.
 
-Migrations are an explicit step, never run at startup. They read `FLAKEPILOT_DATABASE_URL`; each context keeps its revisions in its own `infrastructure/migrations` directory and its tables in its own schema (`iam`, `int_secrets`, `ti`):
+Errors are JSON `{"error": {"code", "message", "request_id"}}`; the request ID is also in the `X-Request-ID` header. Stable codes:
 
-```sh
-uv run alembic upgrade head
-uv run alembic check
-```
+| Code | Meaning |
+|---|---|
+| `unauthenticated` | No verified principal |
+| `forbidden` | Visible resource, action not permitted |
+| `not_found` | No such route, or a resource the principal can't see |
+| `method_not_allowed` | Wrong HTTP method |
+| `validation_error` | Request failed validation |
+| `http_error` | Any other HTTP error status |
+| `internal_error` | Unexpected server error |
+| `auth_not_configured` | Sign-in is not configured |
+| `auth_provider_unavailable` | The sign-in provider is down |
+| `idempotency_conflict` | Same idempotency key, other content |
+| `payload_too_large` | Body over the limit |
+| `unsupported_media_type` | Wrong content type or encoding |
+| `invalid_report` | Report refused, with a `reason` |
+| `ingestion_not_configured` | No artifact directory is configured |
+
+API conventions: `src/flakepilot/interface/http/__init__.py`.
+
+Each context keeps its migrations in its own `infrastructure/migrations` directory and its tables in its own schema (`iam`, `int_secrets`, `ti`). `uv run alembic check` verifies that the models and migrations match.
 
 ## Quality gates
 
@@ -59,3 +130,12 @@ uv run pip-licenses --python .venv-runtime/bin/python
 - `pip-licenses` checks installed Python packages only. Shipped container images need the separate licence review in [ADR-007](docs/adr/ADR-007-implementation-stack-and-licensing.md) item 5.
 - The dev-environment licence gate has one owner-approved exception (pathspec 1.1.1, MPL-2.0, dev-only via mypy), recorded in `pyproject.toml` next to `[tool.pip-licenses]`. The runtime-environment gate allows no exceptions.
 - Tests marked `integration` need PostgreSQL and are skipped unless `FLAKEPILOT_TEST_DATABASE_URL` is set. When `CI` is set (GitHub Actions), a missing URL fails the run instead; CI provides a PostgreSQL service.
+- Integration tests create and drop a throwaway database for each test or module next to `FLAKEPILOT_TEST_DATABASE_URL`, so that role needs `CREATEDB`. **Never point it at a real database.**
+
+## Security
+
+Please report vulnerabilities privately; see [SECURITY.md](SECURITY.md).
+
+## Licence
+
+[Apache-2.0](LICENSE).
