@@ -7,6 +7,7 @@ Failures raise IdentityProviderError with a short reason code, never response co
 """
 
 import asyncio
+import http.client
 import json
 import re
 import ssl
@@ -135,7 +136,9 @@ class GitHubIdentityProvider:
             status, body = await asyncio.to_thread(self._transport, request)
         except IdentityProviderError:
             raise
-        except (OSError, ValueError):  # network, TLS, timeout
+        except (OSError, ValueError, http.client.HTTPException):
+            # Network, TLS, timeout; or a broken HTTP exchange (BadStatusLine,
+            # IncompleteRead, RemoteDisconnected, ...).
             raise IdentityProviderError("unavailable", unavailable=True) from None
         if status != 200:
             # 4xx: GitHub rejected the request (e.g. the code); 5xx: GitHub is failing.

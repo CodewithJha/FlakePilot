@@ -1,4 +1,5 @@
 import asyncio
+import http.client
 import io
 import json
 import urllib.parse
@@ -93,6 +94,9 @@ def test_identity_comes_from_the_github_api_with_the_exchanged_token() -> None:
         (FakeGitHub(token=(200, b"[1, 2]")), "malformed_response", True),
         (FakeGitHub(token=TimeoutError("timed out")), "unavailable", True),
         (FakeGitHub(token=ConnectionRefusedError()), "unavailable", True),
+        (FakeGitHub(token=http.client.BadStatusLine("x")), "unavailable", True),
+        (FakeGitHub(user=http.client.IncompleteRead(b"")), "unavailable", True),
+        (FakeGitHub(token=http.client.RemoteDisconnected("closed")), "unavailable", True),
         (FakeGitHub(token=(400, b"{}")), "http_400", False),
         (
             FakeGitHub(token=(200, {"error": "bad_verification_code"})),

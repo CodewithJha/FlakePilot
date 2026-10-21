@@ -139,6 +139,8 @@ def test_sign_in_settings_are_read_and_never_revealed() -> None:
         ({"FLAKEPILOT_PUBLIC_ORIGIN": "http://fp.example"}, "must use https"),
         ({"FLAKEPILOT_PUBLIC_ORIGIN": "https://fp.example/app"}, "only scheme"),
         ({"FLAKEPILOT_PUBLIC_ORIGIN": "https://u:p@fp.example"}, "only scheme"),
+        ({"FLAKEPILOT_PUBLIC_ORIGIN": "https://:p@fp.example"}, "only scheme"),
+        ({"FLAKEPILOT_PUBLIC_ORIGIN": "https://@fp.example"}, "only scheme"),
         ({"FLAKEPILOT_PUBLIC_ORIGIN": "ftp://fp.example"}, "http(s) origin"),
         ({"FLAKEPILOT_ALLOW_INSECURE_COOKIES": "yes"}, "must be true or false"),
         ({"FLAKEPILOT_SECRET_KEY": "not base64!"}, "not valid base64"),
@@ -165,6 +167,29 @@ def test_plain_http_is_only_allowed_with_insecure_cookies() -> None:
     )
     assert settings.public_origin == "http://localhost:8000"
     assert not settings.secure_cookies
+
+
+@pytest.mark.parametrize(
+    ("value", "insecure", "origin"),
+    [
+        ("https://FP.Example:443", "false", "https://fp.example"),
+        ("https://fp.example:8443", "false", "https://fp.example:8443"),
+        ("http://LocalHost:80/", "true", "http://localhost"),
+        ("http://localhost:443", "true", "http://localhost:443"),
+        ("https://[::1]:443", "false", "https://[::1]"),
+    ],
+)
+def test_public_origin_is_normalised_as_browsers_send_it(
+    value: str, insecure: str, origin: str
+) -> None:
+    settings = Settings.from_environ(
+        {
+            **GITHUB,
+            "FLAKEPILOT_PUBLIC_ORIGIN": value,
+            "FLAKEPILOT_ALLOW_INSECURE_COOKIES": insecure,
+        }
+    )
+    assert settings.public_origin == origin
 
 
 def test_sign_in_is_off_without_github_settings() -> None:

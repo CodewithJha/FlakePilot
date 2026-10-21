@@ -136,22 +136,31 @@ def _artifact_dir(value: str) -> Path:
 
 
 def _origin(value: str, secure_cookies: bool) -> str:
-    """Normalise to scheme://host[:port]; nothing else is allowed."""
+    """Normalise to scheme://host[:port] as browsers send it in `Origin` (lowercase
+    host, default port omitted); nothing else is allowed."""
     name = "FLAKEPILOT_PUBLIC_ORIGIN"
     try:
         parts = urlsplit(value)
-        parts.port  # noqa: B018 - raises ValueError on an invalid port
+        port = parts.port
     except ValueError:
         raise SettingsError(f"{name} is not a valid origin") from None
     if parts.scheme not in ("https", "http") or not parts.hostname:
         raise SettingsError(f"{name} must be an http(s) origin")
-    if parts.path not in ("", "/") or parts.query or parts.fragment or parts.username:
+    if (
+        parts.path not in ("", "/")
+        or parts.query
+        or parts.fragment
+        or "@" in parts.netloc
+    ):
         raise SettingsError(f"{name} must be only scheme, host and port")
     if parts.scheme == "http" and secure_cookies:
         raise SettingsError(
             f"{name} must use https unless FLAKEPILOT_ALLOW_INSECURE_COOKIES=true"
         )
-    return f"{parts.scheme}://{parts.netloc.lower()}"
+    host = f"[{parts.hostname}]" if ":" in parts.hostname else parts.hostname
+    default = 443 if parts.scheme == "https" else 80
+    suffix = f":{port}" if port is not None and port != default else ""
+    return f"{parts.scheme}://{host}{suffix}"
 
 
 def _decode_key(value: str) -> bytes:
