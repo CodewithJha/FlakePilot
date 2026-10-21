@@ -71,7 +71,8 @@ class Settings:
     worker_poll_seconds: int = 2
     worker_batch_size: int = 10
     worker_lease_seconds: int = 30
-    # closed: never start a container. evaluation: explicit opt-in, not production.
+    # closed is the only mode the worker runs. evaluation is stored and does not
+    # select a container on this process.
     execution_mode: str = "closed"
     execution_runtime: str = "docker"
     execution_image: str | None = None

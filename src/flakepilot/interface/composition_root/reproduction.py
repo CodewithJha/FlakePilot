@@ -41,7 +41,6 @@ from flakepilot.integrations.infrastructure.code_host import (
 from flakepilot.integrations.infrastructure.installation import InstallationMinter
 from flakepilot.integrations.infrastructure.sandbox import (
     ClosedSandbox,
-    ContainerSandbox,
     Sandbox,
     SandboxReport,
     unverified_source,
@@ -371,11 +370,15 @@ async def _evidence(
 
 
 def _sandbox(settings: Settings) -> Sandbox:
-    if settings.execution_mode != "evaluation" or settings.execution_image is None:
-        return ClosedSandbox()
-    return ContainerSandbox(
-        runtime=settings.execution_runtime, image=settings.execution_image
-    )
+    """This process is the control plane. It does not start a container.
+
+    `evaluation` still loads, and `ContainerSandbox` can still be constructed
+    in a unit test of the argument list. Neither one selects a runtime here.
+    A dedicated execution host is required before any handoff, and none is
+    configured.
+    """
+    del settings
+    return ClosedSandbox()
 
 
 def _host(settings: Settings) -> GitHubCodeHost:

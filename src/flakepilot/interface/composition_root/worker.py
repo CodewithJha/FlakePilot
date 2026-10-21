@@ -19,6 +19,7 @@ from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from flakepilot.execution.application.plane import UnavailableRuntimeReaper
 from flakepilot.integrations.infrastructure.sandbox import reap_workdirs
 from flakepilot.interface.composition_root import configure_logging
 from flakepilot.interface.composition_root.database import (
@@ -51,6 +52,17 @@ def job_scope(engine: AsyncEngine, allowed: frozenset[str]) -> Jobs:
             yield SqlJobStore(session, allowed)
 
     return open_jobs
+
+
+def startup_cleanup(root: Path, *, now: float) -> tuple[int, str]:
+    """Remove expired work directories. Runtime resources are not reaped.
+
+    The second value is the reaper's reason. `runtime_reaper_unavailable`
+    means no container or microVM was inspected or removed.
+    """
+    removed = reap_workdirs(root, now=now, ttl_seconds=3600)
+    report = UnavailableRuntimeReaper().reclaim()
+    return removed, report.reason
 
 
 def build_worker(
@@ -91,11 +103,12 @@ async def run_worker(settings: Settings) -> int:
         except Exception as exc:  # noqa: BLE001 - driver errors can carry the host
             _logger.error("worker stopped: %s", type(exc).__name__)
             return 1
-        removed = reap_workdirs(
-            Path(os.environ.get("TMPDIR", "/tmp")), now=time.time(), ttl_seconds=3600
+        removed, reap_reason = startup_cleanup(
+            Path(os.environ.get("TMPDIR", "/tmp")), now=time.time()
         )
         if removed:
             _logger.info("removed %d expired work directories", removed)
+        _logger.error("runtime reaper: %s", reap_reason)
         await enqueue_missing(engine, datetime.now(UTC))
         stop = asyncio.Event()
         loop = asyncio.get_running_loop()

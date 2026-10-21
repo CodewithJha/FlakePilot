@@ -2,9 +2,10 @@
 
 `ClosedSandbox` is the default. It returns `execution_closed` and starts nothing.
 
-`ContainerSandbox` is evaluation-only. It asks `docker` or `podman` to run one
-fixed command inside a fresh container. It never executes that command on the
-host. If the runtime binary is missing, the result is `runtime_unavailable`.
+`ContainerSandbox` builds a `docker` or `podman` argument list for a unit test.
+The worker does not construct it. It never executes the approved command on
+the host. If a caller supplies a runner and the runtime binary is missing, the
+result is `runtime_unavailable`.
 
 The container is not a microVM. `--network=none` is an argument, not a measured
 block of egress or metadata addresses. A worker killed with SIGKILL can leave
