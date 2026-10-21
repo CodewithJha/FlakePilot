@@ -13,6 +13,7 @@ import os
 import socket
 import sys
 import time
+from typing import Protocol
 
 SELECTOR = "tests.login.TestLogin.test_ok"
 _HOST_MARKER = "flakepilot-host-only"
@@ -180,13 +181,34 @@ def privs() -> None:
     print("RESULT userns=" + _unshare(_CLONE_NEWUSER))
 
 
-def disk() -> None:
-    """Write 2 MB in 64 KB pieces. A short write is not success.
+class _ChunkWriter(Protocol):
+    """The `write` result is a count. A short count is not an error."""
 
-    `FileIO.write` can return fewer bytes than requested without raising.
-    The previous probe treated that as `disk_errno=0`. This one keeps going
-    until 2 MB is stored or the filesystem refuses the next piece.
+    def write(self, data: bytes) -> int: ...
+
+
+def fill_until(handle: _ChunkWriter, chunk: bytes, target: int) -> tuple[int, int]:
+    """Store `target` bytes, or stop when the filesystem refuses.
+
+    A short `write` is continued. `(target, 0)` means every byte was accepted.
+    Any smaller count is paired with the errno that stopped the loop. A zero
+    count is `ENOSPC` (28). The old probe stopped after one `write` and printed
+    `disk_errno=0` when that call did not raise.
     """
+    written = 0
+    while written < target:
+        try:
+            count = handle.write(chunk)
+        except OSError as exc:
+            return written, exc.errno or 0
+        if count <= 0:
+            return written, 28
+        written += count
+    return written, 0
+
+
+def disk() -> None:
+    """Write 2 MB in 64 KB pieces. A short write is not success."""
     print("RESULT mount=" + _tmp_mount())
     chunk = b"x" * (64 * 1024)
     target = 2 * 1024 * 1024
@@ -194,12 +216,7 @@ def disk() -> None:
     errno = 0
     try:
         with open("/tmp/fp-disk", "wb", buffering=0) as handle:
-            while written < target:
-                count = handle.write(chunk)
-                if not count:
-                    errno = 28
-                    break
-                written += count
+            written, errno = fill_until(handle, chunk, target)
             try:
                 os.fsync(handle.fileno())
             except OSError as exc:

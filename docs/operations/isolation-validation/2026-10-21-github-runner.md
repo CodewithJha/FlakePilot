@@ -54,13 +54,13 @@ Flags for the probes: `--network=none`, `--cap-drop=ALL`, `--security-opt=no-new
 5. **Privileges.** Expected: non-root, no capabilities, no new privileges, mount denied. Observed: uid 65534, gid 65534, `CapEff=0000000000000000`, `NoNewPrivs=1`, `setuid` errno 1, `mount` errno 1, mount-namespace `unshare` errno 1, user-namespace `unshare` errno 1. **PARTIAL.** The configured policy held, including denial of a new user namespace on this kernel. Seccomp is Docker's built-in profile, not a reviewed profile. The container shares the runner kernel. This is not a microVM.
 
 6. **Limits.**
-   - Disk: tmpfs `size=1m`, then a 2 MB write. Observed: `disk_errno=0`. The write succeeded. **FAIL.** The `size=1m` option did not cap it on Docker 28.0.4. The product argument list uses `size=64m` with the same suffix form. That 64m flag was not the flag this probe ran.
+   - Disk: tmpfs `size=1m`, then one 2 MB `write`. Observed: `disk_errno=0`. That call can return a short count without raising, so this line does not prove the cap was missing and does not prove it held. The chunked probe was not run on this runner. Disk here is **not re-measured**. A later laptop run of the chunked probe is a different machine. See [2026-10-21-laptop-limits.md](2026-10-21-laptop-limits.md).
    - PIDs: `--pids-limit=16`. Observed: 15 children, then `stop_errno=11` (EAGAIN). **PASS.**
    - CPU: `--cpus=0.5`. Observed: `cpu_max=50000_100000`. **PASS.**
    - Memory: `--memory=64m` and `--memory-swap=64m`. The swap flag was accepted. A 256 MB allocation ended `memory_exit=137` and `OOM true 137`. **PASS.**
    - Wall time: a container running `sleep` for 120 seconds was still `running` after 5 seconds. Docker did not stop it. The harness removed it after recording that state. **FAIL.**
 
-   Overall check 6: **FAIL.**
+   Overall check 6 on this run: **FAIL**, because wall time was not enforced. Disk is **not re-measured**, not a proven cap failure.
 
 7. **Malformed and oversized output.** The container printed the bytes. The runner called `classify` from `execution.domain.reproduction`. Observed: extra key `verified` -> `invalid_result`; 9071-byte body -> `invalid_result`; `{not-json` -> `invalid_result`; the legal two-key body -> `success passed`. **PASS** for that function. It is not a kernel check.
 
@@ -86,8 +86,8 @@ A GitHub-hosted runner is not a machine FlakePilot owns. It is not a per-run mic
 
 Commit `0be5da6bb2b16c80d19f76548b189ce6a62873d0` changes the harness and makes the workflow `workflow_dispatch` only. Pushing that commit did not start this workflow. Creating a dispatch event returned HTTP 403. The credential available to this process cannot start the manual job. No new probe log exists.
 
-The disk change writes 2 MB in 64 KB pieces and treats a stored 2 MB file as a failure. Attempt 2 used one `write` of 2 MB, which can return a short count without an error, so that failure does not by itself prove `size=1m` was ignored. It also does not prove the cap works. Until the manual job is run, check 6's disk result stays the attempt 2 observation: the recorded line was `disk_errno=0`.
+The disk change writes 2 MB in 64 KB pieces and treats a stored 2 MB file as a failure. Attempt 2 used one `write` of 2 MB. The runner has still not run the chunked probe. A developer laptop later did, and that record is [2026-10-21-laptop-limits.md](2026-10-21-laptop-limits.md). It does not replace this runner log.
 
-The wall-time change does not ask Docker for a deadline. It starts one container whose `flakepilot.expires` is already past and one whose expiry is still ahead, then runs `LabelledContainerReaper` as a separate process. That was not executed on a runtime. The unit test uses a fake CLI. Attempt 2 remains the evidence that Docker left the sleep running after 5 seconds and that SIGKILL of the client left the container running.
+The wall-time change does not ask Docker for a deadline. It starts one container whose `flakepilot.expires` is already past and one whose expiry is still ahead, then runs `LabelledContainerReaper` as a separate process. That product reaper was not executed on this runner. The unit test uses a fake CLI. Attempt 2 remains the evidence on this runner that Docker left the sleep running after 5 seconds and that SIGKILL of the client left the container running. The laptop page records a host shell that swept by the same expiry rule. That shell was not this harness.
 
 `IsolationChecks` stay false.
