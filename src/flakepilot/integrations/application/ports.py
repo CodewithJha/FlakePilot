@@ -1,7 +1,10 @@
 """Vendor-neutral port contracts owned by INT (ADR-003). Adapters live in infrastructure."""
 
+import re
 from dataclasses import dataclass
 from typing import Protocol
+
+_CODE = re.compile(r"[a-z][a-z0-9_]{0,39}")
 
 
 @dataclass(frozen=True)
@@ -106,3 +109,75 @@ class SecretStore(Protocol):
     async def put(self, scope: SecretScope, name: str, value: str) -> str: ...
 
     async def delete(self, scope: SecretScope, name: str) -> None: ...
+
+
+def _code(value: str, label: str) -> None:
+    if _CODE.fullmatch(value) is None:
+        raise ValueError(f"{label} must be a short code")
+
+
+@dataclass(frozen=True)
+class AiCapabilities:
+    """What an assist adapter can do. `available` is false when no model is wired."""
+
+    available: bool
+    provider: str
+
+    def __post_init__(self) -> None:
+        _code(self.provider, "provider")
+
+
+@dataclass(frozen=True)
+class AiDataPart:
+    """One untrusted input. The adapter must not treat it as instructions."""
+
+    name: str
+    text: str
+
+    def __post_init__(self) -> None:
+        _code(self.name, "data part name")
+
+
+@dataclass(frozen=True)
+class AiRequest:
+    """`instructions` are trusted. `data_parts` are untrusted evidence text."""
+
+    instructions: str
+    data_parts: tuple[AiDataPart, ...]
+    max_output_bytes: int
+
+    def __post_init__(self) -> None:
+        if self.max_output_bytes < 1:
+            raise ValueError("max_output_bytes must be positive")
+
+
+@dataclass(frozen=True)
+class AiResponse:
+    """`available` carries `output` and no reason. Otherwise `output` is absent and
+    `reason` is a short code. Model text never rides in `reason`."""
+
+    available: bool
+    output: str | None
+    reason: str | None
+    provider: str
+    model: str | None
+
+    def __post_init__(self) -> None:
+        _code(self.provider, "provider")
+        if self.model is not None:
+            _code(self.model, "model")
+        if self.available:
+            if not isinstance(self.output, str) or self.reason is not None:
+                raise ValueError("an available response has output and no reason")
+        elif self.output is not None or self.reason is None:
+            raise ValueError("an unavailable response has a reason and no output")
+        elif _CODE.fullmatch(self.reason) is None:
+            raise ValueError("reason must be a short code")
+
+
+class AiAssistPort(Protocol):
+    """Assist port (ADR-009). No tools and no side effects. Adapters do not authorize."""
+
+    def describe(self) -> AiCapabilities: ...
+
+    async def submit(self, request: AiRequest) -> AiResponse: ...
