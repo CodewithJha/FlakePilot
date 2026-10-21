@@ -16,6 +16,7 @@ from typing import Any
 from alembic import context
 from sqlalchemy.engine import Connection
 
+from flakepilot.audit.infrastructure.tables import metadata as aud_metadata
 from flakepilot.diagnosis.infrastructure.tables import metadata as diag_metadata
 from flakepilot.identity.infrastructure.tables import metadata as iam_metadata
 from flakepilot.integrations.infrastructure.secret_store import (
@@ -32,6 +33,7 @@ target_metadata = [
     ti_metadata,
     diag_metadata,
     orch_metadata,
+    aud_metadata,
 ]
 _SCHEMAS = {metadata.schema for metadata in target_metadata}
 _OPTIONS: dict[str, Any] = {

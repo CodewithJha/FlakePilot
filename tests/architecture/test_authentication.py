@@ -1,6 +1,7 @@
 import ast
 from pathlib import Path
 
+from flakepilot.audit.infrastructure.tables import metadata as aud_metadata
 from flakepilot.diagnosis.infrastructure.tables import metadata as diag_metadata
 from flakepilot.identity.infrastructure.tables import metadata as iam_metadata
 from flakepilot.integrations.infrastructure.secret_store import (
@@ -69,6 +70,7 @@ def test_every_context_uses_the_same_constraint_naming_convention() -> None:
         == ti_metadata.naming_convention
         == diag_metadata.naming_convention
         == orch_metadata.naming_convention
+        == aud_metadata.naming_convention
     )
 
 

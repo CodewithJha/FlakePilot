@@ -199,6 +199,9 @@ outbox = Table(
     Column("reason", Text),
     Column("payload", JSONB, nullable=False),
     _time("published_at", nullable=True),
+    Column("attempts", SmallInteger, nullable=False, server_default=text("0")),
+    Column("last_error", Text),
+    _time("dead_at", nullable=True),
     PrimaryKeyConstraint("event_id"),
     CheckConstraint(
         _in("actor_type", ("user", "ci_token", "operator_cli", "system")),
@@ -209,7 +212,15 @@ outbox = Table(
         name="actor_id",
     ),
     CheckConstraint(_in("channel", ("http", "cli")), name="channel"),
+    CheckConstraint("attempts BETWEEN 0 AND 20", name="attempts"),
+    CheckConstraint(
+        "last_error IS NULL OR last_error ~ '^[a-z][a-z0-9_]{0,39}$'",
+        name="last_error",
+    ),
+    CheckConstraint("published_at IS NULL OR dead_at IS NULL", name="terminal"),
     Index(
-        "ix_ti_outbox_unpublished", "seq", postgresql_where=text("published_at IS NULL")
+        "ix_ti_outbox_unpublished",
+        "seq",
+        postgresql_where=text("published_at IS NULL AND dead_at IS NULL"),
     ),
 )

@@ -24,6 +24,7 @@ from flakepilot.interface.composition_root.database import (
     ping,
     transaction,
 )
+from flakepilot.interface.composition_root.relay import deliver_batch
 from flakepilot.interface.composition_root.settings import Settings
 from flakepilot.orchestration.application.jobs import Clock, JobStore
 from flakepilot.orchestration.application.worker import Handler, Jobs, Worker
@@ -55,6 +56,10 @@ def build_worker(
     owner: str | None = None,
 ) -> Worker:
     registered = {} if handlers is None else dict(handlers)
+
+    async def deliver() -> None:
+        await deliver_batch(engine, settings.worker_batch_size)
+
     return Worker(
         jobs=job_scope(engine, frozenset(registered)),
         handlers=registered,
@@ -63,6 +68,7 @@ def build_worker(
         lease=timedelta(seconds=settings.worker_lease_seconds),
         batch=settings.worker_batch_size,
         poll_seconds=float(settings.worker_poll_seconds),
+        deliver=deliver,
     )
 
 

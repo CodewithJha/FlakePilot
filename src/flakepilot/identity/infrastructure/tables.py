@@ -145,7 +145,8 @@ ci_upload_tokens = Table(
 )
 
 # ADR-012: IAM's event envelopes, appended in the same transaction as the change.
-# `published_at` is set by the relay (ADR-006 job runtime, not built yet).
+# The relay sets `published_at` once AUD has stored the envelope. `dead_at` parks an
+# invalid envelope; the row is kept.
 outbox = Table(
     "outbox",
     metadata,
@@ -168,6 +169,9 @@ outbox = Table(
     Column("reason", Text),
     Column("payload", JSONB, nullable=False),
     _time("published_at", nullable=True),
+    Column("attempts", SmallInteger, nullable=False, server_default=text("0")),
+    Column("last_error", Text),
+    _time("dead_at", nullable=True),
     CheckConstraint(
         "actor_type IN ('user', 'ci_token', 'operator_cli', 'system')",
         name="actor_type",
@@ -177,9 +181,15 @@ outbox = Table(
         name="actor_id",
     ),
     CheckConstraint("channel IN ('http', 'cli')", name="channel"),
+    CheckConstraint("attempts BETWEEN 0 AND 20", name="attempts"),
+    CheckConstraint(
+        "last_error IS NULL OR last_error ~ '^[a-z][a-z0-9_]{0,39}$'",
+        name="last_error",
+    ),
+    CheckConstraint("published_at IS NULL OR dead_at IS NULL", name="terminal"),
     Index(
         "ix_iam_outbox_unpublished",
         "seq",
-        postgresql_where=text("published_at IS NULL"),
+        postgresql_where=text("published_at IS NULL AND dead_at IS NULL"),
     ),
 )
