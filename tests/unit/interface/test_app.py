@@ -1,17 +1,20 @@
 import asyncio
 import importlib.metadata
 import json
+import socket
 import subprocess
 import sys
 from typing import Any
 
 import pytest
+from sqlalchemy.exc import DBAPIError
+from sqlalchemy.ext.asyncio import AsyncEngine
 from support import (
     FAKE_DSN,
     FAKE_PASSWORD,
     SETTINGS,
-    FakePool,
-    FakePoolFactory,
+    FakeEngine,
+    FakeEngineFactory,
     Response,
     get,
     is_uuid,
@@ -41,11 +44,11 @@ def test_import_has_no_side_effects() -> None:
 
 
 def test_creating_the_app_does_no_database_work() -> None:
-    factory = FakePoolFactory()
+    factory = FakeEngineFactory()
     app = create_app(SETTINGS, factory)
     assert get(app, "/health/ready")[0] == 503
     assert factory.dsns == []
-    assert factory.pool.acquires == 0
+    assert factory.engine.connects == 0
 
 
 def test_only_health_and_openapi_routes_are_registered() -> None:
@@ -66,24 +69,24 @@ def test_openapi_version_is_the_package_version() -> None:
 
 
 def test_startup_connects_and_readiness_follows_lifespan_and_database() -> None:
-    factory = FakePoolFactory()
-    pool = factory.pool
+    factory = FakeEngineFactory()
+    engine = factory.engine
     app = create_app(SETTINGS, factory)
 
     async def scenario() -> dict[str, Response]:
         seen = {"before": await request(app, "GET", "/health/ready")}
         async with app.router.lifespan_context(app):
             assert factory.dsns == [FAKE_DSN]
-            assert pool.acquires == 1  # the startup check
+            assert engine.connects == 1  # the startup check
             seen["ready"] = await request(app, "GET", "/health/ready")
-            pool.up = False
+            engine.up = False
             seen["db_down"] = await request(app, "GET", "/health/ready")
             seen["live_db_down"] = await request(app, "GET", "/health/live")
-            pool.up = True
+            engine.up = True
             seen["recovered"] = await request(app, "GET", "/health/ready")
-        acquires_at_shutdown = pool.acquires
+        connects_at_shutdown = engine.connects
         seen["after"] = await request(app, "GET", "/health/ready")
-        assert pool.acquires == acquires_at_shutdown  # no probing once shut down
+        assert engine.connects == connects_at_shutdown  # no probing once shut down
         return seen
 
     seen = asyncio.run(scenario())
@@ -94,18 +97,18 @@ def test_startup_connects_and_readiness_follows_lifespan_and_database() -> None:
     assert (seen["live_db_down"][0], seen["live_db_down"][2]) == (200, {"status": "ok"})
     assert (seen["recovered"][0], seen["recovered"][2]) == (200, {"status": "ready"})
     assert (seen["after"][0], seen["after"][2]) == not_ready
-    assert pool.closed
+    assert engine.disposed
 
 
 def test_failed_readiness_check_is_logged_without_connection_details(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    factory = FakePoolFactory()
+    factory = FakeEngineFactory()
     app = create_app(SETTINGS, factory)
 
     async def scenario() -> Response:
         async with app.router.lifespan_context(app):
-            factory.pool.up = False
+            factory.engine.up = False
             return await request(app, "GET", "/health/ready")
 
     status, headers, body = asyncio.run(scenario())
@@ -118,17 +121,17 @@ def test_failed_readiness_check_is_logged_without_connection_details(
 
 
 @pytest.mark.parametrize("fails_at", ["factory", "check"])
-def test_startup_failure_closes_the_pool_and_hides_driver_details(
+def test_startup_failure_disposes_the_engine_and_hides_driver_details(
     fails_at: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    pool = FakePool()
-    pool.up = False
+    engine = FakeEngine()
+    engine.up = False
+    factory = FakeEngineFactory(engine)
 
-    async def failing_factory(dsn: str) -> FakePool:
-        raise OSError(f"cannot reach {dsn}")
+    def failing_factory(dsn: str) -> AsyncEngine:
+        raise ValueError(f"could not parse {dsn}")
 
-    factory = failing_factory if fails_at == "factory" else FakePoolFactory(pool)
-    app = create_app(SETTINGS, factory)
+    app = create_app(SETTINGS, failing_factory if fails_at == "factory" else factory)
 
     async def start() -> None:
         async with app.router.lifespan_context(app):
@@ -138,11 +141,75 @@ def test_startup_failure_closes_the_pool_and_hides_driver_details(
         asyncio.run(start())
     assert str(excinfo.value) == "database unavailable at startup"
     assert excinfo.value.__cause__ is None and excinfo.value.__suppress_context__
-    assert pool.closed == (fails_at == "check")
+    assert engine.disposed == (fails_at == "check")
     assert not app.state.ready
     err = capsys.readouterr().err
     assert "database unavailable at startup" in err
     assert FAKE_PASSWORD not in err
+
+
+def test_database_errors_in_requests_are_generic_and_logged_by_class_only(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    app = create_app(SETTINGS)
+
+    @app.get("/test-only/db-error")
+    async def db_error() -> None:
+        raise DBAPIError(
+            "SELECT secret_column FROM t WHERE pw = :pw",
+            {"pw": FAKE_PASSWORD},
+            Exception(f"server said no to {FAKE_DSN}"),
+        )
+
+    status, headers, body = get(app, "/test-only/db-error")
+    assert status == 500
+    assert body == {
+        "error": {
+            "code": "internal_error",
+            "message": "Internal server error",
+            "request_id": headers["x-request-id"],
+        }
+    }
+    err = capsys.readouterr().err
+    entry = next(e for e in logs(err) if e["logger"] == "flakepilot.database")
+    assert entry["message"] == "database error: DBAPIError"
+    assert entry["request_id"] == headers["x-request-id"]
+    assert "exception" not in entry
+    for leak in ("secret_column", FAKE_PASSWORD, "db.invalid"):
+        assert leak not in err + json.dumps(body)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ConnectionRefusedError(61, "Connect call failed ('10.9.8.7', 6543)"),
+        socket.gaierror(8, "nodename nor servname provided: db-host-77.example"),
+        TimeoutError("connect to 10.9.8.7:6543 timed out"),
+    ],
+)
+def test_connection_errors_in_requests_are_generic_and_logged_by_class_only(
+    error: OSError, capsys: pytest.CaptureFixture[str]
+) -> None:
+    app = create_app(SETTINGS)
+
+    @app.get("/test-only/connection-error")
+    async def connection_error() -> None:
+        raise error
+
+    status, headers, body = get(app, "/test-only/connection-error")
+    assert status == 500
+    assert body["error"] == {
+        "code": "internal_error",
+        "message": "Internal server error",
+        "request_id": headers["x-request-id"],
+    }
+    err = capsys.readouterr().err
+    entry = next(e for e in logs(err) if e["logger"] == "flakepilot.database")
+    assert entry["message"] == f"connection error: {type(error).__name__}"
+    assert entry["request_id"] == headers["x-request-id"]
+    assert "exception" not in entry
+    for leak in ("10.9.8.7", "6543", "db-host-77"):
+        assert leak not in err + json.dumps(body)
 
 
 def test_valid_inbound_request_id_is_logged_as_client_request_id_only(

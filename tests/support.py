@@ -1,13 +1,14 @@
-"""Test helpers: a direct ASGI caller and an in-memory stand-in for the asyncpg pool."""
+"""Test helpers: a direct ASGI caller and an in-memory stand-in for the database engine."""
 
 import asyncio
 import json
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, cast
 
 from fastapi import FastAPI
+from sqlalchemy.ext.asyncio import AsyncEngine
 from starlette.types import Message
 
 from flakepilot.interface.composition_root import Secret, Settings
@@ -65,8 +66,8 @@ def is_uuid(value: str) -> bool:
     return str(uuid.UUID(value)) == value
 
 
-class FakePool:
-    """The asyncpg pool surface FlakePilot uses: acquire(), fetchval(), close(), terminate().
+class FakeEngine:
+    """The AsyncEngine surface the composition root uses: connect(), execute(), dispose().
 
     Failures raise with the DSN in the message, as a driver error might.
     """
@@ -75,14 +76,14 @@ class FakePool:
         self.up = True
         self.delay = 0.0
         self.hang = False
-        self.hang_on_close = False
-        self.acquires = 0
-        self.closed = False
-        self.terminated = False
+        self.hang_on_dispose = False
+        self.connects = 0
+        self.disposed = False
+        self.abandoned = False
 
     @asynccontextmanager
-    async def acquire(self) -> AsyncIterator["FakePool"]:
-        self.acquires += 1
+    async def connect(self) -> AsyncIterator["FakeEngine"]:
+        self.connects += 1
         if self.hang:
             await asyncio.Event().wait()
         await asyncio.sleep(self.delay)
@@ -90,24 +91,26 @@ class FakePool:
             raise ConnectionRefusedError(f"could not connect to {FAKE_DSN}")
         yield self
 
-    async def fetchval(self, query: str) -> int:
-        assert query == "SELECT 1"
-        return 1
+    async def execute(self, statement: object) -> None:
+        assert str(statement) == "SELECT 1"
 
-    async def close(self) -> None:
-        if self.hang_on_close:
+    async def dispose(self, close: bool = True) -> None:
+        if not close:
+            self.abandoned = True
+            return
+        if self.hang_on_dispose:
             await asyncio.Event().wait()
-        self.closed = True
+        self.disposed = True
 
-    def terminate(self) -> None:
-        self.terminated = True
+    def as_engine(self) -> AsyncEngine:
+        return cast(AsyncEngine, self)
 
 
-class FakePoolFactory:
-    def __init__(self, pool: FakePool | None = None) -> None:
-        self.pool = pool or FakePool()
+class FakeEngineFactory:
+    def __init__(self, engine: FakeEngine | None = None) -> None:
+        self.engine = engine or FakeEngine()
         self.dsns: list[str] = []
 
-    async def __call__(self, dsn: str) -> FakePool:
+    def __call__(self, dsn: str) -> AsyncEngine:
         self.dsns.append(dsn)
-        return self.pool
+        return self.engine.as_engine()

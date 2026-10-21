@@ -11,11 +11,12 @@ from fastapi import FastAPI
 
 from flakepilot.interface.composition_root.database import (
     CONNECT_TIMEOUT,
-    PoolFactory,
+    EngineFactory,
     ReadinessCheck,
-    close_pool,
-    create_pool,
+    create_engine,
+    dispose_engine,
     ping,
+    register_database_error_handler,
 )
 from flakepilot.interface.composition_root.settings import (
     Secret,
@@ -74,34 +75,37 @@ def _startup_failure(exc: Exception) -> RuntimeError:
     return RuntimeError("database unavailable at startup")
 
 
-def create_app(settings: Settings, pool_factory: PoolFactory = create_pool) -> FastAPI:
+def create_app(
+    settings: Settings, engine_factory: EngineFactory = create_engine
+) -> FastAPI:
     """Build the app. No I/O happens until the server runs the lifespan.
 
-    Startup fails fast: the pool is created and checked with one bounded `SELECT 1`;
-    on failure the pool is closed and startup raises (driver details are not chained).
+    Startup fails fast: the engine is created and checked with one bounded `SELECT 1`;
+    on failure the engine is disposed and startup raises (driver details are not chained).
+    Migrations are never run here; they are an explicit `alembic upgrade` step (ADR-005).
     """
     configure_logging(settings.log_level)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         try:
-            pool = await pool_factory(settings.database_url.reveal())
-        except Exception as exc:  # noqa: BLE001 - driver errors may carry connection details
+            engine = engine_factory(settings.database_url.reveal())
+        except Exception as exc:  # noqa: BLE001 - errors may echo the URL
             raise _startup_failure(exc) from None
         try:
-            await ping(pool, CONNECT_TIMEOUT)
+            await ping(engine, CONNECT_TIMEOUT)
         except BaseException as exc:
-            await close_pool(pool)
+            await dispose_engine(engine)
             if isinstance(exc, Exception):
                 raise _startup_failure(exc) from None
             raise
-        app.state.readiness_probe = ReadinessCheck(pool)
+        app.state.readiness_probe = ReadinessCheck(engine)
         app.state.ready = True
         try:
             yield
         finally:
             app.state.ready = False
-            await close_pool(pool)
+            await dispose_engine(engine)
 
     # Interactive docs are off: they load third-party scripts from a CDN.
     # The code-first schema stays available at /openapi.json (ADR-007).
@@ -115,5 +119,6 @@ def create_app(settings: Settings, pool_factory: PoolFactory = create_pool) -> F
     app.state.ready = False
     app.add_middleware(RequestContextMiddleware)
     errors.register_error_handlers(app)
+    register_database_error_handler(app)
     app.include_router(health.router)
     return app
