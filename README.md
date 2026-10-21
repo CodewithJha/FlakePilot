@@ -10,7 +10,8 @@ Evidence-based investigation and verification of recurring test failures. See [P
 - **CI upload tokens can't be issued yet.** The use case exists, but there is no HTTP route or CLI for it.
 - **Classification isn't exposed over HTTP.** It exists only as an application use case (ADR-013).
 - **Parsing is synchronous.** Reports are parsed inside the upload request; there is no job runtime yet.
-- **No quotas or rate limits.**
+- **No quotas or rate limits.** AI spend is not checked either (ADR-014).
+- **AI assist is off unless an org admin enables it.** The use case exists, the process wires only `NullAiAssist`, and there is no HTTP route. A missing provider answers `unavailable`. See ADR-014.
 - **Artifacts are not encrypted at rest, and never cleaned up.** Raw reports are plain files under `FLAKEPILOT_ARTIFACT_DIR`, and there is no retention job.
 - **No Docker deployment yet.**
 - **TLS and request limits are your job.** Run it only behind a TLS-terminating reverse proxy that also enforces request size and time limits.
@@ -108,7 +109,7 @@ Errors are JSON `{"error": {"code", "message", "request_id"}}`; the request ID i
 
 API conventions: `src/flakepilot/interface/http/__init__.py`.
 
-Each context keeps its migrations in its own `infrastructure/migrations` directory and its tables in its own schema (`iam`, `int_secrets`, `ti`). `uv run alembic check` verifies that the models and migrations match.
+Each context keeps its migrations in its own `infrastructure/migrations` directory and its tables in its own schema (`iam`, `int_secrets`, `ti`, `diag`). `uv run alembic check` verifies that the models and migrations match.
 
 ## Quality gates
 

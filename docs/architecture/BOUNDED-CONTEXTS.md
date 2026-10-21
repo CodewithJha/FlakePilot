@@ -126,7 +126,7 @@ The 11 bounded contexts are the 11 domains, using the codes already defined in [
 | Invariants | DIAG is the only path to AI providers. Policy is enforced when the request is built. The default is AI disabled. No secrets in payloads. Untrusted content is delimited. No side-effect tools. Output is schema-validated. Confidence is never an input to any decision. DIAG has no command path into TI, VER, or APPR, and none of them can read DIAG |
 | Accepts | Diagnose, generate patch candidate (ORCH). Set policy, provider, and credentials (interface, org admin) |
 | Exposes | Diagnosis, read-only (interface only) |
-| Publishes | `ai_request.sent`, `diagnosis.recorded`, `patch_candidate.generated`, `override.recorded`, `integration.config_changed` |
+| Publishes | `ai_request.sent`, `diagnosis.recorded`, `patch_candidate.generated`, `override.recorded`, `integration.config_changed`. Emitted so far, with the ADR-012 prefix ([ADR-014](../adr/ADR-014-stage-5-ai-platform-and-deviations.md)): `diag.ai_policy.updated`, `diag.ai_request.sent`, `diag.diagnosis.recorded` |
 | Consumes | IAM (authorize, AI-spend quota). REPO (file ranges, source excerpts). EXEC (artifact excerpts, read-only). TI (evidence, read-only). INT (AI port, secret port, health). No events |
 | Depends on | IAM, REPO, EXEC, TI, INT |
 | Excludes | Classification (TI). Verification outcome (VER). Approval (APPR). Patch validity (PATCH). State transitions (ORCH). Model inference (the provider) |

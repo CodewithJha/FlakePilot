@@ -68,6 +68,18 @@ def test_creating_the_app_does_no_database_work() -> None:
     assert factory.engine.connects == 0
 
 
+def test_lifespan_wires_the_null_assist_adapter() -> None:
+    from flakepilot.integrations.infrastructure.ai import NullAiAssist
+
+    app = create_app(SETTINGS, FakeEngineFactory())
+
+    async def scenario() -> type[object]:
+        async with app.router.lifespan_context(app):
+            return type(app.state.assist._port)
+
+    assert asyncio.run(scenario()) is NullAiAssist
+
+
 def test_only_expected_routes_are_registered() -> None:
     app = create_app(SETTINGS)
     assert set(app.openapi()["paths"]) == {

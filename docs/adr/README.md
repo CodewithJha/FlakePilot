@@ -19,6 +19,7 @@ The ADR index, plus the Stage 1.4 technology decision inventory. ADRs are number
 | [ADR-011](ADR-011-authentication-sessions-and-tokens.md) | Authentication sessions, CI upload tokens, and access-check details | Accepted |
 | [ADR-012](ADR-012-event-envelope-and-outbox.md) | Event envelope, per-context outbox, and IAM event names | Accepted |
 | [ADR-013](ADR-013-stage-4-ingestion-scope-and-deviations.md) | Stage 4 ingestion scope and deviations | Accepted |
+| [ADR-014](ADR-014-stage-5-ai-platform-and-deviations.md) | Stage 5 AI platform scope and deviations | Accepted |
 
 ## Stage 1.4 decision inventory (2026-10-20)
 
@@ -31,7 +32,7 @@ Abbreviations: **PS** = [PRODUCT-SCOPE](../product/PRODUCT-SCOPE.md), **SA** = [
 | 3 | ORM and schema migrations | **SQLAlchemy plus Alembic**, infrastructure layer only; controlled per-context migrations; **asyncpg**, async | ADR-005 decision 7; ADR-007 | — |
 | 4 | Workflow orchestration | Database-backed jobs with leases; `SKIP LOCKED` claiming; polling is the source of truth | ADR-006 | In-house module or library; tuning (implementation details) |
 | 5 | Queue, cache, ephemeral coordination | No broker, cache, or lock service; PostgreSQL serves; notifications only as a wake-up hint | ADR-006 | — |
-| 6 | AI provider abstraction and model config | Port plus test fake only; no provider at launch | ADR-003; ADR-009 | The first adapter, later |
+| 6 | AI provider abstraction and model config | Port plus test fake only; no provider at launch. Stage 5 wires `NullAiAssist` only ([ADR-014](ADR-014-stage-5-ai-platform-and-deviations.md)) | ADR-003; ADR-009 | The first network adapter, later |
 | 7 | Browser and code-execution isolation | ADR-004 unchanged. Hardened ephemeral containers on a dedicated execution runtime. Co-location only in explicit evaluation installs. Playwright only inside sandboxes. microVM-class required before a hosted multi-tenant service | ADR-004; ADR-008; ADR-009 | Hardening specifics (implementation details). Shipped images: Python-level permissive rule, plus a **pre-release licence review gate** (FQ-13, ADR-007) |
 | 8 | Artifact and evidence storage | S3-compatible storage plus local filesystem behind the artifact port; database keeps references and hashes | ADR-005; ADR-009 | Local-filesystem encryption at rest (implementation detail); BC-Q5 (data model) |
 | 9 | Authn, authz, tenant isolation | Sign in with the same GitHub App, authentication only. Authorization and tenant scoping enforced, including across orgs in one deployment. Secrets in an encrypted, adapter-only table; pluggable | ADR-008; ADR-009; SA §7 | Encryption scheme and key provisioning; minimal scopes (implementation details) |

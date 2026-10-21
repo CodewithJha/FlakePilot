@@ -2,7 +2,8 @@
 
 import asyncio
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import Any
 
 import pytest
@@ -10,9 +11,12 @@ from sqlalchemy import exc, text
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from flakepilot.diagnosis.application.assist import Assist, UntrustedPart
 from flakepilot.diagnosis.application.store import AiPolicy, AiRequestRecord, DiagStore
 from flakepilot.diagnosis.domain.output import DataPolicy, DiagnosisOutcome
 from flakepilot.diagnosis.infrastructure.store import SqlDiagStore
+from flakepilot.identity.application.authorization import CodeHostAccess, OrgAccess
+from flakepilot.integrations.infrastructure.ai import FakeAiAssist
 from flakepilot.interface.composition_root.database import create_engine, transaction
 from flakepilot.shared_kernel.events import (
     Actor,
@@ -202,6 +206,93 @@ def test_a_successful_change_keeps_one_unpublished_event(url: str) -> None:
         False,
         "diag.diagnosis.recorded",
         True,
+    )
+
+
+def test_assist_commits_metadata_and_rolls_back_with_the_outbox(url: str) -> None:
+    org_id, repo_id, actor = (str(uuid.uuid4()) for _ in range(3))
+    access = OrgAccess(actor, org_id, org_admin=True)
+    origin = Origin(Channel.HTTP, "assist-commit")
+
+    def bound(
+        engine: AsyncEngine, kind: type[SqlDiagStore]
+    ) -> Callable[[], AbstractAsyncContextManager[DiagStore]]:
+        @asynccontextmanager
+        async def unit_of_work() -> AsyncIterator[DiagStore]:
+            async with transaction(engine) as session:
+                yield kind(session)
+
+        return unit_of_work
+
+    async def scenario(engine: AsyncEngine) -> tuple[object, ...]:
+        service = Assist(bound(engine, SqlDiagStore), FakeAiAssist())
+        await service.set_policy(
+            access,
+            org_id=org_id,
+            policy=AiPolicy(DataPolicy.EVIDENCE_ONLY, False),
+            origin=origin,
+        )
+        result = await service.assist(
+            access,
+            org_id=org_id,
+            repo_id=repo_id,
+            code_host=CodeHostAccess.READ,
+            instructions="summarize",
+            parts=(UntrustedPart("log", "fail"),),
+            evidence_ids=frozenset(),
+            origin=origin,
+        )
+        failing = Assist(bound(engine, _FailingOutbox), FakeAiAssist())
+        with pytest.raises(exc.IntegrityError):
+            await failing.assist(
+                access,
+                org_id=org_id,
+                repo_id=repo_id,
+                code_host=CodeHostAccess.READ,
+                instructions="summarize",
+                parts=(UntrustedPart("log", "fail"),),
+                evidence_ids=frozenset(),
+                origin=Origin(Channel.HTTP, "assist-rollback"),
+            )
+        [requests] = await sql(
+            engine,
+            "SELECT count(*), count(*) FILTER (WHERE raw_output IS NULL) "
+            "FROM diag.ai_requests WHERE org_id = :org",
+            org=org_id,
+        )
+        names = await sql(
+            engine,
+            "SELECT name FROM diag.outbox WHERE org_id = :org ORDER BY seq",
+            org=org_id,
+        )
+        [rolled_back] = await sql(
+            engine,
+            "SELECT count(*) FROM diag.outbox WHERE correlation_id = 'assist-rollback'",
+        )
+        return (
+            result.outcome,
+            result.reason,
+            result.unverified,
+            result.contradicted,
+            requests[0],
+            requests[1],
+            rolled_back[0],
+            tuple(row[0] for row in names),
+        )
+
+    assert run(url, scenario) == (
+        DiagnosisOutcome.PRODUCED,
+        None,
+        1,
+        0,
+        1,
+        1,
+        0,
+        (
+            "diag.ai_policy.updated",
+            "diag.ai_request.sent",
+            "diag.diagnosis.recorded",
+        ),
     )
 
 

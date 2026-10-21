@@ -10,6 +10,10 @@ from importlib.metadata import version
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from flakepilot.diagnosis.application.assist import Assist
+from flakepilot.diagnosis.application.assist import UnitOfWork as DiagUnitOfWork
+from flakepilot.diagnosis.application.store import DiagStore
+from flakepilot.diagnosis.infrastructure.store import SqlDiagStore
 from flakepilot.identity.application.iam import (
     Iam,
     IamStore,
@@ -17,6 +21,7 @@ from flakepilot.identity.application.iam import (
     UnitOfWork,
 )
 from flakepilot.identity.infrastructure.store import SqlIamStore
+from flakepilot.integrations.infrastructure.ai import NullAiAssist
 from flakepilot.integrations.infrastructure.artifact_store import LocalFsArtifactStore
 from flakepilot.integrations.infrastructure.github import GitHubIdentityProvider
 from flakepilot.integrations.infrastructure.junit import JUnitParser
@@ -116,6 +121,15 @@ def iam_unit_of_work(engine: AsyncEngine) -> UnitOfWork:
     return unit_of_work
 
 
+def diag_unit_of_work(engine: AsyncEngine) -> DiagUnitOfWork:
+    @asynccontextmanager
+    async def unit_of_work() -> AsyncIterator[DiagStore]:
+        async with transaction(engine) as session:
+            yield SqlDiagStore(session)
+
+    return unit_of_work
+
+
 def ti_unit_of_work(engine: AsyncEngine) -> TiUnitOfWork:
     @asynccontextmanager
     async def unit_of_work() -> AsyncIterator[TiStore]:
@@ -161,6 +175,7 @@ def create_app(
             raise
         app.state.readiness_probe = ReadinessCheck(engine)
         app.state.iam = Iam(iam_unit_of_work(engine), identity_provider)
+        app.state.assist = Assist(diag_unit_of_work(engine), NullAiAssist())
         app.state.ingestion = (
             Ingestion(ti_unit_of_work(engine), artifacts, JUnitParser())
             if artifacts is not None
