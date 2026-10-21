@@ -116,6 +116,15 @@ executions = Table(
         "lease_expires_at",
         postgresql_where=text("state = 'running'"),
     ),
+    Index(
+        "uq_exec_executions_closed",
+        "org_id",
+        "repo_id",
+        "selector",
+        "sha",
+        unique=True,
+        postgresql_where=text("reason = 'execution_closed'"),
+    ),
 )
 
 execution_artifacts = Table(

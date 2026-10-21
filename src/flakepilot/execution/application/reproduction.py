@@ -6,6 +6,7 @@ import a store implementation, and it does not run a sandbox.
 
 import re
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Protocol
 
@@ -38,15 +39,28 @@ from flakepilot.shared_kernel.events import Actor, Origin
 __all__ = [
     "JOB_TYPE",
     "Decision",
+    "EvidenceRef",
     "Execution",
     "ExecutionStore",
     "InvalidExecution",
     "classify",
+    "inspect",
+    "record_closed",
     "schedule",
+    "schedule_registered",
     "screenshot_ok",
 ]
 
 _TOKEN = re.compile(r"[A-Za-z0-9._:-]{1,100}")
+
+
+@dataclass(frozen=True)
+class EvidenceRef:
+    """A stored artifact the caller may name. Not the bytes."""
+
+    kind: str
+    key: str
+    size: int
 
 
 class InvalidExecution(ValueError):
@@ -104,6 +118,12 @@ class ExecutionStore(Protocol):
     async def find_active(
         self, *, org_id: str, repo_id: str, selector: str, sha: str
     ) -> Execution | None: ...
+
+    async def find_closed(
+        self, *, org_id: str, repo_id: str, selector: str, sha: str
+    ) -> Execution | None: ...
+
+    async def artifacts(self, execution_id: str) -> list[tuple[str, str, int]]: ...
 
     async def insert(
         self,
@@ -217,3 +237,110 @@ async def schedule(
         origin=origin,
         now=now,
     )
+
+
+async def schedule_registered(
+    directory: RepoDirectory,
+    host: CodeHost,
+    records: ExecutionStore,
+    *,
+    access: OrgAccess,
+    org_id: str,
+    repo_id: str,
+    selector: str,
+    claimed_sha: str,
+    actor: Actor,
+    origin: Origin,
+    now: datetime,
+) -> Execution:
+    """Schedule one registered repository.
+
+    Read access here means the repository is in this deployment's directory.
+    It is not a live per-user code-host permission check, and it is not a
+    request field.
+    """
+    return await schedule(
+        directory,
+        host,
+        records,
+        access=access,
+        code_host=CodeHostAccess.READ,
+        org_id=org_id,
+        repo_id=repo_id,
+        selector=selector,
+        claimed_sha=claimed_sha,
+        actor=actor,
+        origin=origin,
+        now=now,
+    )
+
+
+async def record_closed(
+    directory: RepoDirectory,
+    records: ExecutionStore,
+    *,
+    access: OrgAccess,
+    org_id: str,
+    repo_id: str,
+    selector: str,
+    claimed_sha: str,
+    actor: Actor,
+    origin: Origin,
+    now: datetime,
+) -> tuple[Execution, bool]:
+    """Closed mode. No code host and no job. A repeat returns the same row."""
+    if now.tzinfo is None or not _token(origin.correlation_id):
+        raise InvalidExecution("invalid_request")
+    authorize(
+        access,
+        Grant.INVESTIGATE,
+        org_id=org_id,
+        repo_id=repo_id,
+        code_host=CodeHostAccess.READ,
+    )
+    if not selector_ok(selector) or not sha_ok(claimed_sha):
+        raise InvalidExecution("invalid_request")
+    binding = await directory.get(repo_id)
+    if binding is None or binding.org_id != org_id:
+        raise ResourceNotFound
+    existing = await records.find_closed(
+        org_id=org_id, repo_id=repo_id, selector=selector, sha=claimed_sha
+    )
+    if existing is not None:
+        return existing, False
+    created = await records.insert(
+        org_id=org_id,
+        repo_id=repo_id,
+        selector=selector,
+        sha=claimed_sha,
+        decision=born_inconclusive("execution_closed"),
+        actor=actor,
+        origin=origin,
+        now=now,
+    )
+    return created, created.correlation_id == origin.correlation_id
+
+
+async def inspect(
+    records: ExecutionStore,
+    *,
+    access: OrgAccess,
+    org_id: str,
+    execution_id: str,
+) -> tuple[Execution, tuple[EvidenceRef, ...]]:
+    """Status and artifact names. Missing, or not visible in this org, is not found."""
+    current = await records.get(execution_id)
+    if current is None or current.org_id != org_id:
+        raise ResourceNotFound
+    authorize(
+        access,
+        Grant.VIEW,
+        org_id=org_id,
+        repo_id=current.repo_id,
+        code_host=CodeHostAccess.READ,
+    )
+    refs = tuple(
+        EvidenceRef(kind, key, size)
+        for kind, key, size in await records.artifacts(execution_id)
+    )
+    return current, refs

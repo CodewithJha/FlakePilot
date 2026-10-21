@@ -16,11 +16,16 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from flakepilot.execution.application.reproduction import (
     JOB_TYPE,
     Decision,
+    EvidenceRef,
     Execution,
     classify,
+    inspect,
+    record_closed,
+    schedule_registered,
     screenshot_ok,
 )
 from flakepilot.execution.infrastructure.store import SqlExecutionStore
+from flakepilot.identity.application.authorization import OrgAccess
 from flakepilot.integrations.infrastructure.artifact_store import (
     ArtifactStore,
     ArtifactStoreError,
@@ -40,6 +45,7 @@ from flakepilot.integrations.infrastructure.sandbox import (
     unverified_source,
 )
 from flakepilot.interface.composition_root.database import transaction
+from flakepilot.interface.composition_root.scheduling import enqueue_browser_job
 from flakepilot.interface.composition_root.settings import Settings
 from flakepilot.orchestration.application.jobs import Job, PermanentJob, RetryableJob
 from flakepilot.orchestration.application.worker import Handler
@@ -373,6 +379,100 @@ def _host(settings: Settings) -> GitHubCodeHost:
     except ValueError:
         return GitHubCodeHost(None)
     return GitHubCodeHost(None, tokens=minter)
+
+
+class Reproductions:
+    """Operator requests. Closed mode records a result and does not fetch or enqueue."""
+
+    def __init__(self, engine: AsyncEngine, settings: Settings) -> None:
+        self._engine = engine
+        self._settings = settings
+
+    async def request(
+        self,
+        *,
+        access: OrgAccess,
+        org_id: str,
+        repo_id: str,
+        selector: str,
+        sha: str,
+        actor: Actor,
+        origin: Origin,
+        now: datetime,
+    ) -> tuple[Execution, bool]:
+        return await request_reproduction(
+            self._engine,
+            self._settings,
+            access=access,
+            org_id=org_id,
+            repo_id=repo_id,
+            selector=selector,
+            sha=sha,
+            actor=actor,
+            origin=origin,
+            now=now,
+        )
+
+    async def load(
+        self, *, access: OrgAccess, org_id: str, execution_id: str
+    ) -> tuple[Execution, tuple[EvidenceRef, ...]]:
+        async with transaction(self._engine) as session:
+            return await inspect(
+                SqlExecutionStore(session),
+                access=access,
+                org_id=org_id,
+                execution_id=execution_id,
+            )
+
+
+async def request_reproduction(
+    engine: AsyncEngine,
+    settings: Settings,
+    *,
+    access: OrgAccess,
+    org_id: str,
+    repo_id: str,
+    selector: str,
+    sha: str,
+    actor: Actor,
+    origin: Origin,
+    now: datetime,
+) -> tuple[Execution, bool]:
+    """Closed by default. Evaluation may pin and enqueue; it does not start a runtime."""
+    if settings.execution_mode != "evaluation" or settings.execution_image is None:
+        async with transaction(engine) as session:
+            return await record_closed(
+                SqlRepoDirectory(session),
+                SqlExecutionStore(session),
+                access=access,
+                org_id=org_id,
+                repo_id=repo_id,
+                selector=selector,
+                claimed_sha=sha,
+                actor=actor,
+                origin=origin,
+                now=now,
+            )
+    async with transaction(engine) as session:
+        record = await schedule_registered(
+            SqlRepoDirectory(session),
+            _host(settings),
+            SqlExecutionStore(session),
+            access=access,
+            org_id=org_id,
+            repo_id=repo_id,
+            selector=selector,
+            claimed_sha=sha,
+            actor=actor,
+            origin=origin,
+            now=now,
+        )
+    created = (
+        record.correlation_id == origin.correlation_id and record.state == "scheduled"
+    )
+    if record.state == "scheduled":
+        await enqueue_browser_job(engine, record.id, now)
+    return record, created
 
 
 def _artifacts(settings: Settings) -> LocalFsArtifactStore | None:

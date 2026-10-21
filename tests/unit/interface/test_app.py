@@ -89,6 +89,8 @@ def test_only_expected_routes_are_registered() -> None:
         "/auth/github/callback",
         "/auth/logout",
         "/ingest/junit",
+        "/orgs/{org_id}/reproductions",
+        "/orgs/{org_id}/reproductions/{execution_id}",
     }
     assert [getattr(r, "path", None) for r in app.routes if hasattr(r, "path")] == [
         "/openapi.json"

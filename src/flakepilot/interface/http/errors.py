@@ -10,6 +10,7 @@ never reveal whether something exists in another org; a visible resource with a 
 grant is 403 `forbidden`.
 """
 
+import re
 from http import HTTPStatus
 
 from fastapi import FastAPI, Request
@@ -17,6 +18,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException
 
+from flakepilot.execution.application.reproduction import InvalidExecution
 from flakepilot.identity.application.authorization import (
     PermissionDenied,
     ResourceNotFound,
@@ -65,6 +67,7 @@ _ACCESS_ERRORS: dict[type[Exception], tuple[int, str]] = {
     AuthProviderUnavailable: (503, AUTH_PROVIDER_UNAVAILABLE),
     ingestion.IngestionNotConfigured: (503, INGESTION_NOT_CONFIGURED),
 }
+_REASON = re.compile(r"[a-z][a-z0-9_]{0,39}")
 _UPLOAD_REJECTIONS = {
     ingestion.TOO_LARGE: (413, PAYLOAD_TOO_LARGE),
     ingestion.UNSUPPORTED_MEDIA_TYPE: (415, UNSUPPORTED_MEDIA_TYPE),
@@ -132,9 +135,21 @@ async def _upload_rejected(request: Request, exc: Exception) -> JSONResponse:
     return JSONResponse(body, status)
 
 
+async def _invalid_execution(request: Request, exc: Exception) -> JSONResponse:
+    """A stable code. The selector, SHA and exception text are not copied."""
+    assert isinstance(exc, InvalidExecution)
+    reason = exc.reason if _REASON.fullmatch(exc.reason) else "invalid_request"
+    body = error_body(
+        VALIDATION_ERROR, "Request validation failed", request_id_var.get()
+    )
+    body["error"]["reason"] = reason
+    return JSONResponse(body, 422)
+
+
 def register_error_handlers(app: FastAPI) -> None:
     app.add_exception_handler(HTTPException, _http_error)
     app.add_exception_handler(RequestValidationError, _validation_error)
     app.add_exception_handler(ingestion.UploadRejected, _upload_rejected)
+    app.add_exception_handler(InvalidExecution, _invalid_execution)
     for error in _ACCESS_ERRORS:
         app.add_exception_handler(error, _access_error)
