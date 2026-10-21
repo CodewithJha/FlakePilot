@@ -9,6 +9,10 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from flakepilot.integrations.infrastructure.artifact_store import root_problem
+from flakepilot.integrations.infrastructure.installation import (
+    app_id_ok,
+    private_key_ok,
+)
 from flakepilot.integrations.infrastructure.sandbox import image_ok
 
 LOG_LEVELS = ("CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG")
@@ -42,6 +46,14 @@ class GitHubApp:
 
 
 @dataclass(frozen=True)
+class GitHubInstallation:
+    """App id and private key used only to mint a contents:read installation token."""
+
+    app_id: str
+    private_key: Secret
+
+
+@dataclass(frozen=True)
 class Settings:
     database_url: Secret
     log_level: str = "INFO"
@@ -66,8 +78,10 @@ class Settings:
     execution_wall_seconds: int = 30
     execution_memory_mb: int = 512
     execution_pids: int = 64
-    # Optional bearer for GitHub contents reads. Empty means revisions stay unverified.
+    # Parsed so an old environment still loads. Execution does not send this token.
     github_contents_token: Secret | None = None
+    # Both unset: execution does not call GitHub. One without the other is refused.
+    github_installation: GitHubInstallation | None = None
 
     @classmethod
     def from_environ(cls, environ: Mapping[str, str]) -> "Settings":
@@ -158,6 +172,7 @@ class Settings:
             ),
             execution_pids=_bounded(environ, "FLAKEPILOT_EXECUTION_PIDS", 64, 8, 256),
             github_contents_token=_contents_token(environ),
+            github_installation=_installation(environ),
         )
 
 
@@ -203,6 +218,19 @@ def _contents_token(environ: Mapping[str, str]) -> Secret | None:
     if len(token) > 500 or any(character.isspace() for character in token):
         raise SettingsError("FLAKEPILOT_GITHUB_CONTENTS_TOKEN is not a token")
     return Secret(token)
+
+
+def _installation(environ: Mapping[str, str]) -> GitHubInstallation | None:
+    app_id = environ.get("FLAKEPILOT_GITHUB_APP_ID") or None
+    pem = environ.get("FLAKEPILOT_GITHUB_APP_PRIVATE_KEY") or None
+    if app_id is None and pem is None:
+        return None
+    if not app_id or not pem or not app_id_ok(app_id) or not private_key_ok(pem):
+        raise SettingsError(
+            "FLAKEPILOT_GITHUB_APP_ID and FLAKEPILOT_GITHUB_APP_PRIVATE_KEY "
+            "must both be set to an app id and an unencrypted RSA private key"
+        )
+    return GitHubInstallation(app_id, Secret(pem))
 
 
 def _artifact_dir(value: str) -> Path:

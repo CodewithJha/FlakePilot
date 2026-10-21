@@ -305,3 +305,23 @@ def test_contents_token_stays_out_of_errors_and_repr() -> None:
         )
     assert "FLAKEPILOT_GITHUB_CONTENTS_TOKEN" in str(excinfo.value)
     assert "bad token" not in str(excinfo.value)
+
+
+def test_installation_credentials_are_both_required_and_the_key_stays_out() -> None:
+    environ = {"FLAKEPILOT_DATABASE_URL": DSN}
+    assert Settings.from_environ(environ).github_installation is None
+    material = "super-secret-key-material"
+    with pytest.raises(SettingsError) as missing:
+        Settings.from_environ({**environ, "FLAKEPILOT_GITHUB_APP_ID": "12345"})
+    assert "FLAKEPILOT_GITHUB_APP_PRIVATE_KEY" in str(missing.value)
+    assert "12345" not in str(missing.value)
+    with pytest.raises(SettingsError) as rejected:
+        Settings.from_environ(
+            {
+                **environ,
+                "FLAKEPILOT_GITHUB_APP_ID": "12345",
+                "FLAKEPILOT_GITHUB_APP_PRIVATE_KEY": material,
+            }
+        )
+    assert "FLAKEPILOT_GITHUB_APP_PRIVATE_KEY" in str(rejected.value)
+    assert material not in str(rejected.value)

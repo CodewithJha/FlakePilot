@@ -31,6 +31,7 @@ from flakepilot.integrations.infrastructure.code_host import (
     CodeHostError,
     GitHubCodeHost,
 )
+from flakepilot.integrations.infrastructure.installation import InstallationMinter
 from flakepilot.integrations.infrastructure.sandbox import (
     ClosedSandbox,
     ContainerSandbox,
@@ -361,12 +362,17 @@ def _sandbox(settings: Settings) -> Sandbox:
 
 
 def _host(settings: Settings) -> GitHubCodeHost:
-    token = (
-        None
-        if settings.github_contents_token is None
-        else settings.github_contents_token.reveal()
-    )
-    return GitHubCodeHost(token)
+    """Installation token, or no token. A static contents bearer is not used."""
+    creds = settings.github_installation
+    if creds is None:
+        return GitHubCodeHost(None)
+    try:
+        minter = InstallationMinter(
+            app_id=creds.app_id, private_key_pem=creds.private_key.reveal()
+        )
+    except ValueError:
+        return GitHubCodeHost(None)
+    return GitHubCodeHost(None, tokens=minter)
 
 
 def _artifacts(settings: Settings) -> LocalFsArtifactStore | None:

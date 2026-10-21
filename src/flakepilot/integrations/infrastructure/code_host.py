@@ -5,17 +5,19 @@ and SHA are checked before they are interpolated. Redirects are refused. The
 bearer token is a header, never part of the URL, the exception, or the result.
 
 With no token the transport is not called and the answer is `source_unverified`.
+A `tokens` source is asked per repository and wins over any static bearer.
 """
 
 import asyncio
 import http.client
 import json
+import re
 import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Protocol
 
 from flakepilot.integrations.application.ports import (
     CodeHost,
@@ -31,6 +33,13 @@ MAX_ARCHIVE_BYTES = 5 * 1024 * 1024
 MAX_JSON_BYTES = 64 * 1024
 
 Transport = Callable[[urllib.request.Request, int], tuple[int, bytes]]
+_BEARER = re.compile(r"[A-Za-z0-9._-]{1,255}")
+
+
+class TokenSource(Protocol):
+    """Mints a bearer for one repository. The value must not be logged."""
+
+    async def token(self, *, owner: str, name: str) -> str: ...
 
 
 __all__ = ["CodeHost", "CodeHostError", "GitHubCodeHost"]
@@ -65,13 +74,16 @@ class GitHubCodeHost:
         self,
         token: str | None,
         transport: Transport = urllib_transport,
+        *,
+        tokens: TokenSource | None = None,
     ) -> None:
         self._token = token
         self._transport = transport
+        self._tokens = tokens
 
     async def confirm_commit(self, *, owner: str, name: str, claimed_sha: str) -> str:
         url = self._url(owner, name, f"commits/{claimed_sha}")
-        status, body = await self._call(url, MAX_JSON_BYTES)
+        status, body = await self._call(url, MAX_JSON_BYTES, owner, name)
         if status in (301, 302, 303, 307, 308):
             raise CodeHostError("rejected_redirect")
         if status == 404:
@@ -89,7 +101,7 @@ class GitHubCodeHost:
 
     async def fetch_archive(self, *, owner: str, name: str, sha: str) -> bytes:
         url = self._url(owner, name, f"zipball/{sha}")
-        status, body = await self._call(url, MAX_ARCHIVE_BYTES)
+        status, body = await self._call(url, MAX_ARCHIVE_BYTES, owner, name)
         if status in (301, 302, 303, 307, 308):
             raise CodeHostError("rejected_redirect")
         if status != 200 or not body:
@@ -107,15 +119,26 @@ class GitHubCodeHost:
         name_q = urllib.parse.quote(name, safe="")
         return f"{API}/repos/{owner_q}/{name_q}/{tail}"
 
-    async def _call(self, url: str, limit: int) -> tuple[int, bytes]:
-        if not self._token:
+    async def _bearer(self, owner: str, name: str) -> str:
+        minted = (
+            await self._tokens.token(owner=owner, name=name)
+            if self._tokens is not None
+            else self._token
+        )
+        if not minted or _BEARER.fullmatch(minted) is None:
             raise CodeHostError("source_unverified", unavailable=True)
+        return minted
+
+    async def _call(
+        self, url: str, limit: int, owner: str, name: str
+    ) -> tuple[int, bytes]:
+        bearer = await self._bearer(owner, name)
         if not url.startswith(f"{API}/"):
             raise CodeHostError("invalid_revision")
         request = urllib.request.Request(
             url,
             headers={
-                "Authorization": f"Bearer {self._token}",
+                "Authorization": f"Bearer {bearer}",
                 "Accept": "application/vnd.github+json",
                 "X-GitHub-Api-Version": "2022-11-28",
                 "User-Agent": "FlakePilot",
