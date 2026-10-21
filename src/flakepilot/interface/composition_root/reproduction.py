@@ -158,7 +158,7 @@ async def reproduce(
             memory_mb=memory_mb,
             pids=pids,
         )
-    if flag.requested():
+    if flag.requested() or await _cancel_committed(engine, claimed.id):
         report = SandboxReport("cancelled", "cancelled")
     decision = classify(
         report.status,
@@ -303,6 +303,13 @@ async def _execute(
         pids=pids,
         cancel=cancel,
     )
+
+
+async def _cancel_committed(engine: AsyncEngine, execution_id: str) -> bool:
+    """True when cancel is durable. A pass that returns first is not stored."""
+    async with transaction(engine) as session:
+        row = await SqlExecutionStore(session).get(execution_id)
+    return row is not None and row.cancel_requested
 
 
 def _result_bytes(report: SandboxReport) -> bytes | None:

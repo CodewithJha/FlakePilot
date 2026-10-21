@@ -650,6 +650,92 @@ def test_renewal_keeps_the_holder_and_an_expired_lease_cannot_finish(
     assert state == "running"
 
 
+class _PassAfterCancel:
+    """Commits cancel and returns a pass without waiting for the watcher."""
+
+    def __init__(self, engine: AsyncEngine) -> None:
+        self._engine = engine
+        self.execution_id = ""
+        self.calls = 0
+
+    async def run(
+        self,
+        *,
+        execution_id: str,
+        selector: str,
+        sha: str,
+        source_zip: bytes,
+        wall_seconds: int,
+        memory_mb: int,
+        pids: int,
+        cancel: object = None,
+    ) -> SandboxReport:
+        del (
+            execution_id,
+            selector,
+            sha,
+            source_zip,
+            wall_seconds,
+            memory_mb,
+            pids,
+            cancel,
+        )
+        self.calls += 1
+        async with transaction(self._engine) as session:
+            await SqlExecutionStore(session).request_cancel(
+                execution_id=self.execution_id, now=NOW
+            )
+        return SandboxReport(
+            "finished",
+            "finished",
+            (
+                SandboxFile(
+                    "result",
+                    b'{"status":"passed","selector":"tests.login.TestLogin.test_late"}',
+                ),
+            ),
+        )
+
+
+def test_a_pass_after_a_committed_cancel_is_discarded(
+    migrated_database_url: str,
+) -> None:
+    async def scenario(engine: AsyncEngine) -> tuple[str, int, int]:
+        host = _Host(SHA)
+        sandbox = _PassAfterCancel(engine)
+        execution_id = await _schedule(engine, host, "tests.login.TestLogin.test_late")
+        sandbox.execution_id = execution_id
+        await reproduce(
+            engine,
+            execution_id,
+            owner="worker-a",
+            now=NOW,
+            lease=timedelta(seconds=30),
+            sandbox=sandbox,
+            host=host,
+            artifacts=None,
+            wall_seconds=5,
+            memory_mb=128,
+            pids=16,
+        )
+        async with transaction(engine) as session:
+            current = await SqlExecutionStore(session).get(execution_id)
+            assert current is not None
+            rows = await session.execute(
+                text(
+                    "SELECT count(*) FROM exec.execution_artifacts "
+                    "WHERE execution_id = :id"
+                ),
+                {"id": execution_id},
+            )
+            return current.outcome or "", sandbox.calls, int(rows.scalar_one())
+
+    outcome, calls, artifacts = run(migrated_database_url, scenario)
+    assert outcome == "cancelled"
+    assert calls == 1
+    assert artifacts == 0
+
+
 class _LiveCancel:
     def __init__(self, engine: AsyncEngine) -> None:
         self._engine = engine
