@@ -172,7 +172,13 @@ A dedicated execution host was not provisioned. The exact gap:
 - No encrypted volume and no object-store credentials are available. Local artifacts stay plaintext. Evidence stays ineligible. No retention duration was invented.
 - No GitHub App id, private key, or installation is configured, so live token minting and a live per-user ACL stay unverified.
 
-The ten isolation checks were not executed on a FlakePilot execution host, and they are not passed for this deployment. A developer laptop ran benign probes on 21 October 2026 inside Docker Desktop's LinuxKit VM. That record is [isolation-validation/2026-10-21-laptop.md](isolation-validation/2026-10-21-laptop.md). It is a laptop, a Docker Desktop VM, and a container. It is not a dedicated host and it is not a microVM. Stale-worker overwrite and tenant artifact authorization were not executed there. SIGKILL of the docker client left the container running until an explicit label removal. Those results do not set `IsolationChecks`.
+The ten isolation checks were not executed on a FlakePilot execution host, and they are not passed for this deployment. Two measurements are recorded and neither one is that host.
+
+A developer laptop ran benign probes on 21 October 2026 inside Docker Desktop's LinuxKit VM. That record is [isolation-validation/2026-10-21-laptop.md](isolation-validation/2026-10-21-laptop.md). It is a laptop, a Docker Desktop VM, and a container. It is not a dedicated host and it is not a microVM. Stale-worker overwrite and tenant artifact authorization were not executed there. SIGKILL of the docker client left the container running until an explicit label removal.
+
+A GitHub-hosted runner ran the repository harness. The first pull did not return. The second run, [actions/runs/39645626084](https://github.com/CodewithJha/FlakePilot/actions/runs/39645626084), finished the checks and failed the job because disk `size=1m` did not stop a 2 MB write, the runtime did not enforce a wall-clock deadline, and SIGKILL of the client left the container running. The record is [isolation-validation/2026-10-21-github-runner.md](isolation-validation/2026-10-21-github-runner.md). The runner is a GitHub-managed VM, not a microVM. Stale-worker overwrite and application tenant authorization were not executed there.
+
+Those results do not set `IsolationChecks`.
 
 `LabelledContainerReaper` lists containers labelled `flakepilot.execution` and removes one only when `flakepilot.expires` is at or before the caller's clock. The worker does not construct it. Startup still reports `runtime_reaper_unavailable`. A unit test drives the reaper with a fake CLI and does not start a container.
 
