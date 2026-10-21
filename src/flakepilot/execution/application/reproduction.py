@@ -53,6 +53,7 @@ __all__ = [
     "IsolationChecks",
     "IsolationProvider",
     "UnavailableIsolation",
+    "UnverifiedCallerAccess",
     "accept",
     "classify",
     "evidence_of",
@@ -87,6 +88,20 @@ class UnavailableIsolation:
 
     def current(self) -> IsolationChecks:
         return unavailable()
+
+
+class CallerAccess(Protocol):
+    """Whether this caller may read that repository at the code host right now."""
+
+    async def confirmed_read(self, owner: str, name: str) -> bool: ...
+
+
+class UnverifiedCallerAccess:
+    """No live code-host ACL was checked. Scheduling must not fetch source."""
+
+    async def confirmed_read(self, owner: str, name: str) -> bool:
+        del owner, name
+        return False
 
 
 class InvalidExecution(ValueError):
@@ -169,6 +184,10 @@ class ExecutionStore(Protocol):
     ) -> Execution | None: ...
 
     async def find_closed(
+        self, *, org_id: str, repo_id: str, selector: str, sha: str
+    ) -> Execution | None: ...
+
+    async def find_unverified(
         self, *, org_id: str, repo_id: str, selector: str, sha: str
     ) -> Execution | None: ...
 
@@ -301,13 +320,45 @@ async def schedule_registered(
     actor: Actor,
     origin: Origin,
     now: datetime,
+    caller: CallerAccess | None = None,
 ) -> Execution:
     """Schedule one registered repository.
 
-    Read access here means the repository is in this deployment's directory.
-    It is not a live per-user code-host permission check, and it is not a
-    request field.
+    The default caller has not confirmed a live code-host ACL. That path
+    stores `source_unverified` and does not call the code host. A binding
+    plus a FlakePilot grant is not that confirmation.
     """
+    if now.tzinfo is None or not _token(origin.correlation_id):
+        raise InvalidExecution("invalid_request")
+    authorize(
+        access,
+        Grant.INVESTIGATE,
+        org_id=org_id,
+        repo_id=repo_id,
+        code_host=CodeHostAccess.READ,
+    )
+    if not selector_ok(selector) or not sha_ok(claimed_sha):
+        raise InvalidExecution("invalid_request")
+    binding = await directory.get(repo_id)
+    if binding is None or binding.org_id != org_id:
+        raise ResourceNotFound
+    checker = UnverifiedCallerAccess() if caller is None else caller
+    if not await checker.confirmed_read(binding.owner, binding.name):
+        existing = await records.find_unverified(
+            org_id=org_id, repo_id=repo_id, selector=selector, sha=claimed_sha
+        )
+        if existing is not None:
+            return existing
+        return await records.insert(
+            org_id=org_id,
+            repo_id=repo_id,
+            selector=selector,
+            sha=claimed_sha,
+            decision=born_inconclusive("source_unverified"),
+            actor=actor,
+            origin=origin,
+            now=now,
+        )
     return await schedule(
         directory,
         host,

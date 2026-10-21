@@ -225,7 +225,7 @@ def test_closed_mode_records_one_row_and_does_not_fetch_or_enqueue(
     assert (created, again, other) == (201, 200, 404)
 
 
-def test_evaluation_enqueues_an_id_and_does_not_fetch_an_archive(
+def test_evaluation_without_a_live_acl_does_not_fetch_or_enqueue(
     migrated_database_url: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -235,7 +235,9 @@ def test_evaluation_enqueues_an_id_and_does_not_fetch_an_archive(
         lambda settings: host,
     )
 
-    async def scenario(engine: AsyncEngine) -> tuple[int, str, bool, str]:
+    async def scenario(
+        engine: AsyncEngine,
+    ) -> tuple[int, object, bool, bool, str, str, str, str]:
         iam = Iam(iam_unit_of_work(engine), None)
         org_id = await iam.bootstrap_org(
             name=f"eval-{uuid.uuid4().hex[:8]}",
@@ -282,9 +284,36 @@ def test_evaluation_enqueues_an_id_and_does_not_fetch_an_archive(
                 ),
                 {"id": record.id},
             )
-        return host.calls, str(payload.scalar_one()), created, record.id
+        repeat, again = await request_reproduction(
+            engine,
+            settings,
+            access=OrgAccess(user_id, org_id, org_admin=True),
+            org_id=org_id,
+            repo_id=binding.repo_id,
+            selector="tests.login.TestLogin.test_eval",
+            sha=SHA,
+            actor=Actor(ActorType.USER, user_id),
+            origin=Origin(Channel.HTTP, "corr-eval-2"),
+            now=datetime.now(UTC),
+        )
+        return (
+            host.calls,
+            payload.scalar_one_or_none(),
+            created,
+            again,
+            record.id,
+            repeat.id,
+            record.reason or "",
+            record.state,
+        )
 
-    calls, payload, created, execution_id = run(migrated_database_url, scenario)
-    assert calls == 1
+    calls, payload, created, again, first_id, second_id, reason, state = run(
+        migrated_database_url, scenario
+    )
+    assert calls == 0
+    assert payload is None
     assert created is True
-    assert json.loads(payload) == {"execution_id": execution_id}
+    assert again is False
+    assert first_id == second_id
+    assert reason == "source_unverified"
+    assert state == "completed"

@@ -125,6 +125,15 @@ executions = Table(
         unique=True,
         postgresql_where=text("reason = 'execution_closed'"),
     ),
+    Index(
+        "uq_exec_executions_unverified",
+        "org_id",
+        "repo_id",
+        "selector",
+        "sha",
+        unique=True,
+        postgresql_where=text("reason = 'source_unverified'"),
+    ),
 )
 
 execution_artifacts = Table(

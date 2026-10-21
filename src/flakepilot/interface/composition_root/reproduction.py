@@ -18,6 +18,7 @@ from flakepilot.execution.application.reproduction import (
     Decision,
     EvidenceRef,
     Execution,
+    UnverifiedCallerAccess,
     classify,
     inspect,
     record_closed,
@@ -473,10 +474,9 @@ async def request_reproduction(
             actor=actor,
             origin=origin,
             now=now,
+            caller=UnverifiedCallerAccess(),
         )
-    created = (
-        record.correlation_id == origin.correlation_id and record.state == "scheduled"
-    )
+    created = record.correlation_id == origin.correlation_id
     if record.state == "scheduled":
         await enqueue_browser_job(engine, record.id, now)
     return record, created

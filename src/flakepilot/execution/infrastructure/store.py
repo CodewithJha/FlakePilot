@@ -80,6 +80,24 @@ class SqlExecutionStore:
         row = found.mappings().first()
         return None if row is None else Execution(dict(row))
 
+    async def find_unverified(
+        self, *, org_id: str, repo_id: str, selector: str, sha: str
+    ) -> Execution | None:
+        found = await self._session.execute(
+            select(executions)
+            .where(
+                executions.c.org_id == org_id,
+                executions.c.repo_id == repo_id,
+                executions.c.selector == selector,
+                executions.c.sha == sha,
+                executions.c.reason == "source_unverified",
+            )
+            .order_by(executions.c.created_at)
+            .limit(1)
+        )
+        row = found.mappings().first()
+        return None if row is None else Execution(dict(row))
+
     async def artifacts(self, execution_id: str) -> list[tuple[str, str, int]]:
         if not _uuid(execution_id):
             return []
@@ -151,6 +169,10 @@ class SqlExecutionStore:
             )
             if found is None:
                 found = await self.find_closed(
+                    org_id=org_id, repo_id=repo_id, selector=selector, sha=sha
+                )
+            if found is None:
+                found = await self.find_unverified(
                     org_id=org_id, repo_id=repo_id, selector=selector, sha=sha
                 )
             if found is None:
