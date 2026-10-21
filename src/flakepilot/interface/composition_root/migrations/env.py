@@ -23,9 +23,16 @@ from flakepilot.integrations.infrastructure.secret_store import (
 )
 from flakepilot.interface.composition_root.database import create_engine
 from flakepilot.interface.composition_root.settings import Settings, SettingsError
+from flakepilot.orchestration.infrastructure.tables import metadata as orch_metadata
 from flakepilot.test_intelligence.infrastructure.tables import metadata as ti_metadata
 
-target_metadata = [iam_metadata, secret_store_metadata, ti_metadata, diag_metadata]
+target_metadata = [
+    iam_metadata,
+    secret_store_metadata,
+    ti_metadata,
+    diag_metadata,
+    orch_metadata,
+]
 _SCHEMAS = {metadata.schema for metadata in target_metadata}
 _OPTIONS: dict[str, Any] = {
     "target_metadata": target_metadata,
