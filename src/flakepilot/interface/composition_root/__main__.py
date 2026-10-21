@@ -1,12 +1,17 @@
 """Entry point: `python -m flakepilot.interface.composition_root` runs the server;
-`... bootstrap-org --help` is the operator onboarding command (see `bootstrap`)."""
+`... bootstrap-org --help` onboards an org; `... worker` runs the leased job worker."""
 
+import asyncio
 import os
 import sys
 
 import uvicorn
 
 from flakepilot.interface.composition_root import Settings, SettingsError, create_app
+
+_USAGE = (
+    "Usage: python -m flakepilot.interface.composition_root [bootstrap-org | worker]"
+)
 
 
 def main() -> None:
@@ -19,10 +24,12 @@ def main() -> None:
         from flakepilot.interface.composition_root.bootstrap import run_bootstrap_org
 
         sys.exit(run_bootstrap_org(settings, args[1:]))
+    if args == ["worker"]:
+        from flakepilot.interface.composition_root.worker import run_worker
+
+        sys.exit(asyncio.run(run_worker(settings)))
     if args:
-        sys.exit(
-            "Usage: python -m flakepilot.interface.composition_root [bootstrap-org]"
-        )
+        sys.exit(_USAGE)
     # uvicorn's own logging and access log are off: the app logs JSON lines without query strings.
     uvicorn.run(
         create_app(settings),

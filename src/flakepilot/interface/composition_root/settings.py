@@ -54,6 +54,10 @@ class Settings:
     secret_key: Secret | None = None
     # Artifact storage root (ADR-013). Ingestion answers 503 while it is unset.
     artifact_dir: Path | None = None
+    # Leased worker (`... worker`). Empty means these defaults. The API process ignores them.
+    worker_poll_seconds: int = 2
+    worker_batch_size: int = 10
+    worker_lease_seconds: int = 30
 
     @classmethod
     def from_environ(cls, environ: Mapping[str, str]) -> "Settings":
@@ -124,7 +128,25 @@ class Settings:
             secure_cookies=secure_cookies,
             secret_key=Secret(secret_key) if secret_key else None,
             artifact_dir=_artifact_dir(artifact_dir) if artifact_dir else None,
+            worker_poll_seconds=_bounded(
+                environ, "FLAKEPILOT_WORKER_POLL_SECONDS", 2, 1, 300
+            ),
+            worker_batch_size=_bounded(
+                environ, "FLAKEPILOT_WORKER_BATCH_SIZE", 10, 1, 100
+            ),
+            worker_lease_seconds=_bounded(
+                environ, "FLAKEPILOT_WORKER_LEASE_SECONDS", 30, 5, 3600
+            ),
         )
+
+
+def _bounded(
+    environ: Mapping[str, str], name: str, default: int, low: int, high: int
+) -> int:
+    raw = environ.get(name) or str(default)
+    if not re.fullmatch(r"[0-9]{1,4}", raw) or not low <= int(raw) <= high:
+        raise SettingsError(f"{name} must be an integer from {low} to {high}")
+    return int(raw)
 
 
 def _artifact_dir(value: str) -> Path:

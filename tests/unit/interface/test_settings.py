@@ -228,3 +228,34 @@ def test_artifact_dir_must_be_an_existing_writable_absolute_directory(
             Settings.from_environ({**environ, "FLAKEPILOT_ARTIFACT_DIR": value})
         assert "FLAKEPILOT_ARTIFACT_DIR" in str(excinfo.value)
         assert value not in str(excinfo.value)
+
+
+def test_worker_limits_default_and_reject_out_of_range() -> None:
+    environ = {"FLAKEPILOT_DATABASE_URL": DSN}
+    settings = Settings.from_environ(environ)
+    assert (
+        settings.worker_poll_seconds,
+        settings.worker_batch_size,
+        settings.worker_lease_seconds,
+    ) == (2, 10, 30)
+    tuned = Settings.from_environ(
+        {
+            **environ,
+            "FLAKEPILOT_WORKER_POLL_SECONDS": "5",
+            "FLAKEPILOT_WORKER_BATCH_SIZE": "",
+            "FLAKEPILOT_WORKER_LEASE_SECONDS": "60",
+        }
+    )
+    assert tuned.worker_poll_seconds == 5
+    assert tuned.worker_batch_size == 10
+    assert tuned.worker_lease_seconds == 60
+    for name, value in (
+        ("FLAKEPILOT_WORKER_POLL_SECONDS", "0"),
+        ("FLAKEPILOT_WORKER_BATCH_SIZE", "101"),
+        ("FLAKEPILOT_WORKER_LEASE_SECONDS", "nope"),
+    ):
+        with pytest.raises(SettingsError) as excinfo:
+            Settings.from_environ({**environ, name: value})
+        assert name in str(excinfo.value)
+        if not value.isdigit():
+            assert value not in str(excinfo.value)
