@@ -23,7 +23,7 @@ Empty means the default. Values outside the range fail startup and the message n
 |---|---|---|---|
 | `FLAKEPILOT_WORKER_POLL_SECONDS` | 2 | 1–300 | Seconds between polls when the batch was empty or a tick failed |
 | `FLAKEPILOT_WORKER_BATCH_SIZE` | 10 | 1–100 | Maximum jobs claimed per tick, and maximum outbox rows finished per outbox per tick |
-| `FLAKEPILOT_WORKER_LEASE_SECONDS` | 30 | 5–3600 | Lease length. The worker renews it once before the handler |
+| `FLAKEPILOT_WORKER_LEASE_SECONDS` | 30 | 5–3600 | Lease length. The worker renews it before the handler and again while the handler runs. The gap is one third of the lease, at least one second. A renewal the store rejects is not completed |
 
 The worker is one process and one task. It does not start a pool of tasks.
 
