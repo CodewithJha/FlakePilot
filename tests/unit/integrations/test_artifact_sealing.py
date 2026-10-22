@@ -6,7 +6,10 @@ from pathlib import Path
 import pytest
 
 from flakepilot.integrations.application.ports import ArtifactRef, ArtifactStoreError
-from flakepilot.integrations.application.retention import select_for_deletion
+from flakepilot.integrations.application.retention import (
+    plan_deletion,
+    select_for_deletion,
+)
 from flakepilot.integrations.application.sealing import UnconfiguredSealer
 from flakepilot.integrations.infrastructure.sealed_store import SealedArtifactStore
 
@@ -57,6 +60,24 @@ def test_retention_selects_nothing_and_refuses_a_duration() -> None:
     assert select_for_deletion(policy="disabled", artifact_keys=keys) == ()
     with pytest.raises(ValueError, match="retention_unconfigured"):
         select_for_deletion(policy="30d", artifact_keys=keys)
+    audit = ("audit/outbox-1",)
+    outbox = ("outbox/event-1",)
+    assert (
+        plan_deletion(
+            artifact_policy="disabled",
+            artifact_keys=keys,
+            audit_keys=audit,
+            outbox_keys=outbox,
+        )
+        == ()
+    )
+    with pytest.raises(ValueError, match="retention_unconfigured"):
+        plan_deletion(
+            artifact_policy="30d",
+            artifact_keys=keys,
+            audit_keys=audit,
+            outbox_keys=outbox,
+        )
 
 
 def test_the_composition_root_keeps_the_plaintext_store() -> None:
