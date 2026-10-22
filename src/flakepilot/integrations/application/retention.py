@@ -1,5 +1,8 @@
 """Retention selection. No duration is configured, so nothing is selected.
 
+Activating deletion requires one approved product, legal, and security
+decision: the retention duration, and confirmation that audit rows and outbox
+rows are not artifact keys. This function does not choose that duration.
 Audit rows and outbox rows are not inputs. This function cannot see them.
 """
 
