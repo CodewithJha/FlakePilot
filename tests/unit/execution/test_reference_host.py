@@ -1,9 +1,13 @@
-"""Simulated reference host. No socket, no container, and no ledger file.
+"""Simulated reference host. No container is started.
+
+The restart test reopens a ledger file. Every other test keeps the ledger in
+memory.
 
 `runtime_available=True` only lets this process update an in-memory ledger and
 select ids. It does not start a runtime. Isolation stays `simulation`.
 """
 
+import os
 import secrets
 from pathlib import Path
 
@@ -191,3 +195,23 @@ def test_simulated_cleanup_is_idempotent_and_does_not_touch_a_runtime() -> None:
     assert first == second == ("ok", (LIVE, "ef" * 6, "12" * 6))
     assert CID not in first[1]
     assert ledger.rows() == before
+
+
+def test_a_file_ledger_is_visible_to_a_new_host_object(tmp_path: Path) -> None:
+    """Simulated restart. The ledger file is reopened. No container is started."""
+    from flakepilot.execution.infrastructure.ledger import FileLedger
+
+    path = tmp_path / "ledger"
+    first = ReferenceHost(FileLedger(path), KEY, now=NOW, runtime_available=True)
+    message = _register()
+    first.accept("register", message, seal(message, KEY))
+    second = ReferenceHost(FileLedger(path), KEY, now=NOW, runtime_available=True)
+    second.accept("register", message, seal(message, KEY))
+    assert second.cleanup(((CID, EXEC),)) == ("ok", ())
+    cancel = f"cancel {EXEC}".encode()
+    second.accept("cancel", cancel, seal(cancel, KEY))
+    third = ReferenceHost(FileLedger(path), KEY, now=NOW, runtime_available=True)
+    assert third.cleanup(((CID, EXEC),)) == ("ok", (CID,))
+    path.write_text("not a ledger\n", encoding="ascii")
+    os.chmod(path, 0o600)
+    assert third.cleanup(((CID, EXEC),)) == ("authority_unavailable", ())

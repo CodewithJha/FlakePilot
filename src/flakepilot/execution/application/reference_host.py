@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from flakepilot.execution.application.host import (
     HostGate,
     HostRejected,
+    LedgerError,
     MemoryLedger,
     seal,
 )
@@ -125,8 +126,9 @@ class ReferenceHost:
         """`(status, selected ids)`. Selection is not removal.
 
         `authority_unavailable` and `runtime_unavailable` select nothing.
-        `ok` lists ids the ledger says to remove. The same input selects the
-        same ids, and the ledger rows stay as they were.
+        A ledger that cannot be read selects nothing. `ok` lists ids the
+        ledger says to remove. The same input selects the same ids, and the
+        ledger rows stay as they were.
         """
         if not isinstance(containers, tuple):
             raise HostRejected
@@ -147,7 +149,10 @@ class ReferenceHost:
                 or pair[0] in seen
             ):
                 continue
-            registered, cancelled, expires = self._ledger.lookup(pair[1])
+            try:
+                registered, cancelled, expires = self._ledger.lookup(pair[1])
+            except LedgerError:
+                return ("authority_unavailable", ())
             action = container_action(
                 registered=registered,
                 cancelled=cancelled,
