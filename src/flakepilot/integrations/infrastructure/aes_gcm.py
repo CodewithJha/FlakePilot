@@ -21,8 +21,9 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from flakepilot.integrations.application.ports import ArtifactStoreError
+from flakepilot.integrations.application.sealing import ArtifactKeyProvider
 
-__all__ = ["AesGcmSealer"]
+__all__ = ["AesGcmSealer", "ProviderBackedSealer"]
 
 _VERSION = 1
 _NONCE_LEN = 12
@@ -67,6 +68,53 @@ class AesGcmSealer:
             return AESGCM(key).decrypt(nonce, ciphertext, _aad(key_id))
         except InvalidTag:
             raise ArtifactStoreError("integrity") from None
+
+
+class ProviderBackedSealer:
+    """Ask a key provider on every seal and open. The provider holds the bytes.
+
+    This sealer is not constructed by the composition root. A provider that is
+    down, or that returns a key that is not 32 bytes, fails closed.
+    """
+
+    def __init__(self, provider: ArtifactKeyProvider) -> None:
+        self._provider = provider
+
+    def __repr__(self) -> str:
+        return "ProviderBackedSealer()"
+
+    def seal(self, data: bytes) -> bytes:
+        key_id, key = _seal_material(self._provider)
+        return AesGcmSealer({key_id: key}, key_id).seal(data)
+
+    def open(self, blob: bytes) -> bytes:
+        key_id, _nonce, _ciphertext = _parse(blob)
+        key = _open_material(self._provider, key_id)
+        return AesGcmSealer({key_id: key}, key_id).open(blob)
+
+
+def _seal_material(provider: ArtifactKeyProvider) -> tuple[str, bytes]:
+    try:
+        key_id, key = provider.seal_key()
+    except ArtifactStoreError:
+        raise
+    except Exception:  # noqa: BLE001 - provider errors must not carry key text
+        raise ArtifactStoreError("encryption_unavailable") from None
+    if not _id_ok(key_id) or not isinstance(key, bytes) or len(key) != 32:
+        raise ArtifactStoreError("encryption_unavailable")
+    return key_id, key
+
+
+def _open_material(provider: ArtifactKeyProvider, key_id: str) -> bytes:
+    try:
+        key = provider.open_key(key_id)
+    except ArtifactStoreError:
+        raise
+    except Exception:  # noqa: BLE001 - provider errors must not carry key text
+        raise ArtifactStoreError("encryption_unavailable") from None
+    if not isinstance(key, bytes) or len(key) != 32:
+        raise ArtifactStoreError("encryption_unavailable")
+    return key
 
 
 def _aad(key_id: str) -> bytes:
