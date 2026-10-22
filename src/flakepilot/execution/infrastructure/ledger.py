@@ -49,6 +49,17 @@ class FileLedger(MemoryLedger):
             super().cancel(execution_id)
             self._store()
 
+    def complete(self, execution_id: str) -> None:
+        with self._locked(exclusive=True):
+            self._reload(missing_ok=True)
+            super().complete(execution_id)
+            self._store()
+
+    def phase(self, execution_id: str) -> str:
+        with self._locked(exclusive=False):
+            self._reload(missing_ok=False)
+            return super().phase(execution_id)
+
     def lookup(self, execution_id: str) -> tuple[bool, bool, int]:
         with self._locked(exclusive=False):
             self._reload(missing_ok=False)
@@ -68,12 +79,17 @@ class FileLedger(MemoryLedger):
         seen: set[str] = set()
         for line in text.splitlines():
             parts = line.split(" ")
-            if len(parts) != 3 or parts[2] not in ("0", "1") or not parts[1].isdigit():
+            if (
+                len(parts) != 3
+                or parts[2] not in ("0", "1", "2")
+                or not parts[1].isdigit()
+            ):
                 raise LedgerError
             if parts[0] in seen or len(parts[1]) > 10:
                 raise LedgerError
             seen.add(parts[0])
-            self.remember(parts[0], int(parts[1]), cancelled=parts[2] == "1")
+            mark = {"0": "open", "1": "cancelled", "2": "completed"}[parts[2]]
+            self.remember(parts[0], int(parts[1]), mark=mark)
         if not seen:
             raise LedgerError
 
@@ -81,8 +97,8 @@ class FileLedger(MemoryLedger):
         if self._path.is_symlink():
             raise LedgerError
         blob = "".join(
-            f"{execution_id} {expires} {int(cancelled)}\n"
-            for execution_id, expires, cancelled in self.rows()
+            f"{execution_id} {expires} {code}\n"
+            for execution_id, expires, code in self.rows()
         ).encode("ascii")
         temporary = self._path.with_name(
             f".{self._path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"

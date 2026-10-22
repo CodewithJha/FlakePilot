@@ -118,7 +118,7 @@ class ReferenceHost:
         if operation == "cancel":
             self._gate.accept(message, mac_hex)
             return
-        self._ledger.cancel(parts[1])
+        self._ledger.complete(parts[1])
 
     def cleanup(
         self, containers: tuple[tuple[str, str], ...]

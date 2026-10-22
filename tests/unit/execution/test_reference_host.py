@@ -108,21 +108,50 @@ def test_a_different_expiry_is_rejected_and_the_runtime_default_refuses_work() -
     assert empty.rows() == ()
 
 
-def test_cancel_and_complete_are_terminal_and_idempotent() -> None:
+def test_cancel_and_complete_stay_distinct_and_idempotent() -> None:
     host, ledger = _host(runtime_available=True)
     registered = _register()
     host.accept("register", registered, seal(registered, KEY))
     cancel = f"cancel {EXEC}".encode()
     host.accept("cancel", cancel, seal(cancel, KEY))
     host.accept("cancel", cancel, seal(cancel, KEY))
+    assert ledger.phase(EXEC) == "cancelled"
     assert ledger.lookup(EXEC) == (True, True, NOW + 30)
+    done = f"complete {EXEC}".encode()
+    with pytest.raises(HostRejected):
+        host.accept("complete", done, seal(done, KEY))
+    assert ledger.phase(EXEC) == "cancelled"
+    other = f"register {OTHER} {NOW + 40}".encode()
+    host.accept("register", other, seal(other, KEY))
     complete = f"complete {OTHER}".encode()
     host.accept("complete", complete, seal(complete, KEY))
     host.accept("complete", complete, seal(complete, KEY))
-    assert ledger.lookup(OTHER) == (True, True, 0)
-    again = f"register {OTHER} {NOW + 30}".encode()
+    assert ledger.phase(OTHER) == "completed"
     with pytest.raises(HostRejected):
-        host.accept("register", again, seal(again, KEY))
+        host.accept(
+            "cancel", f"cancel {OTHER}".encode(), seal(f"cancel {OTHER}".encode(), KEY)
+        )
+    assert ledger.phase(OTHER) == "completed"
+    unknown = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+    missing = f"complete {unknown}".encode()
+    with pytest.raises(HostRejected):
+        host.accept("complete", missing, seal(missing, KEY))
+    assert ledger.phase(unknown) == "absent"
+
+
+def test_a_mac_authorizes_only_its_own_operation_and_id() -> None:
+    host, ledger = _host(runtime_available=True)
+    message = _register()
+    mac = seal(message, KEY)
+    host.accept("register", message, mac)
+    other = f"register {OTHER} {NOW + 30}".encode()
+    cancel = f"cancel {EXEC}".encode()
+    with pytest.raises(HostRejected):
+        host.accept("register", other, mac)
+    with pytest.raises(HostRejected):
+        host.accept("cancel", cancel, mac)
+    assert ledger.phase(EXEC) == "open"
+    assert ledger.phase(OTHER) == "absent"
 
 
 def test_health_is_authenticated_and_stays_a_simulation() -> None:
@@ -178,8 +207,11 @@ def test_simulated_cleanup_is_idempotent_and_does_not_touch_a_runtime() -> None:
         host.accept("register", expired, seal(expired, KEY))
     ledger.remember(expired_id, NOW - 1, cancelled=False)
     cancelled_id = "dddddddd-dddd-dddd-dddd-dddddddddddd"
-    cancelled = f"complete {cancelled_id}".encode()
-    host.accept("complete", cancelled, seal(cancelled, KEY))
+    opened = f"register {cancelled_id} {NOW + 40}".encode()
+    host.accept("register", opened, seal(opened, KEY))
+    finished = f"complete {cancelled_id}".encode()
+    host.accept("complete", finished, seal(finished, KEY))
+    assert ledger.phase(cancelled_id) == "completed"
     rows = (
         (CID, EXEC),
         (CID, EXEC),

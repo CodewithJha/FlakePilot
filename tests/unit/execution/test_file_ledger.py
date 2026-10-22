@@ -24,6 +24,23 @@ TWO = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbb2"
 LIVE = "def456def456"
 
 
+def test_a_completion_is_stored_apart_from_a_cancel(tmp_path: Path) -> None:
+    path = tmp_path / "ledger"
+    FileLedger(path).register(EXECUTION, 500)
+    FileLedger(path).complete(EXECUTION)
+    assert FileLedger(path).phase(EXECUTION) == "completed"
+    assert path.read_bytes().endswith(b" 2\n")
+    with pytest.raises(HostRejected):
+        FileLedger(path).cancel(EXECUTION)
+    assert FileLedger(path).phase(EXECUTION) == "completed"
+    assert FileLedger(path).lookup(EXECUTION) == (True, True, 500)
+    with pytest.raises(HostRejected):
+        FileLedger(path).complete(ONE)
+    assert not any(
+        line.startswith(ONE) for line in path.read_text(encoding="ascii").splitlines()
+    )
+
+
 def test_register_and_cancel_round_trip(tmp_path: Path) -> None:
     path = tmp_path / "ledger"
     FileLedger(path).register(EXECUTION, 500)

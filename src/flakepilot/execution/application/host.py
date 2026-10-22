@@ -42,25 +42,42 @@ class ExecutionAuthority:
     """What the reaper is allowed to know. Not a database row."""
 
     def lookup(self, execution_id: str) -> tuple[bool, bool, int]:
-        """`(registered, cancelled, expires)`. Unknown ids are not registered."""
+        """`(registered, terminal, expires)`. Unknown ids are not registered.
+
+        `terminal` is true for both `cancelled` and `completed`. `phase` tells
+        those marks apart. A reaper may remove either mark. It must not treat
+        them as the same audit event.
+        """
         raise NotImplementedError
 
 
+_OPEN = 0
+_CANCELLED = 1
+_COMPLETED = 2
+_PHASE = {0: "open", 1: "cancelled", 2: "completed"}
+_MARK = {"open": _OPEN, "cancelled": _CANCELLED, "completed": _COMPLETED}
+
+
 class MemoryLedger(ExecutionAuthority):
-    """Authority kept in this process. `register` is the host-local write."""
+    """Authority kept in this process. `register` is the host-local write.
+
+    `open`, `cancelled`, and `completed` are distinct. The first terminal mark
+    stays. A later mark of the other kind is rejected. Cancel of an unknown id
+    is a tombstone. Complete of an unknown id writes nothing.
+    """
 
     def __init__(self) -> None:
-        self._rows: dict[str, tuple[int, bool]] = {}
+        self._rows: dict[str, tuple[int, int]] = {}
 
     def register(self, execution_id: str, expires: int) -> None:
         if not execution_id_ok(execution_id) or not expires_ok(expires):
             raise HostRejected
         current = self._rows.get(execution_id)
         if current is None:
-            self._rows[execution_id] = (expires, False)
+            self._rows[execution_id] = (expires, _OPEN)
             return
-        stored, cancelled = current
-        if cancelled or stored != expires:
+        stored, code = current
+        if code != _OPEN or stored != expires:
             raise HostRejected
         return
 
@@ -68,31 +85,71 @@ class MemoryLedger(ExecutionAuthority):
         if not execution_id_ok(execution_id):
             raise HostRejected
         current = self._rows.get(execution_id)
-        expires = 0 if current is None else current[0]
-        self._rows[execution_id] = (expires, True)
+        if current is None:
+            self._rows[execution_id] = (0, _CANCELLED)
+            return
+        expires, code = current
+        if code == _CANCELLED:
+            return
+        if code != _OPEN:
+            raise HostRejected
+        self._rows[execution_id] = (expires, _CANCELLED)
+
+    def complete(self, execution_id: str) -> None:
+        """Close an open registration. An unknown id is not a completion."""
+        if not execution_id_ok(execution_id):
+            raise HostRejected
+        current = self._rows.get(execution_id)
+        if current is None:
+            raise HostRejected
+        expires, code = current
+        if code == _COMPLETED:
+            return
+        if code != _OPEN:
+            raise HostRejected
+        self._rows[execution_id] = (expires, _COMPLETED)
+
+    def phase(self, execution_id: str) -> str:
+        """`absent`, `open`, `cancelled`, or `completed`."""
+        current = self._rows.get(execution_id)
+        if current is None:
+            return "absent"
+        return _PHASE[current[1]]
 
     def lookup(self, execution_id: str) -> tuple[bool, bool, int]:
         current = self._rows.get(execution_id)
         if current is None:
             return False, False, 0
-        expires, cancelled = current
-        return True, cancelled, expires
+        expires, code = current
+        return True, code != _OPEN, expires
 
-    def rows(self) -> tuple[tuple[str, int, bool], ...]:
+    def rows(self) -> tuple[tuple[str, int, int], ...]:
+        """`(execution id, expires, code)`. Code is 0 open, 1 cancelled, 2 completed."""
         return tuple(
-            (execution_id, expires, cancelled)
-            for execution_id, (expires, cancelled) in sorted(self._rows.items())
+            (execution_id, expires, code)
+            for execution_id, (expires, code) in sorted(self._rows.items())
         )
 
-    def remember(self, execution_id: str, expires: int, *, cancelled: bool) -> None:
+    def remember(
+        self,
+        execution_id: str,
+        expires: int,
+        *,
+        cancelled: bool | None = None,
+        mark: str | None = None,
+    ) -> None:
         """Reload one row the host file already stored. Not a handoff."""
-        if (
-            not execution_id_ok(execution_id)
-            or not expires_ok(expires)
-            or not isinstance(cancelled, bool)
-        ):
+        if not execution_id_ok(execution_id) or not expires_ok(expires):
             raise LedgerError
-        self._rows[execution_id] = (expires, cancelled)
+        if mark is not None:
+            if cancelled is not None or mark not in _MARK:
+                raise LedgerError
+            code = _MARK[mark]
+        elif isinstance(cancelled, bool):
+            code = _CANCELLED if cancelled else _OPEN
+        else:
+            raise LedgerError
+        self._rows[execution_id] = (expires, code)
 
 
 class HostGate:
