@@ -59,7 +59,7 @@ PROBE complete fail=4
 
 ## What passed
 
-Twenty-two checks passed. That includes every reaper lifecycle check that uses the real `LabelledContainerReaper`, `FileLedger`, and `HostGate`: register through the host gate, a future container kept, an expired container removed, a client SIGKILL that left the container running, an independent sweep that removed the orphan, a second sweep that removed nothing further, concurrent sweeps that removed one, and a missing, symlink, loose, or malformed ledger that removed nothing. CPU quota was half a core. A small result was accepted, an oversized result was rejected, and a malformed result was rejected. No labelled container from this run was left behind.
+Twenty-one CHECK lines passed and four failed. That includes every reaper lifecycle check that uses the real `LabelledContainerReaper`, `FileLedger`, and `HostGate`: register through the host gate, a future container kept, an expired container removed, a client SIGKILL that left the container running, an independent sweep that removed the orphan, a second sweep that removed nothing further, concurrent sweeps that removed one, and a missing, symlink, loose, or malformed ledger that removed nothing. CPU quota was half a core. A small result was accepted, an oversized result was rejected, and a malformed result was rejected. No labelled container from this run was left behind.
 
 `wall_supervisor_sigkill` reclaimed 3. One of those is the wall-clock container. The other two match the disk and short-write clients, which this probe's 40 second deadline killed before they printed a line. `--rm` does not apply once the client is killed, so those containers were still there for the later sweep. That reclaim count is not a reaper failure.
 
@@ -83,7 +83,7 @@ The disk and short-write scripts spawned one `dd` and one `wc` per chunk, about 
 ## Not claimed
 
 - Disk cap, short write, OOM exit status, and the pid limit are not measured by this log.
-- The corrected probe, one `dd`, timeout stdout kept, the pid count printed by the parent, and OOM accepted only for `true 137`, has not been rerun on this laptop.
+- The corrected probe was rerun later the same morning. That measurement is [2026-10-22-laptop-measured.md](2026-10-22-laptop-measured.md). It does not change these four FAIL lines.
 - Host restart was not run.
 - This is not the GitHub-hosted runner and not a dedicated execution host.
 
