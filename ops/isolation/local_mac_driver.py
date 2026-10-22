@@ -90,57 +90,35 @@ _RESOURCE_CHECKS = (
 )
 
 DISK_SCRIPT = """
-cap=67108864
-chunk=65536
 path=/tmp/fp-disk
 : >"$path" || exit 2
-size=0
-n=0
-while [ "$n" -lt 1100 ]; do
-  n=$((n + 1))
-  before=$size
-  dd if=/dev/zero bs="$chunk" count=1 >>"$path" 2>/tmp/dd.err || true
-  size=$(wc -c <"$path" | tr -d ' ')
-  delta=$((size - before))
-  if [ "$delta" -ne "$chunk" ]; then
-    break
-  fi
-done
-extra_before=$size
-dd if=/dev/zero bs=1 count=1 >>"$path" 2>/tmp/dd.err || true
+dd if=/dev/zero of="$path" bs=65536 count=1025 2>/tmp/dd.err || true
 end=$(wc -c <"$path" | tr -d ' ')
-extra=$((end - extra_before))
+extra_before=$end
+dd if=/dev/zero bs=1 count=1 >>"$path" 2>/tmp/dd.err || true
+after=$(wc -c <"$path" | tr -d ' ')
+extra=$((after - extra_before))
 mount=$(awk '$2=="/tmp" { gsub(/,/, "_", $4); print $4; exit }' /proc/mounts)
-echo "RESULT size=$size end=$end extra=$extra loops=$n mount=${mount:-missing}"
+echo "RESULT end=$after extra=$extra mount=${mount:-missing}"
 """
 
 SHORT_SCRIPT = """
-cap=67108864
-chunk=60000
 path=/tmp/fp-disk
+chunk=60000
 : >"$path" || exit 2
-size=0
-short=0
-n=0
-last=0
-while [ "$n" -lt 1300 ]; do
-  n=$((n + 1))
-  before=$size
-  dd if=/dev/zero bs="$chunk" count=1 >>"$path" 2>/tmp/dd.err || true
-  size=$(wc -c <"$path" | tr -d ' ')
-  last=$((size - before))
-  if [ "$last" -gt 0 ] && [ "$last" -lt "$chunk" ]; then
-    short=1
-  fi
-  if [ "$last" -ne "$chunk" ]; then
-    break
-  fi
-done
-extra_before=$size
-dd if=/dev/zero bs=1 count=1 >>"$path" 2>/tmp/dd.err || true
+dd if=/dev/zero of="$path" bs=60000 count=1200 2>/tmp/dd.err || true
 end=$(wc -c <"$path" | tr -d ' ')
-extra=$((end - extra_before))
-echo "RESULT size=$size end=$end short=$short last=$last extra=$extra loops=$n"
+last=$((end % chunk))
+if [ "$last" -gt 0 ]; then
+  short=1
+else
+  short=0
+fi
+extra_before=$end
+dd if=/dev/zero bs=1 count=1 >>"$path" 2>/tmp/dd.err || true
+after=$(wc -c <"$path" | tr -d ' ')
+extra=$((after - extra_before))
+echo "RESULT end=$after short=$short last=$last extra=$extra"
 """
 
 CPU_SCRIPT = """
@@ -163,28 +141,27 @@ fi
 """
 
 OOM_SCRIPT = """
-dd if=/dev/zero of=/tmp/big bs=1048576 count=80 2>/tmp/dd.err || true
-echo RESULT oom_finished=1
+exec dd if=/dev/zero of=/tmp/big bs=1048576 count=80
 """
 
 PID_SCRIPT = """
+path=/tmp/fp-pids
+: >"$path" || exit 2
+(
+  i=0
+  while [ "$i" -lt 40 ]; do
+    i=$((i + 1))
+    sleep 30 </dev/null >/dev/null 2>&1 &
+    echo "$!"
+  done
+) >"$path" 2>/tmp/fp-pid.err
 ok=0
-i=0
-while [ "$i" -lt 40 ]; do
-  i=$((i + 1))
-  sleep 30 >/dev/null 2>&1 &
-  pid=$!
-  if [ -z "$pid" ]; then
-    break
-  fi
-  if kill -0 "$pid" 2>/dev/null; then
+while read -r line; do
+  if [ -n "$line" ]; then
     ok=$((ok + 1))
-  else
-    break
   fi
-done
+done <"$path"
 echo "RESULT pids_ok=$ok"
-kill $(jobs -p) >/dev/null 2>&1 || true
 exit 0
 """
 
@@ -406,7 +383,11 @@ class _Docker:
                 input=stdin,
                 timeout=timeout,
             )
-        except (OSError, subprocess.TimeoutExpired):
+        except subprocess.TimeoutExpired as exc:
+            stdout = exc.stdout if isinstance(exc.stdout, bytes) else b""
+            stderr = exc.stderr if isinstance(exc.stderr, bytes) else b""
+            return subprocess.CompletedProcess(argv, 124, stdout, stderr)
+        except OSError:
             return subprocess.CompletedProcess(argv, 124, b"", b"")
 
     def ids(self, *filters: str) -> list[str]:
@@ -489,17 +470,18 @@ class _Session:
         disk = self._script(
             "disk", DISK_SCRIPT, memory="256m", pids=64, tmpfs="size=64m"
         )
-        fields = _fields(disk[1])
-        self.report.emit("disk_64m_chunked", *_disk_status(fields))
+        self.report.emit("disk_64m_chunked", *_disk_status(_fields(disk[1]), disk[0]))
         short = self._script(
             "short", SHORT_SCRIPT, memory="256m", pids=64, tmpfs="size=64m"
         )
-        self.report.emit("disk_short_write", *_short_status(_fields(short[1])))
+        self.report.emit(
+            "disk_short_write", *_short_status(_fields(short[1]), short[0])
+        )
         cpu = self._script("cpu", CPU_SCRIPT, memory="64m", pids=32, tmpfs="size=16m")
         self.report.emit("cpu_throttled", *_cpu_status(_fields(cpu[1])))
         self._oom()
         pids = self._script("pids", PID_SCRIPT, memory="64m", pids=16, tmpfs="size=16m")
-        self.report.emit("pids_limited", *_pid_status(_fields(pids[1])))
+        self.report.emit("pids_limited", *_pid_status(_fields(pids[1]), pids[0]))
         self._wall()
         self._launcher()
         self._output("small", SMALL_SCRIPT, "output_small_accepted", _small_ok)
@@ -751,14 +733,9 @@ class _Session:
             15,
         )
         detail = inspected.stdout.decode("utf-8", errors="replace").strip()
-        killed = detail.startswith("true") or completed.returncode == 137
-        finished = "oom_finished=1" in text
-        if killed and not finished:
-            self.report.emit("memory_oom_status", "PASS", detail or "exit=137")
-        else:
-            self.report.emit(
-                "memory_oom_status", "FAIL", detail or f"exit={completed.returncode}"
-            )
+        if not detail:
+            detail = f"exit={completed.returncode}"
+        self.report.emit("memory_oom_status", *_oom_status(detail, text))
         self._drop(execution)
 
     def _wall(self) -> None:
@@ -1012,17 +989,16 @@ def _container_name(run: str, suffix: str) -> str:
     return f"fp{run}-{suffix}"[:60]
 
 
-def _disk_status(fields: dict[str, str]) -> tuple[str, str]:
+def _disk_status(fields: dict[str, str], code: int) -> tuple[str, str]:
+    if "end" not in fields:
+        return "FAIL", f"no_result exit={code}"
     size = _int(fields.get("end"))
     extra = _int(fields.get("extra"))
-    loops = _int(fields.get("loops"))
     mount = fields.get("mount", "missing")
-    detail = f"end={size} extra={extra} loops={loops} mount={mount}"
+    detail = f"end={size} extra={extra} mount={mount}"
     if (
         size is not None
         and extra == 0
-        and loops is not None
-        and loops >= 1000
         and CAP - 65536 <= size <= CAP
         and ("65536k" in mount or "64m" in mount or "67108864" in mount)
     ):
@@ -1030,7 +1006,9 @@ def _disk_status(fields: dict[str, str]) -> tuple[str, str]:
     return "FAIL", detail
 
 
-def _short_status(fields: dict[str, str]) -> tuple[str, str]:
+def _short_status(fields: dict[str, str], code: int) -> tuple[str, str]:
+    if "end" not in fields:
+        return "FAIL", f"no_result exit={code}"
     end = _int(fields.get("end"))
     extra = _int(fields.get("extra"))
     short = _int(fields.get("short"))
@@ -1066,7 +1044,18 @@ def _cpu_ratio(fields: dict[str, str]) -> float | None:
     return None
 
 
-def _pid_status(fields: dict[str, str]) -> tuple[str, str]:
+def _oom_status(detail: str, text: str) -> tuple[str, str]:
+    parts = detail.split()
+    flag = parts[0] if parts else ""
+    exit_code = parts[1] if len(parts) > 1 else ""
+    if flag == "true" and exit_code == "137" and "oom_finished=1" not in text:
+        return "PASS", detail
+    return "FAIL", detail or "missing"
+
+
+def _pid_status(fields: dict[str, str], code: int) -> tuple[str, str]:
+    if "pids_ok" not in fields:
+        return "FAIL", f"no_result exit={code}"
     count = _int(fields.get("pids_ok"))
     detail = f"pids_ok={count}"
     if count is not None and 1 <= count <= 20:
