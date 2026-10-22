@@ -8,7 +8,8 @@ worker lease. A label that names a later expiry does not extend the run. A
 label that names an earlier expiry does not remove a run the ledger still
 holds open. An unregistered label is removed. Two sweeps can run together:
 removing an id that is already gone is not a failure of the other sweep. A
-missing runtime, or a ledger file that is not mode `0600`, removes nothing.
+missing runtime, a runtime client that does not answer, or a ledger that is
+missing, empty, or not mode `0600`, removes nothing.
 
 The unit tests pass a fake CLI. They do not start a container and they do not
 mark isolation checks passed.
@@ -38,18 +39,25 @@ class Cli(Protocol):
 
 
 class CliFailed(Exception):
-    """The runtime client ran and returned a failure. Nothing was removed."""
+    """The runtime client failed or did not finish. Nothing was removed."""
 
 
 def exec_cli(argv: list[str]) -> str:
-    """Exec the runtime client with `PATH` only. The process environment is not copied."""
-    completed = subprocess.run(
-        argv,
-        check=False,
-        capture_output=True,
-        env=dict(_CLIENT_ENV),
-        timeout=10,
-    )
+    """Exec the runtime client with `PATH` only. The process environment is not copied.
+
+    A client that does not finish is a failure. The caller removes nothing
+    because of that failure.
+    """
+    try:
+        completed = subprocess.run(
+            argv,
+            check=False,
+            capture_output=True,
+            env=dict(_CLIENT_ENV),
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        raise CliFailed from None
     if completed.returncode != 0:
         raise CliFailed
     return completed.stdout.decode("utf-8", errors="replace")

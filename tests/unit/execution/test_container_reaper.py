@@ -227,6 +227,34 @@ def test_the_real_cli_does_not_inherit_the_process_environment(
     assert "secret" not in str(seen["argv"])
 
 
+def test_a_timed_out_runtime_client_removes_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(
+        argv: list[str],
+        *,
+        check: bool,
+        capture_output: bool,
+        env: dict[str, str],
+        timeout: int,
+    ) -> subprocess.CompletedProcess[bytes]:
+        del check, capture_output, env, timeout
+        calls.append(list(argv))
+        raise subprocess.TimeoutExpired(argv, 10)
+
+    monkeypatch.setattr(
+        "flakepilot.execution.infrastructure.reaper.subprocess.run", fake_run
+    )
+    result = LabelledContainerReaper(
+        now=lambda: 200, authority=_ledger((EXPIRED, 100))
+    ).reclaim()
+    assert result.reclaimed == 0
+    assert result.reason == "runtime_reaper_unavailable"
+    assert [call[1] for call in calls] == ["ps"]
+
+
 def test_a_failing_real_cli_raises_without_returning_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
