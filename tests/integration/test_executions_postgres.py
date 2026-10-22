@@ -199,6 +199,69 @@ def test_pin_schedules_once_and_a_stale_lease_cannot_finish(
     assert sha == SHA
 
 
+def test_a_committed_cancel_beats_a_later_success_finish(
+    migrated_database_url: str,
+) -> None:
+    """The finish statement itself sees the cancel. The pass is not stored."""
+
+    async def scenario(engine: AsyncEngine) -> tuple[str, str, str | None]:
+        async with transaction(engine) as session:
+            binding = await _register(session, owner="delta")
+            record = await schedule(
+                SqlRepoDirectory(session),
+                _Host(SHA),
+                SqlExecutionStore(session),
+                access=OrgAccess(USER, ORG, org_admin=True),
+                code_host=CodeHostAccess.READ,
+                org_id=ORG,
+                repo_id=binding.repo_id,
+                selector=SELECTOR,
+                claimed_sha=SHA,
+                actor=Actor(ActorType.USER, USER),
+                origin=Origin(Channel.CLI, "corr-cancel"),
+                now=NOW,
+            )
+            execution_id = record.id
+        async with transaction(engine) as session:
+            claimed = await SqlExecutionStore(session).claim(
+                execution_id=execution_id,
+                owner="worker-a",
+                now=NOW,
+                lease=timedelta(seconds=30),
+            )
+            assert claimed is not None
+            generation = claimed.generation
+            await SqlExecutionStore(session).request_cancel(
+                execution_id=execution_id, now=NOW
+            )
+        async with transaction(engine) as session:
+            wrote = await SqlExecutionStore(session).finish(
+                execution_id=execution_id,
+                owner="worker-a",
+                generation=generation,
+                now=NOW,
+                decision=finish(RUNNING, "success", "passed"),
+                evidence_partial=False,
+                actor=Actor(ActorType.SYSTEM),
+                origin=Origin(Channel.CLI, "corr-cancel"),
+            )
+        async with transaction(engine) as session:
+            current = await SqlExecutionStore(session).get(execution_id)
+            assert current is not None
+            return (
+                current.state,
+                current.outcome or "",
+                current.reason if wrote else None,
+            )
+
+    state, outcome, reason = run(migrated_database_url, scenario)
+    assert wrote_ok(state, outcome, reason)
+
+
+def wrote_ok(state: str, outcome: str, reason: str | None) -> bool:
+    return state == "cancelled" and outcome == "cancelled" and reason == "cancelled"
+
+
 def test_missing_grant_writes_nothing_and_delivery_keeps_the_org(
     migrated_database_url: str,
 ) -> None:

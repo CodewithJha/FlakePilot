@@ -6,7 +6,9 @@ generation or owner does not match writes nothing, including no outbox row.
 
 import re
 import uuid
+from collections.abc import Mapping
 from datetime import datetime, timedelta
+from typing import cast
 
 from sqlalchemy import or_, select, update
 from sqlalchemy.exc import IntegrityError
@@ -20,6 +22,7 @@ from flakepilot.execution.domain.reproduction import (
     RUNNING,
     SCHEDULED,
     Decision,
+    completion_under_cancel,
 )
 from flakepilot.execution.infrastructure.tables import (
     execution_artifacts,
@@ -241,6 +244,34 @@ class SqlExecutionStore:
         loaded = await self.get(execution_id)
         return loaded
 
+    async def observed_cancel(
+        self,
+        *,
+        execution_id: str,
+        owner: str,
+        generation: int,
+        now: datetime,
+    ) -> bool | None:
+        """Lock the running holder. None means this caller cannot finish it."""
+        _clock(now)
+        held = await self._session.execute(
+            select(
+                executions.c.cancel_requested,
+                executions.c.state,
+                executions.c.lease_owner,
+                executions.c.generation,
+                executions.c.lease_expires_at,
+            )
+            .where(executions.c.id == execution_id)
+            .with_for_update()
+        )
+        current = held.mappings().first()
+        if current is None or not _holder_matches(
+            cast(Mapping[str, object], current), owner, generation, now
+        ):
+            return None
+        return bool(current["cancel_requested"])
+
     async def finish(
         self,
         *,
@@ -256,6 +287,25 @@ class SqlExecutionStore:
         _clock(now)
         if decision.state not in (COMPLETED, CANCELLED):
             raise InvalidExecution("invalid_request")
+        held = await self._session.execute(
+            select(
+                executions.c.cancel_requested,
+                executions.c.state,
+                executions.c.lease_owner,
+                executions.c.generation,
+                executions.c.lease_expires_at,
+            )
+            .where(executions.c.id == execution_id)
+            .with_for_update()
+        )
+        current = held.mappings().first()
+        if current is None or not _holder_matches(
+            cast(Mapping[str, object], current), owner, generation, now
+        ):
+            return False
+        decision = completion_under_cancel(
+            decision, cancel_requested=bool(current["cancel_requested"])
+        )
         result = await self._session.execute(
             update(executions)
             .where(
@@ -465,6 +515,19 @@ class SqlExecutionStore:
                 payload=dict(event.payload),
             )
         )
+
+
+def _holder_matches(
+    row: Mapping[str, object], owner: str, generation: int, now: datetime
+) -> bool:
+    deadline = row["lease_expires_at"]
+    return (
+        row["state"] == RUNNING
+        and row["lease_owner"] == owner
+        and row["generation"] == generation
+        and isinstance(deadline, datetime)
+        and deadline > now
+    )
 
 
 def _clock(now: datetime) -> None:

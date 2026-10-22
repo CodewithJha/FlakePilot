@@ -21,6 +21,7 @@ from flakepilot.execution.domain.reproduction import (
     born_scheduled,
     claim,
     classify,
+    completion_under_cancel,
     finish,
     screenshot_ok,
     selector_ok,
@@ -45,6 +46,14 @@ def test_selector_and_sha_reject_traversal_and_uppercase() -> None:
     assert not sha_ok("A" * 40)
     assert not sha_ok("abc")
     assert APPROVED_COMMAND == "/opt/flakepilot/reproduce"
+
+
+def test_a_committed_cancel_replaces_a_completion_that_is_not_stored() -> None:
+    success = finish(RUNNING, SUCCESS, "passed")
+    stored = completion_under_cancel(success, cancel_requested=True)
+    assert stored == Decision(CANCELLED, CANCELLED, "cancelled")
+    assert completion_under_cancel(success, cancel_requested=False) == success
+    assert completion_under_cancel(stored, cancel_requested=True) == stored
 
 
 def test_scheduled_claim_and_a_pass_are_the_only_happy_path() -> None:

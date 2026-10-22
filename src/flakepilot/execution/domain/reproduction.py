@@ -84,6 +84,19 @@ def claim(state: str) -> Decision:
     return Decision(RUNNING, None, None)
 
 
+def completion_under_cancel(decision: Decision, *, cancel_requested: bool) -> Decision:
+    """A cancel already stored wins over a completion that has not been stored.
+
+    The container label is not an input. A worker lease is not an input.
+    Calling this twice is the same as calling it once.
+    """
+    if not isinstance(cancel_requested, bool):
+        raise TransitionError
+    if cancel_requested and decision.state != CANCELLED:
+        return Decision(CANCELLED, CANCELLED, "cancelled")
+    return decision
+
+
 def finish(state: str, outcome: str, reason: str) -> Decision:
     """A running attempt ends. `inconclusive` is not a finished run."""
     if state != RUNNING:

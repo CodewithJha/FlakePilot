@@ -20,6 +20,7 @@ from flakepilot.execution.application.reproduction import (
     Execution,
     UnverifiedCallerAccess,
     classify,
+    completion_under_cancel,
     inspect,
     record_closed,
     schedule_registered,
@@ -169,9 +170,19 @@ async def reproduce(
         _result_bytes(report),
         selector=claimed.selector,
     )
-    saved, partial = await _evidence(artifacts, claimed, decision, report)
     async with transaction(engine) as session:
         records = SqlExecutionStore(session)
+        moment = now if clock is None else clock()
+        blocked = await records.observed_cancel(
+            execution_id=claimed.id,
+            owner=owner,
+            generation=claimed.generation,
+            now=moment,
+        )
+        if blocked is None:
+            raise RetryableJob("stale_lease")
+        decision = completion_under_cancel(decision, cancel_requested=blocked)
+        saved, partial = await _evidence(artifacts, claimed, decision, report)
         for kind, key, digest, size in saved:
             await records.add_artifact(
                 execution_id=claimed.id,
@@ -184,7 +195,7 @@ async def reproduce(
             execution_id=claimed.id,
             owner=owner,
             generation=claimed.generation,
-            now=now if clock is None else clock(),
+            now=moment,
             decision=decision,
             evidence_partial=partial,
             actor=Actor(ActorType.SYSTEM),
