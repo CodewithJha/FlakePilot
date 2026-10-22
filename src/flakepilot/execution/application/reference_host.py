@@ -14,6 +14,7 @@ ids and does not accept new work.
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 from dataclasses import dataclass
 
@@ -22,7 +23,6 @@ from flakepilot.execution.application.host import (
     HostRejected,
     LedgerError,
     MemoryLedger,
-    seal,
 )
 from flakepilot.execution.domain.plane import (
     container_action,
@@ -67,6 +67,7 @@ class ReferenceHost:
         now: int,
         runtime_available: bool = False,
         authority_available: bool = True,
+        previous_keys: tuple[bytes, ...] = (),
     ) -> None:
         if (
             not isinstance(ledger, MemoryLedger)
@@ -75,10 +76,12 @@ class ReferenceHost:
             or not expires_ok(now)
             or not isinstance(runtime_available, bool)
             or not isinstance(authority_available, bool)
+            or not _key_set(key, previous_keys)
         ):
             raise HostRejected
         self._ledger = ledger
         self._key = key
+        self._verify_keys = (key, *previous_keys)
         self._gate = HostGate(ledger, key)
         self._now = now
         self._runtime = runtime_available
@@ -89,7 +92,7 @@ class ReferenceHost:
 
     def health(self, message: bytes, mac_hex: str) -> HostHealth:
         _parts("health", message)
-        if not _mac_ok(message, mac_hex, self._key):
+        if not _mac_ok(message, mac_hex, self._verify_keys):
             raise HostRejected
         return HostHealth(
             PROTOCOL,
@@ -103,7 +106,7 @@ class ReferenceHost:
         if operation not in {"register", "cancel", "complete"}:
             raise HostRejected
         parts = _parts(operation, message)
-        if not _mac_ok(message, mac_hex, self._key):
+        if not _mac_ok(message, mac_hex, self._verify_keys):
             raise HostRejected
         if not self._authority:
             raise HostRejected
@@ -113,10 +116,10 @@ class ReferenceHost:
             expires = int(parts[2])
             if expires <= self._now:
                 raise HostRejected
-            self._gate.accept(message, mac_hex)
+            self._ledger.register(parts[1], expires)
             return
         if operation == "cancel":
-            self._gate.accept(message, mac_hex)
+            self._ledger.cancel(parts[1])
             return
         self._ledger.complete(parts[1])
 
@@ -198,15 +201,31 @@ def _parts(operation: str, message: bytes) -> tuple[str, ...]:
     raise HostRejected
 
 
-def _mac_ok(message: bytes, mac_hex: str, key: bytes) -> bool:
+def _key_set(key: bytes, previous: tuple[bytes, ...]) -> bool:
+    if not isinstance(previous, tuple) or not isinstance(key, bytes) or len(key) < 32:
+        return False
+    seen = {key}
+    for item in previous:
+        if not isinstance(item, bytes) or len(item) < 32 or item in seen:
+            return False
+        seen.add(item)
+    return True
+
+
+def _mac_ok(message: bytes, mac_hex: str, keys: tuple[bytes, ...]) -> bool:
     if (
         not isinstance(mac_hex, str)
         or len(mac_hex) != 64
         or any(character not in "0123456789abcdef" for character in mac_hex)
+        or not keys
     ):
         return False
-    expected = seal(message, key)
-    return hmac.compare_digest(expected, mac_hex)
+    presented = bytes.fromhex(mac_hex)
+    matched = False
+    for key in keys:
+        expected = hmac.new(key, message, hashlib.sha256).digest()
+        matched = hmac.compare_digest(expected, presented) or matched
+    return matched
 
 
 def _hex_id(value: str) -> bool:
