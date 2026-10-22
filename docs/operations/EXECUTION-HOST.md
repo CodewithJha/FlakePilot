@@ -1,6 +1,6 @@
 # Dedicated execution host
 
-Stage 10G. This page is the contract for a future host. No host was provisioned, no virtual machine was created, and nothing here was deployed. Untrusted execution stays disabled. `IsolationChecks` stay false. The reference adapter in `flakepilot.execution.application.reference_host` is an in-process simulation. A passing test of that adapter is not a microVM and is not production isolation.
+Stage 10G. This page is the contract for a future host, with the Stage 10H transport notes below. No host was provisioned, no virtual machine was created, and nothing here was deployed. Untrusted execution stays disabled. `IsolationChecks` stay false. The reference adapter in `flakepilot.execution.application.reference_host` is an in-process simulation. Tests also open a loopback TLS listener in front of it. Neither one is a microVM, and neither one is production isolation.
 
 The binding rules remain [ADR-004](../adr/ADR-004-control-plane-and-execution-plane.md) and [ADR-008](../adr/ADR-008-deployment-and-trust-model.md). The control-plane behavior is [EXECUTION](EXECUTION.md).
 
@@ -14,21 +14,25 @@ Repository names, numeric ids, branch names, artifact keys, and callback bodies 
 
 ## Protocol version 1
 
-Version 1 is the message grammar below. It is not a socket protocol, and it is not production-ready transport. There is no mTLS listener, no framed codec, and no deployed peer. A later transport has to carry these bytes unchanged and has to be tested as that transport before anyone calls it ready.
+Version 1 is the message grammar below. The grammar is not by itself a network transport. A loopback listener, described later, carries framed copies of these messages in tests. That listener is not a deployed peer and it is not production-ready transport.
 
 | Operation | Message bytes | Effect |
 |---|---|---|
 | `register` | `register <execution id> <unix expiry>` | Record one run. The same bytes may be repeated. A different expiry for the same id is rejected. An expiry at or before the host clock is rejected. |
-| `cancel` | `cancel <execution id>` | Terminal mark. Repeating it is the same mark. |
-| `complete` | `complete <execution id>` | Same terminal mark as cancel. The outcome text stays on the control plane. The id cannot be registered again. |
+| `cancel` | `cancel <execution id>` | Terminal mark `cancelled`. Repeating it is the same mark. Cancel of an unknown id is a tombstone so a later register is refused. |
+| `complete` | `complete <execution id>` | Terminal mark `completed`, only from an open registration. Repeating it is the same mark. It does not overwrite `cancelled`, and an unknown id writes nothing. The outcome text stays on the control plane. |
 | `health` | `health` | Protocol `1`, authority `available` or `unavailable`, runtime `simulated` or `unavailable`, isolation `simulation`. |
-| `cleanup` | Not a signed message. The host reads its own ledger. | Selects container ids the ledger says to remove. Selection is not removal. |
+| `cleanup` | `cleanup`, mac over those exact bytes. Container ids are not in the message. | Selects ids from the host inventory. Selection is not removal. |
 
-The mac is HMAC-SHA256 of the exact message bytes, hex-encoded, compared in constant time. The key is at least 32 bytes. `HostRejected` always surfaces as `rejected`. A bad mac, a malformed message, an unknown operation, or a message whose first word is not the named operation writes nothing.
+The mac is HMAC-SHA256 of the exact message bytes, hex-encoded, compared in constant time. The key is at least 32 bytes. A mac authorizes that operation and that execution id only. A register mac is not a cancel, and it is not a register of a different id. `HostRejected` always surfaces as `rejected`. A bad mac, a malformed message, an unknown operation, or a message whose first word is not the named operation writes nothing.
 
-`ReferenceHost` is not constructed by the worker. `runtime_available=True` only lets the simulation record a registration and select ids. Health isolation cannot be set to `per_run_microvm` or `production_approved`. Register is refused when the runtime flag is off. Cancel and complete still update the ledger when the authority is available, so a terminal mark is not dropped because no runtime is running. Cleanup returns `runtime_unavailable` or `authority_unavailable` and selects nothing in those cases. An unreadable ledger selects nothing.
+The ledger file stores `0` for open, `1` for cancelled, and `2` for completed. A file written before that distinction, with only `0` and `1`, still loads. The first terminal mark stays. The other terminal operation is rejected. `lookup` reports both marks as terminal so a reaper removes either. `phase` is what an audit record uses to tell them apart. Expiry does not rewrite the phase. Cleanup selects ids and does not delete ledger rows.
 
-Idempotency is the ledger rule: the same register is a no-op, cancel and complete of a terminal id are no-ops, and cleanup of the same pairs returns the same ids without deleting ledger rows. A process that opens `FileLedger` on the same path sees those rows. That reopen is a simulated restart of the host object. It is not a reboot of a machine. The control-plane worker still uses `control_plane_reaper` and `RefusedHostHandoff`.
+`ReferenceHost` can verify a previous key as well as the current one. Removing the previous key revokes its macs. That set is process configuration for tests. It is not a deployed rotation procedure, and the key id is not carried in the version 1 message.
+
+`ReferenceHost` is not constructed by the worker. `runtime_available=True` only lets the simulation record a registration and select ids. Health isolation cannot be set to `per_run_microvm` or `production_approved`. Register is refused when the runtime flag is off. Cancel and complete still update the ledger when the authority is available, so a terminal mark is not dropped because no runtime is running. Cleanup returns `runtime_unavailable` or `authority_unavailable` and selects nothing in those cases. An unreadable or missing ledger selects nothing and is not reported as an empty success. A corrupt file is left unchanged.
+
+Idempotency is the ledger rule: the same register is a no-op, the same terminal mark is a no-op, and cleanup of the same pairs returns the same ids without deleting ledger rows. A process that opens `FileLedger` on the same path sees those rows, including `completed` as code `2`. That reopen is a simulated restart of the host object. It is not a reboot of a machine. The control-plane worker still uses `control_plane_reaper` and `RefusedHostHandoff`.
 
 Retry of a rejected request does not create a row. Retry of an accepted register with the same expiry does not create a second row. There is no automatic retry loop in this repository.
 
@@ -58,9 +62,17 @@ Controls, and the check they feed:
 
 A configuration flag or a unit test that returns true is not one of these observations. The laptop logs from 21 and 22 October 2026 are `shared_kernel_container` measurements. They do not satisfy `dedicated_host_container`, `per_run_microvm`, or `production_approved`.
 
-## Deployment specification
+`EvidenceBundle` is the form a future host measurement would fill in: host identity, OS and architecture, hypervisor, image digest, microVM id, whether network, resources, credentials, and cleanup were measured, an artifact note, audit ids, the command, the result, the environment, and a sha256 of that evidence. `review` returns `unavailable()` for every bundle. The composition root does not call it. A bundle is stale when the host, the image digest, or the measured configuration changes. Nothing in this repository collects one from a real host.
 
-This section is what a later host has to meet. None of it was performed.
+## Loopback transport
+
+Stage 10H adds a framed channel that can be tested without a deployed host. `LoopbackHostChannel` binds `127.0.0.1` only. It requires TLS 1.2 or newer and a client certificate. The client pins the server certificate fingerprint, and the server allows only fingerprints it was given. There is no mode that disables verification, and the source does not bind `0.0.0.0`. The worker does not start this listener.
+
+Mutual TLS is the peer check. The HMAC stays because a trusted certificate is not permission to register, cancel, complete, or clean up. The mac still has to match the operation and the execution id. Frames are length-prefixed, bounded, and reject a path, a command, or a cleanup message that names a container. Cleanup uses the inventory the channel was given, not ids from the client. A lost response can be retried: the same register stays one row. A conflicting expiry is rejected. A partial frame writes nothing. Certificates in the tests are generated for that test and are not deployment material.
+
+This loopback listener is not the production host channel. A dedicated host still has to listen on its own interface, with certificates provisioned, rotated, and revoked outside this repository. No such listener was deployed. The control plane still refuses host handoff.
+
+## Deployment specification
 
 ### Host
 
@@ -72,7 +84,7 @@ This section is what a later host has to meet. None of it was performed.
 ### Credentials
 
 - Host ledger key: at least 32 bytes, file mode `0600`, owned by the host user, outside the guest tree. The reference adapter keeps it off `repr`. A real host must also keep it out of child environments, logs, and crash dumps.
-- Ledger key rotation is not implemented. The procedure, when built, is: install the new key, reject macs from the old key after in-flight messages drain, and destroy the old key. Do not copy either key to the control plane.
+- The reference host verifies a current key and any previous keys it was given. Dropping a previous key rejects its macs. A deployed procedure that installs, drains, and destroys a key on a real host is not implemented. Do not copy either key to the control plane.
 - Artifact keys: supplied by a key manager to `AesGcmSealer`. Absent today. See below.
 - Image-pull credentials, if a registry requires them, stay on the host. The guest does not receive them.
 - GitHub App private keys and installation tokens stay in the control plane. The token scope already implemented there is `contents:read` for one repository. Live minting against GitHub is not verified.
@@ -107,11 +119,11 @@ This section is what a later host has to meet. None of it was performed.
 
 `AesGcmSealer` writes version 1 blobs: a version byte, a key identifier, a 12-byte nonce, and AES-GCM ciphertext with its tag. `seal` uses the current key id. `open` uses the id inside the blob, so a retired key still decrypts while it remains in the map. An unknown id, a wrong key, or a bad tag raises `integrity`. A blob that is not this layout raises `invalid_request`. Tests cover tamper, the wrong key, a truncated blob, a bad version, rotation, path traversal, a symlink escape, and a file whose stored bytes are not the plaintext.
 
-That is a tested sealer. It is not encryption at rest for this deployment. The composition root still constructs `LocalFsArtifactStore`. `UnconfiguredSealer` still refuses to write when a sealed store has no key. No key is in source, and the tests generate key bytes at runtime. A key manager outside the workers and the guest is still required before the app may construct `AesGcmSealer`.
+That is a tested sealer. It is not encryption at rest for this deployment. `ProviderBackedSealer` asks an `ArtifactKeyProvider` on every seal and open. An unavailable provider, a short key, or a revoked id fails closed and does not write. The composition root still constructs `LocalFsArtifactStore` and does not construct `AesGcmSealer` or `ProviderBackedSealer`. `UnconfiguredSealer` still refuses to write when a sealed store has no key. No key is in source, and the tests generate key bytes at runtime. A key manager outside the workers and the guest is still required before the app may construct either sealer.
 
 ## Retention
 
-`select_for_deletion` accepts only `policy="disabled"` and then returns no keys. Any other policy, including a duration or the name `approved`, raises `retention_unconfigured`. There is no deleter, so there is no deletion retry and no deletion restart to recover.
+`select_for_deletion` accepts only `policy="disabled"` and then returns no keys. `plan_deletion` takes artifact keys, audit keys, and outbox keys separately and returns no keys. Any other artifact policy, including a duration or the name `approved`, raises `retention_unconfigured`. There is no deleter, so there is no deletion retry, no partial deletion, and no deletion restart to recover. Audit and outbox keys are not selected.
 
 The decision that is still required is one product, legal, and security approval of a retention duration, plus an explicit rule that audit rows and outbox rows are not artifact keys. This repository does not choose the duration. Tenant-scoped deletion can be implemented only after that decision, and it must be idempotent, retryable, and safe across a process restart without deleting audit or outbox evidence.
 
