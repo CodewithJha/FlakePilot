@@ -123,6 +123,19 @@ class ReferenceHost:
             return
         self._ledger.complete(parts[1])
 
+    def authenticated_cleanup(
+        self, message: bytes, mac_hex: str, containers: tuple[tuple[str, str], ...]
+    ) -> tuple[str, tuple[str, ...]]:
+        """Select ids after a mac over the exact bytes `cleanup`.
+
+        The container list is the host's inventory. It is not part of the
+        message, so a caller cannot name an arbitrary container.
+        """
+        _parts("cleanup", message)
+        if not _mac_ok(message, mac_hex, self._verify_keys):
+            raise HostRejected
+        return self.cleanup(containers)
+
     def cleanup(
         self, containers: tuple[tuple[str, str], ...]
     ) -> tuple[str, tuple[str, ...]]:
@@ -181,6 +194,8 @@ def _parts(operation: str, message: bytes) -> tuple[str, ...]:
     parts = message.decode("ascii").split(" ")
     if operation == "health" and parts == ["health"]:
         return ("health",)
+    if operation == "cleanup" and parts == ["cleanup"]:
+        return ("cleanup",)
     if (
         operation == "register"
         and len(parts) == 3
