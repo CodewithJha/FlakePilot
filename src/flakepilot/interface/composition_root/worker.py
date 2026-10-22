@@ -19,7 +19,7 @@ from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from flakepilot.execution.application.plane import UnavailableRuntimeReaper
+from flakepilot.execution.application.plane import control_plane_reaper
 from flakepilot.integrations.infrastructure.sandbox import reap_workdirs
 from flakepilot.interface.composition_root import configure_logging
 from flakepilot.interface.composition_root.database import (
@@ -61,7 +61,7 @@ def startup_cleanup(root: Path, *, now: float) -> tuple[int, str]:
     means no container or microVM was inspected or removed.
     """
     removed = reap_workdirs(root, now=now, ttl_seconds=3600)
-    report = UnavailableRuntimeReaper().reclaim()
+    report = control_plane_reaper().reclaim()
     return removed, report.reason
 
 

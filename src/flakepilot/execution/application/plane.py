@@ -8,18 +8,23 @@ runtime resources and does not report that it did.
 
 from typing import Protocol
 
+from flakepilot.execution.application.host import HostRejected
 from flakepilot.execution.domain.plane import (
     PlaneReport,
     PlaneRequest,
+    execution_id_ok,
+    expires_ok,
     unavailable_report,
 )
 
 __all__ = [
     "ExecutionPlane",
     "ReapResult",
+    "RefusedHostHandoff",
     "RuntimeReaper",
     "UnavailableExecutionPlane",
     "UnavailableRuntimeReaper",
+    "control_plane_reaper",
 ]
 
 
@@ -59,3 +64,31 @@ class UnavailableRuntimeReaper:
 
     def reclaim(self) -> ReapResult:
         return ReapResult(0, "runtime_reaper_unavailable")
+
+
+class RefusedHostHandoff:
+    """Register, cancel, and complete from a process that does not hold the host key.
+
+    Every accepted id is refused. Nothing is written. An invalid id is rejected
+    before that refusal, so a bad name cannot be mistaken for a stored row.
+    """
+
+    def register(self, execution_id: str, expires: int) -> str:
+        if not execution_id_ok(execution_id) or not expires_ok(expires):
+            raise HostRejected
+        return "host_authority_unavailable"
+
+    def cancel(self, execution_id: str) -> str:
+        if not execution_id_ok(execution_id):
+            raise HostRejected
+        return "host_authority_unavailable"
+
+    def complete(self, execution_id: str) -> str:
+        if not execution_id_ok(execution_id):
+            raise HostRejected
+        return "host_authority_unavailable"
+
+
+def control_plane_reaper() -> UnavailableRuntimeReaper:
+    """The worker holds control-plane secrets. It does not open a host ledger."""
+    return UnavailableRuntimeReaper()

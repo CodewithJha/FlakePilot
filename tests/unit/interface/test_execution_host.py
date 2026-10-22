@@ -17,8 +17,13 @@ def test_the_worker_does_not_construct_the_host_reaper() -> None:
     text = (root / "src/flakepilot/interface/composition_root/worker.py").read_text(
         encoding="utf-8"
     )
-    assert "UnavailableRuntimeReaper" in text
-    for name in ("LabelledContainerReaper", "HostGate", "FileLedger"):
+    assert "control_plane_reaper" in text
+    for name in (
+        "LabelledContainerReaper",
+        "HostGate",
+        "FileLedger",
+        "UnavailableRuntimeReaper",
+    ):
         assert name not in text
 
 
