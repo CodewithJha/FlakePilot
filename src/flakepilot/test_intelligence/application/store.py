@@ -3,6 +3,7 @@
 from collections.abc import Callable, Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Protocol
 
 from flakepilot.shared_kernel.events import Event
@@ -58,6 +59,41 @@ class RejectedUpload:
     size_bytes: int | None
 
 
+@dataclass(frozen=True)
+class ReportedCase:
+    """One test identity as a run reports it, attempts in order."""
+
+    classname: str
+    name: str
+    attempts: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class RunReport:
+    """One stored run, read-only: the row, its upload metadata, its attempts.
+
+    Operator-demo reporting only. A name is never evidence by itself; the
+    revision status stays `unchecked` until a code-host verifier exists
+    (ADR-013 deviation 4).
+    """
+
+    run_id: str
+    org_id: str
+    repo_id: str
+    upload_id: str
+    source: str
+    commit_sha: str
+    environment: str
+    revision_status: str
+    received_at: datetime | None
+    summary: RunSummary
+    metadata: UploadMetadata | None
+    content_sha256: bytes | None
+    size_bytes: int | None
+    artifact_key: str | None
+    results: tuple[ReportedCase, ...]
+
+
 class TiStore(Protocol):
     async def append_event(self, event: Event) -> None: ...
 
@@ -106,6 +142,12 @@ class TiStore(Protocol):
         self, *, org_id: str, repo_id: str, test_id: str
     ) -> list[Observation] | None:
         """The identity's history, or None if it is not in this org and repo."""
+        ...
+
+    async def run_report(
+        self, *, org_id: str, repo_id: str, run_id: str
+    ) -> RunReport | None:
+        """One run and its attempts, or None when it is not in this pair."""
         ...
 
 

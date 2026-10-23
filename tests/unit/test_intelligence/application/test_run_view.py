@@ -1,0 +1,137 @@
+"""RunViewer (operator-demo reporting): pass-through reads, fail-closed by default."""
+
+import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime
+from typing import Any
+
+import pytest
+
+from flakepilot.identity.application.authorization import ResourceNotFound
+from flakepilot.shared_kernel.events import Event
+from flakepilot.test_intelligence.application.run_view import RunViewer
+from flakepilot.test_intelligence.application.store import (
+    ReportedCase,
+    RunReport,
+    RunSummary,
+    TiStore,
+)
+
+ORG = "11111111-2222-4333-8444-555555555555"
+REPO = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+RUN = "cccccccc-dddd-4eee-8fff-000000000001"
+
+REPORT = RunReport(
+    run_id=RUN,
+    org_id=ORG,
+    repo_id=REPO,
+    upload_id="cccccccc-dddd-4eee-8fff-000000000002",
+    source="ci_upload",
+    commit_sha="0" * 40,
+    environment="demo.local",
+    revision_status="unchecked",
+    received_at=datetime(2026, 10, 23, tzinfo=UTC),
+    summary=RunSummary(tests=3, attempts=5, passed=1, failed=1, errored=0, skipped=1),
+    metadata=None,
+    content_sha256=None,
+    size_bytes=None,
+    artifact_key=None,
+    results=(
+        ReportedCase(
+            classname="demo.auth",
+            name="test_login_succeeds",
+            attempts=("failed", "passed"),
+        ),
+    ),
+)
+
+
+class FakeTiStore:
+    """The protocol methods this read-only use case never calls are inert."""
+
+    def __init__(self, stored: RunReport | None = None) -> None:
+        self.stored = stored
+        self.report_calls: list[tuple[str, str, str]] = []
+        self.appended: list[str] = []
+
+    async def append_event(self, event: Event) -> None:
+        self.appended.append(event.name)
+
+    async def claim_upload(self, upload: Any) -> bool:
+        del upload
+        return False
+
+    async def processed_upload(self, **kwargs: Any) -> None:
+        del kwargs
+
+    async def record_rejection(self, upload: Any) -> None:
+        del upload
+
+    async def ensure_identities(self, **kwargs: Any) -> dict[Any, Any]:
+        del kwargs
+        return {}
+
+    async def create_run(self, **kwargs: Any) -> None:
+        del kwargs
+
+    async def add_results(self, **kwargs: Any) -> None:
+        del kwargs
+
+    async def run_report(
+        self, *, org_id: str, repo_id: str, run_id: str
+    ) -> RunReport | None:
+        self.report_calls.append((org_id, repo_id, run_id))
+        if self.stored is not None and (org_id, repo_id, run_id) == (
+            ORG,
+            REPO,
+            self.stored.run_id,
+        ):
+            return self.stored
+        return None
+
+    async def observations(self, **kwargs: Any) -> None:
+        del kwargs
+
+
+def viewer(store: FakeTiStore) -> RunViewer:
+    @asynccontextmanager
+    async def unit_of_work() -> AsyncIterator[TiStore]:
+        yield store
+
+    return RunViewer(unit_of_work)
+
+
+def test_the_report_passes_the_stored_row_through() -> None:
+    store = FakeTiStore(REPORT)
+    result = asyncio.run(viewer(store).report(org_id=ORG, repo_id=REPO, run_id=RUN))
+    assert result is REPORT  # one unit of work, no copying
+    assert store.report_calls == [(ORG, REPO, RUN)]
+    [case] = result.results
+    assert case.attempts == ("failed", "passed")
+    assert store.appended == []  # a read appends no events
+
+
+def test_an_unknown_run_is_not_found() -> None:
+    store = FakeTiStore(None)
+    with pytest.raises(ResourceNotFound):
+        asyncio.run(viewer(store).report(org_id=ORG, repo_id=REPO, run_id=RUN))
+
+
+def test_non_canonical_ids_are_not_found_without_a_query() -> None:
+    store = FakeTiStore(REPORT)
+    v = viewer(store)
+    for org_id, repo_id, run_id in (
+        ("ORG", REPO, RUN),
+        (ORG, REPO.upper(), RUN),
+        ("../" + ORG, REPO, RUN),
+        (ORG, REPO, "0" * 41),
+    ):
+        with pytest.raises(ResourceNotFound):
+            asyncio.run(v.report(org_id=org_id, repo_id=repo_id, run_id=run_id))
+    assert store.report_calls == []
+    # A canonical but unknown ID is looked up once and reported as not found.
+    unknown_run = RUN[:-1] + "2"
+    with pytest.raises(ResourceNotFound):
+        asyncio.run(v.report(org_id=ORG, repo_id=REPO, run_id=unknown_run))
+    assert store.report_calls == [(ORG, REPO, unknown_run)]

@@ -16,6 +16,8 @@ from flakepilot.test_intelligence.application.store import (
     NewUpload,
     ProcessedUpload,
     RejectedUpload,
+    ReportedCase,
+    RunReport,
     RunSummary,
 )
 from flakepilot.test_intelligence.domain.classification import Observation
@@ -248,6 +250,123 @@ class SqlTiStore:
         ]
         if rows:
             await self._session.execute(test_results.insert(), rows)
+
+    async def run_report(
+        self, *, org_id: str, repo_id: str, run_id: str
+    ) -> RunReport | None:
+        """The run row, its processed upload, and attempts in (case, attempt) order."""
+        run = await self._session.execute(
+            select(
+                runs.c.id,
+                runs.c.upload_id,
+                runs.c.source,
+                runs.c.commit_sha,
+                runs.c.environment,
+                runs.c.revision_status,
+                runs.c.received_at,
+                runs.c.tests,
+                runs.c.attempts,
+                runs.c.passed,
+                runs.c.failed,
+                runs.c.errored,
+                runs.c.skipped,
+            ).where(
+                runs.c.org_id == org_id,
+                runs.c.repo_id == repo_id,
+                runs.c.id == run_id,
+            )
+        )
+        row = run.first()
+        if row is None:
+            return None
+        upload = await self._session.execute(
+            select(
+                uploads.c.ci_source,
+                uploads.c.ci_run_id,
+                uploads.c.ci_attempt,
+                uploads.c.job_name,
+                uploads.c.commit_sha.label("metadata_commit_sha"),
+                uploads.c.ref,
+                uploads.c.environment.label("metadata_environment"),
+                uploads.c.started_at,
+                uploads.c.finished_at,
+                uploads.c.content_sha256,
+                uploads.c.size_bytes,
+                uploads.c.artifact_key,
+            ).where(
+                uploads.c.org_id == org_id,
+                uploads.c.repo_id == repo_id,
+                uploads.c.id == row.upload_id,
+            )
+        )
+        upload_row = upload.first()
+        metadata = None
+        if upload_row is not None:
+            metadata = UploadMetadata(
+                ci_source=upload_row.ci_source,
+                ci_run_id=upload_row.ci_run_id,
+                ci_attempt=upload_row.ci_attempt,
+                job_name=upload_row.job_name,
+                commit_sha=upload_row.metadata_commit_sha,
+                ref=upload_row.ref,
+                environment=upload_row.metadata_environment,
+                started_at=upload_row.started_at,
+                finished_at=upload_row.finished_at,
+            )
+        found = await self._session.execute(
+            select(
+                test_identities.c.classname,
+                test_identities.c.name,
+                test_results.c.outcome,
+            )
+            .join(
+                test_identities,
+                (test_identities.c.org_id == test_results.c.org_id)
+                & (test_identities.c.repo_id == test_results.c.repo_id)
+                & (test_identities.c.id == test_results.c.test_id),
+            )
+            .where(
+                test_results.c.org_id == org_id,
+                test_results.c.repo_id == repo_id,
+                test_results.c.run_id == run_id,
+            )
+            .order_by(
+                test_identities.c.classname,
+                test_identities.c.name,
+                test_results.c.attempt,
+            )
+        )
+        cases: dict[tuple[str, str], list[str]] = {}
+        for case_row in found:
+            key = (case_row.classname, case_row.name)
+            cases.setdefault(key, []).append(case_row.outcome)
+        return RunReport(
+            run_id=row.id,
+            org_id=org_id,
+            repo_id=repo_id,
+            upload_id=row.upload_id,
+            source=row.source,
+            commit_sha=row.commit_sha,
+            environment=row.environment,
+            revision_status=row.revision_status,
+            received_at=row.received_at,
+            summary=RunSummary(
+                tests=row.tests,
+                attempts=row.attempts,
+                passed=row.passed,
+                failed=row.failed,
+                errored=row.errored,
+                skipped=row.skipped,
+            ),
+            metadata=metadata,
+            content_sha256=upload_row.content_sha256 if upload_row else None,
+            size_bytes=upload_row.size_bytes if upload_row else None,
+            artifact_key=upload_row.artifact_key if upload_row else None,
+            results=tuple(
+                ReportedCase(classname=name[0], name=name[1], attempts=tuple(chain))
+                for name, chain in cases.items()
+            ),
+        )
 
     async def observations(
         self, *, org_id: str, repo_id: str, test_id: str

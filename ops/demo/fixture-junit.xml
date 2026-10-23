@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- FlakePilot MVP demo fixture — NOT a real CI run.
+     A hand-written JUnit report in Maven Surefire rerun style: one flaky test
+     (failed before passing) and one persistently failing test, to exercise the
+     stored attempt chains that the run report displays. No repository code was
+     executed to produce it. -->
+<testsuite name="demo.suite" tests="3" failures="1" errors="0" skipped="0">
+  <testcase classname="demo.auth" name="test_login_succeeds" time="0.125">
+    <flakyFailure type="AssertionError" message="timeout until first retry">
+      <header>POST /login returned 503 on a cold connection pool</header>
+    </flakyFailure>
+  </testcase>
+  <testcase classname="demo.auth" name="test_session_cookie_is_secure" time="0.042"/>
+  <testcase classname="demo.checkout" name="test_cart_totals_round_to_cents" time="0.087">
+    <failure type="AssertionError" message="expected 2 decimals, got 3">
+      expected: 19.99
+      actual:   19.999
+    </failure>
+    <rerunFailure type="AssertionError" message="expected 2 decimals, got 3">
+      expected: 19.99
+      actual:   19.999
+    </rerunFailure>
+  </testcase>
+</testsuite>

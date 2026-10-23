@@ -16,12 +16,14 @@ from flakepilot.identity.application.authorization import (
     ResourceNotFound,
 )
 from flakepilot.identity.application.iam import (
+    OPERATOR_CLI_ISSUER_ID,
     AuthNotConfigured,
     AuthProviderUnavailable,
     CiUploadPrincipal,
     Iam,
     IamStore,
     InvalidBootstrapInput,
+    InvalidTokenIssue,
     OrgAlreadyExists,
     SignInFailed,
     digest,
@@ -58,6 +60,7 @@ class FakeStore:
         self.access = access
         self.live_sessions = live_sessions
         self.org_names: set[str] = set()
+        self.org_ids: set[str] = set()
         self.writes: list[tuple[str, dict[str, object]]] = []
 
     @property
@@ -91,6 +94,9 @@ class FakeStore:
     async def org_access(self, *, user_id: str, org_id: str) -> OrgAccess | None:
         return self.access
 
+    async def org_exists(self, *, org_id: str) -> bool:
+        return org_id in self.org_ids
+
     async def create_ci_upload_token(self, **row: object) -> None:
         self.writes.append(("create_ci_upload_token", row))
 
@@ -109,6 +115,7 @@ class FakeStore:
         if name.lower() in self.org_names:
             return False
         self.org_names.add(name.lower())
+        self.org_ids.add(org_id)
         self.writes.append(("create_org", {"org_id": org_id, "name": name}))
         return True
 
@@ -426,3 +433,62 @@ def test_revoking_a_ci_upload_token_emits_its_revocation() -> None:
         "active",
         "revoked",
     )
+
+
+DEMO_ORG = "11111111-2222-4333-8444-555555555555"
+DEMO_REPO = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+
+
+def issue_token(service: Iam, org_id: str, repo_id: str) -> str:
+    return asyncio.run(
+        service.issue_ci_upload_token(org_id=org_id, repo_id=repo_id, origin=CLI)
+    )
+
+
+def test_operator_tokens_are_shown_once_and_stored_as_hashes() -> None:
+    store = FakeStore()
+    store.org_ids.add(DEMO_ORG)
+    token = issue_token(iam(store), DEMO_ORG, DEMO_REPO)
+    assert token.startswith("fpi_") and TOKEN_FORMAT.fullmatch(token[4:])
+    [(name, row), (appended, _)] = store.writes
+    assert (name, appended) == ("create_ci_upload_token", "event")
+    [event] = store.events
+    assert (event.name, event.actor, event.org_id, event.repo_id) == (
+        "iam.ci_upload_token.created",
+        Actor(ActorType.OPERATOR_CLI),
+        DEMO_ORG,
+        DEMO_REPO,
+    )
+    assert (event.subject.type, event.subject.id) == (
+        "ci_upload_token",
+        row["token_id"],
+    )
+    for secret in (token, digest(token).hex()):
+        assert secret not in repr(event)
+    assert row["token_hash"] == digest(token)
+    assert row["display_prefix"] == token[4:12]
+    assert (row["org_id"], row["repo_id"]) == (DEMO_ORG, DEMO_REPO)
+    assert row["created_by"] == OPERATOR_CLI_ISSUER_ID
+    assert token not in repr(row)
+
+
+def test_operator_tokens_refuse_non_canonical_ids_without_a_write() -> None:
+    store = FakeStore()
+    store.org_ids.add(DEMO_ORG)
+    for org_id, repo_id in (
+        ("Organ-1", DEMO_REPO),
+        (DEMO_ORG, DEMO_REPO.upper()),
+        (DEMO_ORG, "../etc"),
+        (DEMO_ORG, "repo-" + "1" * 10),
+    ):
+        with pytest.raises(InvalidTokenIssue):
+            issue_token(iam(store), org_id, repo_id)
+    assert store.writes == []
+
+
+def test_operator_tokens_refuse_an_unknown_org_without_a_write() -> None:
+    store = FakeStore()
+    with pytest.raises(InvalidTokenIssue) as excinfo:
+        issue_token(iam(store), DEMO_ORG, DEMO_REPO)
+    assert "no such org" in str(excinfo.value)
+    assert store.writes == []

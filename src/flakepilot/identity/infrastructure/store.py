@@ -134,6 +134,12 @@ class SqlIamStore:
             )
         return user_id
 
+    async def org_exists(self, *, org_id: str) -> bool:
+        found = await self._session.execute(
+            select(orgs.c.id).where(orgs.c.id == org_id)
+        )
+        return found.first() is not None
+
     async def org_access(self, *, user_id: str, org_id: str) -> OrgAccess | None:
         membership = await self._session.execute(
             select(memberships.c.org_admin).where(

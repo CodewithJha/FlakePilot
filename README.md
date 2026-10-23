@@ -7,7 +7,7 @@ Evidence-based investigation and verification of recurring test failures. See [P
 **Pre-alpha. Not production-ready.** The backend foundations exist: sign-in, org bootstrap, CI upload tokens, JUnit ingestion and a failure classifier. Known gaps:
 
 - **No UI.** The API is the only interface.
-- **CI upload tokens can't be issued yet.** The use case exists, but there is no HTTP route or CLI for it.
+- **CI upload tokens are issued only by the operator CLI** (`issue-ci-upload-token`, see the demo journey below). No HTTP route exists for them yet.
 - **Classification isn't exposed over HTTP.** It exists only as an application use case (ADR-013).
 - **Parsing is synchronous.** Reports are parsed inside the upload request. A separate worker process runs durable jobs and delivers outbox rows to the audit log. No retention or stage job is registered. See [DURABLE-JOBS](docs/operations/DURABLE-JOBS.md).
 - **No quotas or rate limits.** AI spend is not checked either (ADR-014).
@@ -32,6 +32,102 @@ Requires [uv](https://docs.astral.sh/uv/). uv uses its managed CPython 3.12 (`.p
 ```sh
 uv sync --locked
 ```
+
+## MVP demo journey (operator-led, end to end)
+
+The shortest live journey today is CI ingestion (Workflow B), driven by the
+operator CLI. Sign-in needs GitHub App credentials and is out of scope
+for this demo; without them the session routes answer 503 `auth_not_configured`,
+so the demo uses the operator CLI paths that do not need them. Everything below
+is truthful about what it is and is not: the demo fixture is hand-written, no
+repository code is ever executed, and `FLAKEPILOT_EXECUTION_MODE` stays `closed`.
+
+One command runs the whole journey (`createdb flakepilot_demo` once beforehand):
+
+```sh
+ops/demo/run-demo.sh     # or sh ops/demo/run-demo.sh
+```
+
+Step by step:
+
+1. **Create the database** (PostgreSQL must be running locally):
+
+   ```sh
+   createdb flakepilot_demo
+   export FLAKEPILOT_DATABASE_URL='postgresql://postgres@localhost:5432/flakepilot_demo'
+   ```
+
+2. **Start the stack** with `uv sync --locked`, then `uv run alembic upgrade head`
+   (migrations are an explicit step), then the API and the worker as documented
+   under "Run the API" below. Ingestion also needs an artifacts directory
+   (existing, absolute, outside the repository; plaintext storage, no retention):
+
+   ```sh
+   mkdir -m 700 /tmp/flakepilot-demo-artifacts
+   export FLAKEPILOT_ARTIFACT_DIR=/tmp/flakepilot-demo-artifacts
+   ```
+
+3. **Bootstrap an org** with the existing operator command:
+
+   ```sh
+   uv run python -m flakepilot.interface.composition_root bootstrap-org \
+       --name DemoOrg --admin-github-id 424242 --admin-login demo-admin
+   ```
+
+   It prints the new org ID. `424242` is local demo data, not a real account.
+
+4. **Issue a CI upload token** (new in this MVP; previously there was no HTTP
+   route or CLI for this):
+
+   ```sh
+   REPO_ID=$(uv run python -c "import uuid; print(uuid.uuid4())")
+   uv run python -m flakepilot.interface.composition_root issue-ci-upload-token \
+       --org-id "$ORG_ID" --repo-id "$REPO_ID"
+   ```
+
+   The org ID must be the one from step 3, and the repo ID is a demo-scoped
+   UUID (nothing is registered at a code host). Only the token's SHA-256 is
+   stored; the raw token is shown once. The token may upload reports to this
+   one (org, repo) pair and nothing else.
+
+5. **Upload the demo fixture** (a hand-written JUnit file in Maven Surefire
+   rerun style, committed at [ops/demo/fixture-junit.xml](ops/demo/fixture-junit.xml)):
+
+   ```sh
+   curl -sS -X POST localhost:8000/ingest/junit \
+     -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/xml" \
+     -H "X-FlakePilot-CI-Source: demo-fixture" -H "X-FlakePilot-CI-Run-Id: demo-run-1" \
+     -H "X-FlakePilot-CI-Attempt: 1" -H "X-FlakePilot-Job-Name: demo.test-suite" \
+     -H "X-FlakePilot-Commit-Sha: 000102030405060708090a0b0c0d0e0f10111213" \
+     -H "X-FlakePilot-Ref: refs/heads/demo" -H "X-FlakePilot-Environment: demo.local" \
+     -H "X-FlakePilot-Started-At: 2026-10-23T12:00:00+00:00" \
+     -H "X-FlakePilot-Finished-At: 2026-10-23T12:05:00+00:00" \
+     --data-binary @ops/demo/fixture-junit.xml
+   ```
+
+   The `201` response carries the upload ID, run ID, and the summary counts.
+
+6. **See the stored run** (new in this MVP; read-only operator report):
+
+   ```sh
+   uv run python -m flakepilot.interface.composition_root ci-run-report \
+       --org-id "$ORG_ID" --repo-id "$REPO_ID" --run-id "$RUN_ID" \
+       --format html --out demo-run.html && open demo-run.html
+   ```
+
+   The HTML report shows the run's summary counts, the upload metadata, and
+   each test's attempt chain ("failed → passed" marks the flaky test). It
+   states plainly that the commit SHA is what CI reported (`revision_status`
+   stays `unchecked`) and that the raw report body is stored as a plaintext
+   file. `--format json` is available for scripts.
+
+Known limits of this journey: there is no interactive UI and no session-authenticated
+read route usable without GitHub sign-in credentials (see "GitHub App sign-in"
+below); the classification use case exists but is not exposed in any interface;
+reproduction runs remain fail-closed (`inconclusive` / `execution_closed`, no
+source fetched); artifacts are plaintext and retention deletes nothing; the
+demo org/token are created by you, on your machine, out of the process's
+control plane.
 
 ## Configuration
 
@@ -97,7 +193,7 @@ The worker is a second process. It does not serve HTTP. Stop it with `SIGINT` or
 uv run python -m flakepilot.interface.composition_root worker
 ```
 
-CI uploads JUnit XML with a CI upload token (no issuance route yet, see Status):
+CI uploads JUnit XML with a CI upload token (issued by the operator CLI `issue-ci-upload-token`, see the demo journey above):
 
 - **Request:** `POST /ingest/junit` with `Authorization: Bearer fpi_…`, `Content-Type: application/xml`, and the report as the body (10 MiB at most).
 - **Metadata headers**, each sent exactly once: `X-FlakePilot-CI-Source`, `-CI-Run-Id`, `-CI-Attempt`, `-Job-Name`, `-Commit-Sha`, `-Ref`, `-Environment`, `-Started-At` and `-Finished-At`.

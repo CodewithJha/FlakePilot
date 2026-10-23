@@ -43,6 +43,7 @@ __all__ = [  # IdentityProvider is re-exported: it is the port this API is built
     "IamStore",
     "IdentityProvider",
     "InvalidBootstrapInput",
+    "InvalidTokenIssue",
     "OrgAlreadyExists",
     "SessionPrincipal",
     "SignInFailed",
@@ -71,6 +72,20 @@ def digest(raw: str) -> bytes:
     return hashlib.sha256(raw.encode()).digest()
 
 
+def uuid_ok(value: str) -> bool:
+    """A canonical lowercase UUID. Token scope and artifact keys both require it."""
+    try:
+        return str(uuid.UUID(value)) == value
+    except ValueError:
+        return False
+
+
+# Who holds an operator-issued CI upload token. Not a user row: the audit event
+# carries the OPERATOR_CLI actor, and the row only needs a stable, visibly
+# non-user value in the `created_by` column (no foreign key applies there).
+OPERATOR_CLI_ISSUER_ID = str(uuid.uuid5(uuid.NAMESPACE_URL, "flakepilot:operator_cli"))
+
+
 class AuthNotConfigured(Exception):
     """Sign-in is not configured; nothing can authenticate (fail closed)."""
 
@@ -89,6 +104,10 @@ class InvalidBootstrapInput(ValueError):
 
 class OrgAlreadyExists(Exception):
     """An org with this name already exists; bootstrap does not create a second one."""
+
+
+class InvalidTokenIssue(ValueError):
+    """Operator token issuance rejected. Messages name the cause, never a value."""
 
 
 @dataclass(frozen=True)
@@ -136,6 +155,10 @@ class IamStore(Protocol):
     ) -> str | None: ...
 
     async def org_access(self, *, user_id: str, org_id: str) -> OrgAccess | None: ...
+
+    async def org_exists(self, *, org_id: str) -> bool:
+        """Whether the org row exists. Issuance checks this before writing."""
+        ...
 
     async def create_ci_upload_token(
         self,
@@ -368,6 +391,47 @@ class Iam:
                 )
         if not revoked:
             raise ResourceNotFound
+
+    async def issue_ci_upload_token(
+        self, *, org_id: str, repo_id: str, origin: Origin
+    ) -> str:
+        """Operator issuance: one CI upload token scoped to one (org, repo) pair.
+
+        The operator CLI is the same trust `bootstrap-org` already establishes.
+        The token grants nothing but report uploads into exactly this pair (see
+        `ci_upload_principal`); only its SHA-256 is stored and the raw value is
+        shown once. The org must exist, and both IDs must be canonical UUIDs,
+        because artifact keys are content-addressed under them.
+        """
+        if not uuid_ok(org_id) or not uuid_ok(repo_id):
+            raise InvalidTokenIssue(
+                "--org-id and --repo-id must be canonical lowercase UUIDs"
+            )
+        token = CI_UPLOAD_TOKEN_PREFIX + secrets.token_urlsafe(32)
+        async with self._unit_of_work() as store:
+            if not await store.org_exists(org_id=org_id):
+                raise InvalidTokenIssue("no such org")
+            token_id = str(uuid.uuid4())
+            await store.create_ci_upload_token(
+                token_id=token_id,
+                org_id=org_id,
+                repo_id=repo_id,
+                token_hash=digest(token),
+                display_prefix=token[len(CI_UPLOAD_TOKEN_PREFIX) :][:8],
+                created_by=OPERATOR_CLI_ISSUER_ID,
+            )
+            await store.append_event(
+                Event(
+                    "iam.ci_upload_token.created",
+                    Actor(ActorType.OPERATOR_CLI),
+                    origin,
+                    Subject("ci_upload_token", token_id),
+                    org_id=org_id,
+                    repo_id=repo_id,
+                    after="active",
+                )
+            )
+        return token
 
     async def bootstrap_org(
         self,
