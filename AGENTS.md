@@ -15,6 +15,7 @@ when a stage report claims it is wrong; update it when the code changes.
 | Execution host contract and runbook | [docs/operations/EXECUTION-HOST.md](docs/operations/EXECUTION-HOST.md) and [docs/operations/EXECUTION-HOST-RUNBOOK.md](docs/operations/EXECUTION-HOST-RUNBOOK.md) |
 | Production readiness (10J) | [docs/operations/PRODUCTION-READINESS-ASSESSMENT.md](docs/operations/PRODUCTION-READINESS-ASSESSMENT.md) and [docs/operations/PRODUCTION-READINESS-ROADMAP.md](docs/operations/PRODUCTION-READINESS-ROADMAP.md) |
 | Infrastructure decisions (10K) | [docs/operations/INFRASTRUCTURE-DECISIONS.md](docs/operations/INFRASTRUCTURE-DECISIONS.md), [docs/operations/INFRASTRUCTURE-OPTIONS-ANALYSIS.md](docs/operations/INFRASTRUCTURE-OPTIONS-ANALYSIS.md), and [docs/operations/INFRASTRUCTURE-IMPLEMENTATION-PLAN.md](docs/operations/INFRASTRUCTURE-IMPLEMENTATION-PLAN.md) |
+| Owner decision sheet (10K/WP-1) | [docs/operations/OWNER-DECISION-SHEET.md](docs/operations/OWNER-DECISION-SHEET.md) |
 | Durable jobs and the outbox | [docs/operations/DURABLE-JOBS.md](docs/operations/DURABLE-JOBS.md) |
 | Commands, config, HTTP contract | [README.md](README.md) |
 
