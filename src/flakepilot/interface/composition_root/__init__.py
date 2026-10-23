@@ -36,13 +36,21 @@ from flakepilot.interface.composition_root.database import (
     transaction,
 )
 from flakepilot.interface.composition_root.reproduction import Reproductions
+from flakepilot.interface.composition_root.run_views import RunViews
 from flakepilot.interface.composition_root.settings import (
     GitHubApp,
     Secret,
     Settings,
     SettingsError,
 )
-from flakepilot.interface.http import auth, errors, health, ingestion, reproductions
+from flakepilot.interface.http import (
+    auth,
+    errors,
+    health,
+    ingestion,
+    reproductions,
+    runs,
+)
 from flakepilot.interface.http.request_context import (
     RequestContextMiddleware,
     request_id_var,
@@ -183,6 +191,7 @@ def create_app(
             else None
         )
         app.state.reproductions = Reproductions(engine, settings)
+        app.state.run_views = RunViews(ti_unit_of_work(engine))
         app.state.ready = True
         try:
             yield
@@ -212,4 +221,5 @@ def create_app(
     app.include_router(auth.router)
     app.include_router(ingestion.router)
     app.include_router(reproductions.router)
+    app.include_router(runs.router)
     return app

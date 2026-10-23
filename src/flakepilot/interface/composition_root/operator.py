@@ -41,9 +41,12 @@ from flakepilot.interface.composition_root.database import (
     create_engine,
     dispose_engine,
 )
+from flakepilot.interface.composition_root.reporting import (
+    classification_cell,
+    fail_cascade,
+)
 from flakepilot.shared_kernel.events import Channel, Origin
 from flakepilot.test_intelligence.application.run_view import (
-    ClassifiedCase,
     ClassifiedRunReport,
     RunViewer,
 )
@@ -206,42 +209,6 @@ def _json_report(report: ClassifiedRunReport) -> str:
     return json.dumps(_summary_json(report), indent=2, default=str) + "\n"
 
 
-def _fail_cascade(value: Any) -> str:
-    return "&mdash;" if value in (None, "") else html.escape(str(value))
-
-
-def _evidence_text(classification: Any) -> str:
-    """The verdict's own recorded facts, deterministically ordered and escaped.
-
-    No fact is added, reworded, or dropped: every key the rule set recorded
-    (counts, run IDs, environments, SHAs) is shown; empty entries are omitted.
-    """
-    items = []
-    for key in sorted(classification.evidence):
-        value = classification.evidence[key]
-        if value is None or value == [] or value == "":
-            continue
-        rendered = (
-            ", ".join(str(v) for v in value) if isinstance(value, list) else str(value)
-        )
-        items.append(f"{html.escape(key)}={html.escape(rendered)}")
-    note = f" &middot; rule {html.escape(classification.rule_version)}"
-    target = classification.target_sha
-    if target:
-        note += f" &middot; target_sha {html.escape(target)}"
-    return (f"{note} &middot; " if items else note) + " &middot; ".join(items)
-
-
-def _classification_cell(entry: ClassifiedCase) -> str:
-    verdict = entry.classification
-    if verdict is None:
-        return html.escape("classification unavailable")
-    head = html.escape(verdict.failure_class.value)
-    if verdict.reason:
-        head += f' <span class="note">({html.escape(verdict.reason.value)})</span>'
-    return f'{head}<br><span class="note">{_evidence_text(verdict)}</span>'
-
-
 def _html_report(report: ClassifiedRunReport) -> str:
     run = report.run
     metadata = run.metadata
@@ -264,7 +231,7 @@ def _html_report(report: ClassifiedRunReport) -> str:
         ("Artifact key (plaintext file)", run.artifact_key),
     ]
     metadata_rows = "\n".join(
-        f"<tr><th>{html.escape(str(name))}</th><td>{_fail_cascade(value)}</td></tr>"
+        f"<tr><th>{html.escape(str(name))}</th><td>{fail_cascade(value)}</td></tr>"
         for name, value in rows
     )
     case_rows = "\n".join(
@@ -272,9 +239,9 @@ def _html_report(report: ClassifiedRunReport) -> str:
         f"<td>{html.escape(entry.case.classname)}</td>"
         f"<td>{html.escape(entry.case.name)}</td>"
         "<td>"
-        f"{html.escape(' &rarr; '.join(attempt for attempt in entry.case.attempts))}"
+        f"{' &rarr; '.join(html.escape(attempt) for attempt in entry.case.attempts)}"
         "</td>"
-        f"<td>{_classification_cell(entry)}</td>"
+        f"<td>{classification_cell(entry)}</td>"
         "</tr>"
         for entry in report.cases
     )

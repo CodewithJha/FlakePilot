@@ -143,6 +143,11 @@ class TiStore(Protocol):
         """(test identity ID, result) pairs; one row per attempt."""
         ...
 
+    async def run_repo_id(self, *, org_id: str, run_id: str) -> str | None:
+        """The repo a stored run belongs to, or None if it is not in this org.
+        The org-scoped lookup: a run in another org is simply not found."""
+        ...
+
     async def observations(
         self, *, org_id: str, repo_id: str, test_id: str
     ) -> list[Observation] | None:

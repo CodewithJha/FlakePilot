@@ -876,3 +876,141 @@ def test_ingestion_fails_closed_without_artifact_storage(url: str) -> None:
         503,
         "ingestion_not_configured",
     )
+
+
+class _UnusedIdentityProvider:
+    """Satisfies create_app's factory signature; sign-in endpoints are never hit."""
+
+    def authorization_url(self, *, state: str, code_challenge: str) -> str:
+        raise AssertionError("sign-in is not part of the run-view test")
+
+    async def identify(self, *, code: str, code_verifier: str) -> Any:
+        raise AssertionError("sign-in is not part of the run-view test")
+
+
+VIEW_COOKIE = "__Host-flakepilot_session"
+
+
+def test_run_view_authorizes_a_signed_in_member_over_real_tables(
+    url: str, artifact_dir: Path
+) -> None:
+    """The HTTP run view: real sessions, memberships, grants, and evidence.
+
+    One authorized member sees the run view with the rule set's verdict; a
+    member without `repo.view`, a stranger's session, and no session at all
+    learn nothing (404/404/401). All through the real `Iam` and real SQL.
+    """
+
+    async def scenario(engine: AsyncEngine) -> None:
+        org, repo = str(uuid.uuid4()), str(uuid.uuid4())
+        token = "fpi_" + secrets.token_urlsafe(32)
+        viewer, no_grant, outsider = (str(uuid.uuid4()) for _ in range(3))
+        ok_session, grantless_session, stray_session = (
+            secrets.token_urlsafe(32) for _ in range(3)
+        )
+        await sql(
+            engine,
+            "INSERT INTO iam.orgs (id, name, created_at) VALUES (:o, 'RunViewHttp', now())",
+            o=org,
+        )
+        await sql(
+            engine,
+            "INSERT INTO iam.ci_upload_tokens (id, org_id, repo_id, token_hash, "
+            "display_prefix, created_by, created_at, revoked_at) VALUES "
+            "(:id, :org, :repo, :h, :p, :id, now(), NULL)",
+            id=str(uuid.uuid4()),
+            org=org,
+            repo=repo,
+            h=digest(token),
+            p=token[4:12],
+        )
+        for user, issuer_subject in (
+            (viewer, "v-1"),
+            (no_grant, "n-1"),
+            (outsider, "o-1"),
+        ):
+            await sql(
+                engine,
+                "INSERT INTO iam.users (id, idp_issuer, idp_subject, github_login, "
+                "created_at) VALUES (:u, 'https://github.test', :s, :s, now())",
+                u=user,
+                s=issuer_subject,
+            )
+            await sql(
+                engine,
+                "INSERT INTO iam.memberships (org_id, user_id, org_admin, created_at) "
+                "VALUES (:o, :u, FALSE, now())",
+                o=org,
+                u=user,
+            )
+        await sql(
+            engine,
+            'INSERT INTO iam.repo_grants (org_id, user_id, repo_id, "grant", '
+            "granted_by, created_at) VALUES (:o, :u, :r, 'repo.view', :u, now())",
+            o=org,
+            u=viewer,
+            r=repo,
+        )
+        for user, session_id in (
+            (viewer, ok_session),
+            (no_grant, grantless_session),
+            (outsider, stray_session),
+        ):
+            await sql(
+                engine,
+                "INSERT INTO iam.sessions (id_hash, user_id, created_at, "
+                "last_seen_at, expires_at) VALUES (:h, :u, now(), now(), "
+                "now() + interval '1 hour')",
+                h=digest(session_id),
+                u=user,
+            )
+        async with client(url, artifact_dir) as api:
+            status, _ = await api.upload(
+                token,
+                report(("vr", "view-flaky", ""), ("vr", "view-regress", "")),
+                metadata(commit_sha=OLD, ci_run_id="hv-0"),
+            )
+            assert status == 201
+            status, content = await api.upload(
+                token,
+                report(
+                    ("vr", "view-flaky", "<flakyFailure/>"),
+                    ("vr", "view-regress", FAIL + "<rerunFailure/>"),
+                ),
+                metadata(commit_sha=NEW, ci_run_id="hv-1"),
+            )
+            assert status == 201
+            run_id = content["run_id"]
+
+        app = create_app(
+            Settings(
+                Secret(url),
+                artifact_dir=artifact_dir,
+                public_origin="https://flakpilot-view.test",
+            ),
+            identity_provider_factory=lambda _: _UnusedIdentityProvider(),
+        )
+        async with app.router.lifespan_context(app):
+
+            async def get(path: str, session_id: str | None) -> tuple[int, str]:
+                headers = (
+                    []
+                    if session_id is None
+                    else [("cookie", f"{VIEW_COOKIE}={session_id}")]
+                )
+                got, _, body = await send_raw(app, "GET", path, headers)
+                return got, body.decode()
+
+            path = f"/orgs/{org}/runs/{run_id}"
+            granted, page = await get(path, ok_session)
+            assert granted == 200
+            assert "flaky" in page and "deterministic_regression" in page
+            assert "unchecked" in page
+            grantless, _ = await get(path, grantless_session)
+            stranger, _ = await get(path, stray_session)
+            anonymous, _ = await get(path, None)
+            assert (grantless, stranger, anonymous) == (404, 404, 401)
+            # A session value that matches nothing is just unauthenticated.
+            assert (await get(path, "not-a-session"))[0] == 401
+
+    run(url, scenario)

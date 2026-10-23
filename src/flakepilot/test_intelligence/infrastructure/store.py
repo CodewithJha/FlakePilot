@@ -251,6 +251,23 @@ class SqlTiStore:
         if rows:
             await self._session.execute(test_results.insert(), rows)
 
+    async def run_repo_id(self, *, org_id: str, run_id: str) -> str | None:
+        """The repo a stored run belongs to, or None if it is not in this org."""
+        try:
+            canonical_org, canonical_run = (
+                str(uuid.UUID(org_id)),
+                str(uuid.UUID(run_id)),
+            )
+        except ValueError:
+            return None
+        row = await self._session.execute(
+            select(runs.c.repo_id).where(
+                runs.c.org_id == canonical_org, runs.c.id == canonical_run
+            )
+        )
+        found = row.scalar_one_or_none()
+        return None if found is None else str(found)
+
     async def run_report(
         self, *, org_id: str, repo_id: str, run_id: str
     ) -> RunReport | None:

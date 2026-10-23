@@ -6,7 +6,7 @@ Evidence-based investigation and verification of recurring test failures. See [P
 
 **Pre-alpha. Not production-ready.** The backend foundations exist: sign-in, org bootstrap, CI upload tokens, JUnit ingestion and a failure classifier. Known gaps:
 
-- **No UI.** The API is the only interface.
+- **No UI beyond one read-only page.** The session-user run view (`GET /orgs/{org_id}/runs/{run_id}`) is the only server-rendered HTML. It is read-only, requires a signed-in member with `repo.view`, and is answered 503 `auth_not_configured` when sign-in is not configured, like the other session routes.
 - **CI upload tokens are issued only by the operator CLI** (`issue-ci-upload-token`, see the demo journey below). No HTTP route exists for them yet.
 - **Classification isn't exposed over HTTP.** It exists as an authorization-checked use case (ADR-013), and the operator CLI's `ci-run-report` attaches each test's verdict — deterministic rule set `ti-classification/1`, with the evidence it was computed from — neither of which is an HTTP route.
 - **Parsing is synchronous.** Reports are parsed inside the upload request. A separate worker process runs durable jobs and delivers outbox rows to the audit log. No retention or stage job is registered. See [DURABLE-JOBS](docs/operations/DURABLE-JOBS.md).
@@ -140,11 +140,12 @@ Step by step:
    status stays `unchecked`, and the raw report body is stored as a plaintext
    file. `--format json` is available for scripts.
 
-Known limits of this journey: there is no interactive UI and no session-authenticated
-read route usable without GitHub sign-in credentials (see "GitHub App sign-in"
-below); classification is surfaced only through the operator report (the
-rule set version and evidence are rendered, so every verdict is traceable to
-the stored facts it was computed from); reproduction runs remain fail-closed
+Known limits of this journey: there is no interactive UI beyond the session-user
+run view (a signed-in reader needs GitHub App credentials, which no demo
+provides — see "GitHub App sign-in"); classification is surfaced in the operator
+report and the session-user run page only (the rule set version and evidence
+are rendered, so every verdict is traceable to the stored facts it was computed
+from); reproduction runs remain fail-closed
 (`inconclusive` / `execution_closed`, no source fetched); artifacts are
 plaintext and retention deletes nothing; the demo org/token are created by
 you, on your machine, out of the process's control plane.
@@ -183,6 +184,12 @@ Settings come from environment variables only (see [`.env.example`](.env.example
 3. Set `FLAKEPILOT_PUBLIC_ORIGIN`, `FLAKEPILOT_GITHUB_CLIENT_ID` and `FLAKEPILOT_GITHUB_CLIENT_SECRET`.
 
 Without a client ID and secret, sign-in is off and the auth endpoints answer 503 `auth_not_configured`; a public origin on its own changes nothing. If the client ID or secret is set but any of the three is missing, **startup fails** (fail closed). Sign-in only authenticates; access comes from FlakePilot's own org membership and grants (ADR-011).
+
+### Session-user run view
+
+`GET /orgs/{org_id}/runs/{run_id}` is the one server-rendered page for signed-in users: a read-only view of one stored run — summary counts, upload metadata, attempt chains, and each test's `ti-classification/1` verdict with its evidence (same rendering rules as the operator report: everything user-controlled is HTML-escaped, `inconclusive` is shown as the real verdict, revision status stays `unchecked`). It states plainly that nothing is verified or executed here.
+
+Authorization chain: the session cookie authenticates the user; the org in the URL is only a lookup key — access comes from IAM's membership and `repo_grants` records for that user (`repo.view` is required, decided exactly as every other session read). A non-member, a member without `repo.view`, and a run of another org are all answered with the same 404 `not_found`: a cross-org request learns nothing. No session (bad or missing cookie) is 401 `unauthenticated`. There is no UI beyond this page and no link fabricating one.
 
 ## Run the API
 

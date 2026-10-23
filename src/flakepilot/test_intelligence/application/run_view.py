@@ -1,21 +1,39 @@
-"""Read-only view of one stored CI run (operator-demo reporting).
+"""Read-only view of one stored CI run.
 
 This use case reports what a run's ingestion stored, without claiming anything
-the stored data does not. The caller supplies the (org, repo) scope explicitly;
-it is the operator CLI, the trust `bootstrap-org` already establishes.
+the stored data does not.
 
-`classified_report` attaches each test's verdict from the stored evidence, by
-calling the only classification implementation there is: the deterministic,
-versioned domain rule set `ti-classification/1` (`domain.classification`). It
-reports the rule set's own target selection, reasons and evidence; it never
-adds confidence or labels the rules do not produce. The session-user use case
-(`application.classification`) stays the authorization-checked path.
+`classified_report` is the operator-CLI path: the caller supplies the (org,
+repo) scope explicitly, the trust `bootstrap-org` already establishes.
+
+`classified_report_for` is the authenticated-user path. The caller supplies an
+`OrgAccess` already built by IAM from its own records for a verified session
+principal (never from request input). It mirrors the shipped execution view
+(`execution.application.reproduction.inspect`): a run outside the caller's org
+is not found — a cross-org request learns nothing — and `repo.view` is decided
+over code-host READ, FlakePilot's standing for the repositories it serves, the
+same access every existing session read is granted. No per-user live code-host
+verification exists yet (`TestClassification` still waits for REPO's
+verifier); that affects revision pinning alone, and the revision status stays
+`unchecked` in any case.
+
+Both attach each test's verdict from the stored evidence by calling the only
+classification implementation there is: the deterministic, versioned domain
+rule set `ti-classification/1` (`domain.classification`). They report the rule
+set's own target selection, reasons and evidence; they never add confidence or
+labels the rules do not produce.
 """
 
 import uuid
 from dataclasses import dataclass
 
-from flakepilot.identity.application.authorization import ResourceNotFound
+from flakepilot.identity.application.authorization import (
+    CodeHostAccess,
+    Grant,
+    OrgAccess,
+    ResourceNotFound,
+    authorize,
+)
 from flakepilot.test_intelligence.application.store import (
     ReportedCase,
     RunReport,
@@ -80,21 +98,53 @@ class RunViewer:
         if not (_is_uuid(org_id) and _is_uuid(repo_id) and _is_uuid(run_id)):
             raise ResourceNotFound
         async with self._unit_of_work() as store:
-            report = await store.run_report(
-                org_id=org_id, repo_id=repo_id, run_id=run_id
+            return await self._load(
+                store, org_id=org_id, repo_id=repo_id, run_id=run_id
             )
-            if report is None:
+
+    async def classified_report_for(
+        self, access: OrgAccess, *, org_id: str, run_id: str
+    ) -> ClassifiedRunReport:
+        """The authenticated view of one run in the caller's org.
+
+        `access` is IAM's record for the verified session principal; the org in
+        the URL is only a lookup key. The run must live in that org (a run in
+        another org is not found, never "forbidden" — non-disclosure), and
+        `repo.view` is authorized exactly as the shipped execution views are.
+        """
+        if not (_is_uuid(org_id) and _is_uuid(run_id)):
+            raise ResourceNotFound
+        async with self._unit_of_work() as store:
+            repo_id = await store.run_repo_id(org_id=org_id, run_id=run_id)
+            if repo_id is None:
                 raise ResourceNotFound
-            cases: list[ClassifiedCase] = []
-            for case in report.results:
-                cases.append(
-                    ClassifiedCase(
-                        case=case,
-                        classification=await self._classify(store, report, case),
-                    )
+            authorize(
+                access,
+                Grant.VIEW,
+                org_id=org_id,
+                repo_id=repo_id,
+                code_host=CodeHostAccess.READ,
+            )
+            return await self._load(
+                store, org_id=org_id, repo_id=repo_id, run_id=run_id
+            )
+
+    async def _load(
+        self, store: TiStore, *, org_id: str, repo_id: str, run_id: str
+    ) -> ClassifiedRunReport:
+        """The report plus per-test verdicts, inside the caller's unit of work."""
+        report = await store.run_report(org_id=org_id, repo_id=repo_id, run_id=run_id)
+        if report is None:
+            raise ResourceNotFound
+        cases: list[ClassifiedCase] = []
+        for case in report.results:
+            cases.append(
+                ClassifiedCase(
+                    case=case,
+                    classification=await self._classify(store, report, case),
                 )
-            cases_tuple = tuple(cases)
-        return ClassifiedRunReport(run=report, cases=cases_tuple)
+            )
+        return ClassifiedRunReport(run=report, cases=tuple(cases))
 
     async def _classify(
         self, store: TiStore, report: RunReport, case: ReportedCase

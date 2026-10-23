@@ -1,0 +1,147 @@
+"""Server-rendered run view for signed-in users.
+
+`GET /orgs/{org_id}/runs/{run_id}` with a session cookie. There is no UI
+beyond this one read-only page: it reports what one stored CI upload and the
+stored evidence say — attempt chains, plus each test's classification from the
+deterministic rule set `ti-classification/1` — and it states plainly what it
+is not: not a claim of code-host verification, and no execution of anything.
+
+The org in the URL is only a lookup key. Authorization is `org_access` (IAM's
+records for the verified session principal; not a member is not found) and
+then the use case's authorization-checked read, which mirrors the shipped
+execution views: a run outside the caller's org is not found, so a cross-org
+request learns nothing, and viewing needs `repo.view` exactly as every other
+session read does.
+
+Every user-controlled string — test names, classnames, attempt outcomes, run
+IDs, SHAs, evidence values — is HTML-escaped, including the values inside the
+classification evidence.
+"""
+
+import html
+from typing import Annotated
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import HTMLResponse
+
+from flakepilot.identity.application.authorization import OrgAccess
+from flakepilot.interface.composition_root.reporting import (
+    classification_cell,
+    fail_cascade,
+)
+from flakepilot.interface.composition_root.run_views import (
+    ClassifiedRunReport,
+)
+from flakepilot.interface.http.auth import org_access
+
+router = APIRouter(tags=["runs"])
+
+
+def _e(value: object) -> str:
+    return html.escape(str(value))
+
+
+def _page(report: ClassifiedRunReport) -> str:
+    run = report.run
+    metadata = run.metadata
+    rows = "\n".join(
+        "<tr>"
+        f"<td>{_e(case.case.classname)}</td>"
+        f"<td>{_e(case.case.name)}</td>"
+        f"<td>{' &rarr; '.join(_e(attempt) for attempt in case.case.attempts)}</td>"
+        f"<td>{classification_cell(case)}</td>"
+        "</tr>"
+        for case in report.cases
+    )
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FlakePilot run {_e(run.run_id[:8])}</title>
+<style>
+  body {{ font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 60rem; color: #1a1a2e; }}
+  h1 {{ font-size: 1.3rem; }} h2 {{ font-size: 1.05rem; margin-top: 2rem; }}
+  table {{ border-collapse: collapse; width: 100%; }}
+  th, td {{ border: 1px solid #d5d5dc; padding: 0.35rem 0.6rem; text-align: left; font-size: 0.9rem; }}
+  th {{ background: #f4f4f8; font-weight: 600; }}
+  td code {{ font-size: 0.8rem; word-break: break-all; }}
+  .note {{ color: #555; font-size: 0.8rem; }}
+  .muted {{ color: #777; }}
+</style>
+</head>
+<body>
+<h1>FlakePilot run view</h1>
+<p class="muted">
+Run <code>{_e(run.run_id)}</code> &middot; org <code>{_e(run.org_id)}</code>
+&middot; repo <code>{_e(run.repo_id)}</code>
+&middot; commit <code>{_e(run.commit_sha)}</code>
+&middot; environment <code>{_e(run.environment)}</code>
+&middot; source <code>{_e(run.source)}</code>
+</p>
+<p>This page is a read-only view of what one CI upload stored for your
+organization. Nothing is executed here. The commit SHA is what the upload
+reported; the revision status is <code>{_e(run.revision_status)}</code> — no
+code-host verification is available yet. The classification column is the
+deterministic, versioned rule set <code>ti-classification/1</code> applied to
+the stored evidence (no confidence scores, no model output);
+&ldquo;inconclusive&rdquo; is a real verdict where the stored evidence cannot
+support a stronger one.</p>
+
+<h2>Summary</h2>
+<table class="summary">
+<tr><th>Tests</th><td>{run.summary.tests}</td></tr>
+<tr><th>Attempts</th><td>{run.summary.attempts}</td></tr>
+<tr><th>Passed (final)</th><td>{run.summary.passed}</td></tr>
+<tr><th>Failed (final)</th><td>{run.summary.failed}</td></tr>
+<tr><th>Errored (final)</th><td>{run.summary.errored}</td></tr>
+<tr><th>Skipped</th><td>{run.summary.skipped}</td></tr>
+</table>
+
+<h2>Upload</h2>
+<table>
+<tr><th>CI run ID</th><td>{fail_cascade(metadata.ci_run_id if metadata else None)}</td></tr>
+<tr><th>CI attempt</th><td>{fail_cascade(metadata.ci_attempt if metadata else None)}</td></tr>
+<tr><th>Job name</th><td>{fail_cascade(metadata.job_name if metadata else None)}</td></tr>
+<tr><th>Ref</th><td>{fail_cascade(metadata.ref if metadata else None)}</td></tr>
+<tr><th>Environment</th><td>{fail_cascade(metadata.environment if metadata else run.environment)}</td></tr>
+<tr><th>Started at</th><td>{fail_cascade(metadata.started_at if metadata else None)}</td></tr>
+<tr><th>Finished at</th><td>{fail_cascade(metadata.finished_at if metadata else None)}</td></tr>
+<tr><th>Received</th><td>{fail_cascade(run.received_at)}</td></tr>
+</table>
+
+<h2>Tests, attempts, and classification</h2>
+<table>
+<tr><th>Classname</th><th>Test name</th><th>Attempts (chronological)</th><th>Classification</th></tr>
+{rows}
+</table>
+<p class="note">An attempt chain like &ldquo;failed &rarr; passed&rdquo; is a
+recurring failure within the CI run itself. Only CI-report evidence counts;
+FlakePilot's own runs are excluded and listed as <code>excluded_runs</code>.
+The stored report body is kept unparsed as a plaintext file; it is not
+downloaded from here.</p>
+</body>
+</html>
+"""
+
+
+async def run_view(
+    org_id: UUID,
+    run_id: str,
+    request: Request,
+    access: Annotated[OrgAccess, Depends(org_access)],
+) -> HTMLResponse:
+    report = await request.app.state.run_views.classified(
+        access=access, org_id=str(org_id), run_id=run_id
+    )
+    return HTMLResponse(_page(report), status_code=200)
+
+
+router.add_api_route(
+    "/orgs/{org_id}/runs/{run_id}",
+    run_view,
+    methods=["GET"],
+    status_code=200,
+    summary="Read-only run view for the signed-in user",
+)

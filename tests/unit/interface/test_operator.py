@@ -159,6 +159,7 @@ def test_html_report_escapes_names_and_all_recorded_evidence() -> None:
     assert "<h2>Summary</h2>" in rendered
     assert "test_login &amp; &lt;totals&gt;" in rendered
     assert "failed &rarr; passed" in rendered
+    assert "<td>failed &rarr; passed</td>" in rendered  # cell, not just the note
     assert "operator demo" in rendered
     assert "revision status stays <code>unchecked</code>" in rendered
     assert "run&lt;b&gt;" in rendered  # evidence values are escaped too

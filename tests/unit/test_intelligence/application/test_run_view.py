@@ -8,7 +8,11 @@ from typing import Any
 
 import pytest
 
-from flakepilot.identity.application.authorization import ResourceNotFound
+from flakepilot.identity.application.authorization import (
+    Grant,
+    OrgAccess,
+    ResourceNotFound,
+)
 from flakepilot.shared_kernel.events import Event
 from flakepilot.test_intelligence.application.run_view import (
     ClassifiedRunReport,
@@ -34,9 +38,7 @@ TEST_ID = "dddddddd-eeee-4fff-8aaa-000000000003"
 SHA = "0" * 40
 RECEIVED = datetime(2026, 10, 23, tzinfo=UTC)
 
-ORG = "11111111-2222-4333-8444-555555555555"
-REPO = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
-RUN = "cccccccc-dddd-4eee-8fff-000000000001"
+ORG_B = "99999999-8888-4777-8666-555555555555"
 
 REPORT = RunReport(
     run_id=RUN,
@@ -73,6 +75,7 @@ class FakeTiStore:
         self.appended: list[str] = []
         self.observations_by_test: dict[str, list[Observation] | None] = {}
         self.observed: list[str] = []
+        self.repo_lookups: list[tuple[str, str]] = []
 
     def knows(self, test_id: str, history: list[Observation] | None) -> None:
         self.observations_by_test[test_id] = history
@@ -110,6 +113,15 @@ class FakeTiStore:
             self.stored.run_id,
         ):
             return self.stored
+        return None
+
+    async def run_repo_id(self, *, org_id: str, run_id: str) -> str | None:
+        self.repo_lookups.append((org_id, run_id))
+        if self.stored is not None and (org_id, run_id) == (
+            self.stored.org_id,
+            self.stored.run_id,
+        ):
+            return self.stored.repo_id
         return None
 
     async def observations(
@@ -260,3 +272,78 @@ def test_classified_report_is_fail_closed_like_the_plain_read() -> None:
     with pytest.raises(ResourceNotFound):
         asyncio.run(v.classified_report(org_id=ORG, repo_id=REPO, run_id=unknown_run))
     assert store.report_calls == [(ORG, REPO, unknown_run)] and store.observed == []
+
+
+ADMIN = OrgAccess("user-a", ORG, org_admin=True)
+OUTSIDER = OrgAccess("user-b", ORG_B, org_admin=False)
+
+
+def test_the_org_scoped_lookup_happens_before_any_classification_or_report() -> None:
+    """The use case resolves the run's repo inside the org first, then reads."""
+    store = FakeTiStore(REPORT)
+    store.knows(TEST_ID, None)
+    asyncio.run(viewer(store).classified_report_for(ADMIN, org_id=ORG, run_id=RUN))
+    assert store.repo_lookups == [(ORG, RUN)]
+    assert store.report_calls == [(ORG, REPO, RUN)]
+    assert store.observed == [TEST_ID]
+
+
+def test_a_run_outside_the_callers_org_is_not_found_nothing_disclosed() -> None:
+    store = FakeTiStore(REPORT)
+    with pytest.raises(ResourceNotFound):
+        asyncio.run(
+            viewer(store).classified_report_for(
+                ADMIN, org_id=ORG, run_id=RUN[:-1] + "4"
+            )
+        )
+    assert store.report_calls == [] and store.observed == []
+
+
+def test_non_canonical_identifiers_are_not_sent_to_the_store() -> None:
+    store = FakeTiStore(REPORT)
+    viewer_instance = viewer(store)
+    for org_id, run_id in (("ORG", RUN), (ORG, "x" * 36)):
+        with pytest.raises(ResourceNotFound):
+            asyncio.run(
+                viewer_instance.classified_report_for(
+                    ADMIN, org_id=org_id, run_id=run_id
+                )
+            )
+    assert store.repo_lookups == []
+
+
+def test_view_without_grant_is_denied_as_not_found() -> None:
+    """A member with no repo.view grant learns nothing about the run.
+
+    `decide` answers NOT_FOUND for a missing VIEW (not FORBIDDEN), so the
+    denial cannot even reveal that the run exists.
+    """
+    store = FakeTiStore(REPORT)
+    member = OrgAccess("member", ORG, org_admin=False)  # no grants on the repo
+    with pytest.raises(ResourceNotFound):
+        asyncio.run(viewer(store).classified_report_for(member, org_id=ORG, run_id=RUN))
+    assert store.report_calls == [] and store.observed == []
+
+
+def test_a_viewer_from_another_org_is_denied_at_the_decision_itself() -> None:
+    store = FakeTiStore(REPORT)
+    with pytest.raises(ResourceNotFound):
+        asyncio.run(
+            viewer(store).classified_report_for(OUTSIDER, org_id=ORG, run_id=RUN)
+        )
+    assert store.report_calls == [] and store.observed == []
+
+
+def test_an_authorized_member_sees_the_verdict() -> None:
+    """`repo.view` explicitly granted decides ALLOWED through the real rules."""
+    store = FakeTiStore(REPORT)
+    store.knows(TEST_ID, [observation("run-x", ("failed", "passed"))])
+    member = OrgAccess(
+        "member", ORG, org_admin=False, grants=frozenset({(REPO, Grant.VIEW)})
+    )
+    result = asyncio.run(
+        viewer(store).classified_report_for(member, org_id=ORG, run_id=RUN)
+    )
+    [entry] = result.cases
+    assert entry.classification is not None
+    assert entry.classification.failure_class is FailureClass.FLAKY

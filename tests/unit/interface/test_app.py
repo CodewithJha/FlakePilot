@@ -89,6 +89,7 @@ def test_only_expected_routes_are_registered() -> None:
         "/auth/github/callback",
         "/auth/logout",
         "/ingest/junit",
+        "/orgs/{org_id}/runs/{run_id}",
         "/orgs/{org_id}/reproductions",
         "/orgs/{org_id}/reproductions/{execution_id}",
         "/orgs/{org_id}/reproductions/{execution_id}/artifacts/{kind}",
