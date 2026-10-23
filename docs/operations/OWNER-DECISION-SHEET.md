@@ -206,6 +206,31 @@ review has occurred. Each lists the missing evidence.
 
 ## Owner Responses Needed
 
+Recorded 2026-10-23 — the owner's answers (interpreted exactly as received,
+in the register's "Recorded owner responses" section):
+
+- Hosting preference (D-HOST-1 / D-HOST-2): **dedicated hosting preferred**
+  — planning preference only; provider, operator, tenancy unresolved.
+- Region/data-residency requirements (D-HOST-3): **UNDECIDED** — continues
+  to block provisioning.
+- Maximum initial budget (D-HOST-5): **zero** — a hard constraint; no
+  spending or provisioning authorized.
+- Expected workload (runs/day, concurrency) (D-HOST-4): *not supplied* —
+  remains `UNDECIDED`; may not be inferred.
+- Isolation runtime (D-RUNTIME-1): **Firecracker preferred** — a candidate
+  for evaluation, not a sufficiency verdict.
+- Independent security reviewer (D-RUNTIME-5): *not supplied* — `UNDECIDED`.
+- Key-management preference (D-KMS-1): **managed KMS preferred** —
+  conditional on the eventual hosting ecosystem; vendor undecided.
+- Retention requirements — duration, legal hold, approver names
+  (D-RET-2/3/4): *not supplied* — retention stays disabled, nothing
+  authorized.
+- GitHub App — create now? identity, scope, key storage (D-GH-1/2/3):
+  *not supplied* — no App is created; nothing authorized.
+- Monitoring/on-call ownership (D-OPS-1/3): *not supplied* — `UNDECIDED`.
+
+Original (pre-response) prompts, kept for later completion:
+
 Fill in freely; anything left is `UNDECIDED`, which blocks that branch only.
 
 - Hosting preference (D-HOST-1 / D-HOST-2):
@@ -257,15 +282,24 @@ Fill in freely; anything left is `UNDECIDED`, which blocks that branch only.
 
 ## WP-2 provisioning prerequisite checklist
 
-WP-2 cannot start until **all** of these have recorded owner answers:
+**WP-2 cannot start.** Recorded 2026-10-23: the zero-budget constraint
+(D-HOST-5) blocks every spend-bearing action outright, the residency
+answer (D-HOST-3) is `UNDECIDED`, and none of the remaining items reaches
+"chosen". For completeness, the prerequisites and their current standing:
 
-- [ ] D-HOST-1 — hosting model and provider chosen
+- [ ] D-HOST-1 — hosting model and provider **chosen** (preference for
+      dedicated hosting recorded; provider unresolved)
 - [ ] D-HOST-2 — tenancy and the named administrative operator
-- [ ] D-HOST-3 — region/residency constraint answered or explicitly waived
-- [ ] D-HOST-4 — sizing and a written usage portrait
-- [ ] D-HOST-5 — budget ceiling and cost owner approved
+      (operator unresolved)
+- [ ] D-HOST-3 — region/residency constraint answered or explicitly
+      waived (**UNDECIDED** — may not be assumed)
+- [ ] D-HOST-4 — sizing and a written usage portrait (not supplied)
+- [ ] D-HOST-5 — budget ceiling and cost owner approved (**zero budget
+      recorded** — blocks provisioning rather than enabling it)
 - [ ] D-RUNTIME-1 — runtime selected (host image depends on it)
+      (preference for Firecracker recorded; candidate, not selected)
 - [ ] D-HOST-6 / D-HOST-7 — access and patching cadence ratified
+      (unanswered)
 
 Not required for WP-2 (needed later): D-KMS-1 vendor, D-RET-2/3/4,
 D-GH-1..3, D-OPS-1..6, reviewer/WP-4/WP-9/WP-10.

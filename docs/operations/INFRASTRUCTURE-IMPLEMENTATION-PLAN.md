@@ -16,6 +16,46 @@ go/no-go), ADR-004/008 (planes/trust model), and the existing
 `implemented` code — the ledger, the evidence collector, the sealing
 envelope, the durable-jobs worker. Anything else is not yet built.
 
+## Current constraint record — 2026-10-23 (WP-1 owner responses)
+
+The owner's responses are recorded in the register's "Recorded owner
+responses" section. Under the constraints they establish, **only safe,
+local, no-cost planning, documentation, and design work may proceed.**
+
+- **Zero budget (D-HOST-5) is a hard constraint**: no spending,
+  subscriptions, or paid infrastructure. WP-2 (provisioning) cannot start
+  and is not authorized. WP-2 was never marked authorized and stays
+  unticked on the approval sheet's checklist.
+- **Residency is `UNDECIDED` (D-HOST-3)** and independently blocks
+  infrastructure provisioning; no region may be assumed.
+- **Dedicated hosting (D-HOST-1/2) is a recorded preference only**:
+  D-HOST-1's provider and D-HOST-2's named operator are unresolved, so the
+  host-selection inputs for WP-2 remain missing.
+- **Firecracker (D-RUNTIME-1) is the preferred candidate for evaluation**;
+  the threat model it must still satisfy is D-RUNTIME-2, and the preference
+  is not approved isolation — no `MECHANISM_LEVEL` entry may be added
+  until a real measurement exists.
+- **Managed KMS (D-KMS-1) is conditional** on the eventual hosting
+  ecosystem; no vendor is selected and encryption stays unwired.
+
+Blocked work packages under these constraints (by their blocking cause):
+
+| Package | Blocked by |
+|---|---|
+| WP-2 provisioning (entirely) | zero budget + residency `UNDECIDED` + no provider/operator selected |
+| WP-3 host and runtime integration | WP-2 (no host, no chosen-compatible runtime image) — its *local adapter design* work may be prepared as no-cost design, but nothing lands on a host |
+| WP-4 measurement and evidence | WP-2/WP-3 external halves (no host, no measurements) |
+| WP-5 KMS integration | hosting decision (conditionality) + real-keys account (zero budget) — local code-side study against a documented API contract is the only unblocked slice |
+| WP-6 retention implementation | the required product/legal/security approval (D-RET-4) — unchanged; **not** budget-related |
+| WP-7 live GitHub authentication | credentials the owner has not created or authorized (D-GH-1/3) |
+| WP-8 monitoring deployment and drills | WP-2 external half + budget; its local design and alert-definition work may proceed |
+| WP-9 independent review / WP-10 authorization | all prior evidence — nothing to review |
+
+Not blocked (local, no-cost, no credentials): WP-1 decision records
+(ongoing), WP-3/WP-5/WP-8 documentation-and-design slices, and any
+readiness-document updates. Every package's in-plan scope and exclusions
+remain untouched by this record.
+
 Every work package states whether it is local (possible now inside this
 repository with nothing new to buy) or external (requires the owner's
 infrastructure decision first). A package marked LOCAL-READY can start

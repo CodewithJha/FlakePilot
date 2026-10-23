@@ -19,7 +19,41 @@ repository).
 Recommendations are made in the "Recommendation" field of each decision and
 consolidated at the end; no owner decision is made silently.
 
+## Recorded owner responses — 2026-10-23 (WP-1, not final approvals)
+
+The repository owner supplied five responses to the decision sheet. Each is
+recorded below against its existing decision ID **as a received response**,
+distinguished below from an approved decision. None of these responses
+authorizes spending, provisioning, credentials, or production wiring, and
+none is silently rewritten into a final decision here. Unlisted decisions
+remain `UNDECIDED` (full list in the approval-sheet table).
+
+| ID | Owner response | Recorded status (now) | Still unresolved after recording |
+|---|---|---|---|
+| D-HOST-1 / D-HOST-2 | **Dedicated hosting preferred** | `PREFERENCE-RECORDED` — a planning preference only | Provider, actual host selection, tenancy details, named operator, and account ownership |
+| D-HOST-3 | **UNDECIDED** | `UNDECIDED` — no region or residency requirement may be assumed | The residency answer itself; **this continues to block infrastructure provisioning (WP-2)** |
+| D-HOST-5 | **Zero budget** | `HARD CONSTRAINT` — no spending, subscriptions, paid infrastructure, or provisioning is authorized for current work | The eventual ceiling, which must be set whenever provisioning is ever chosen; until then every spend-bearing package stays blocked |
+| D-RUNTIME-1 | **Firecracker preferred** | `PREFERENCE-RECORDED` — the preferred candidate for further evaluation | Host-kernel compatibility checks (WP-2/3), threat-model review (D-RUNTIME-2), implementation, real guest-observed measurements (WP-4), and independent security review (WP-9). A preference is **not** a determination that isolation is sufficient |
+| D-KMS-1 | **Managed KMS preferred** | `PREFERENCE-RECORDED, CONDITIONAL` — applies only if the eventual hosting ecosystem supports a managed KMS | The hosting choice itself, the vendor, key custody rules, and all tested integration (WP-5). No vendor is selected; encryption stays unwired; artifacts remain plaintext at rest |
+
+Consequences applied unconditionally while this record stands:
+
+- **Zero budget is a hard constraint across the whole implementation plan**
+  ([INFRASTRUCTURE-IMPLEMENTATION-PLAN](INFRASTRUCTURE-IMPLEMENTATION-PLAN.md)):
+  WP-2 (provisioning) cannot start, and every package whose acceptance needs
+  real infrastructure (WP-2's external phases, WP-3/4 external validation,
+  WP-5's real-keys round-trip, WP-7's credentials, WP-8's external
+  deployment) stays blocked. Only safe, local, no-cost planning,
+  documentation, and design work may proceed — see the plan's updated
+  constraint record.
+- **Residency stays `UNDECIDED` and continues to block provisioning**,
+  independently of the budget constraint.
+- **No recommendation has become an approved decision.** The recommendations
+  below and in the options analysis are unchanged; the columns above carry
+  the owner's preference where one exists.
+
 ---
+
 
 ## A. Execution host
 
@@ -66,6 +100,10 @@ consolidated at the end; no owner decision is made silently.
   no compliance constraint blocks any cloud provider, budget allows a
   small fixed monthly line item.
 - OWNER DECISION: model and provider; cost owner and ceiling (D-HOST-5).
+- Recorded 2026-10-23 (owner response): **dedicated hosting preferred** —
+  a planning preference only. Provider, host selection, tenancy details,
+  account ownership, and spend stay `UNDECIDED`; zero budget (D-HOST-5)
+  blocks any acquisition. Stays `PREFERENCE-RECORDED`, not approved.
 - Work blocked until made: WP-2 provisioning; everything in roadmap B1–B4,
   B8 external phases.
 
@@ -85,6 +123,9 @@ consolidated at the end; no owner decision is made silently.
 - Recommendation: (a), with admin access per runbook §5 (key SSH, recorded
   sudo policy, never used by the control plane).
 - OWNER DECISION: named operator; whether that is the owner themselves.
+- Recorded 2026-10-23 (owner response): **dedicated hosting preferred**
+  (recorded against D-HOST-1) — the operator identity remains
+  `UNDECIDED`; no named operator exists yet.
 - Blocks: the same set as D-HOST-1.
 
 ### D-HOST-3 · Region and data residency
@@ -126,6 +167,11 @@ consolidated at the end; no owner decision is made silently.
 - Recommendation: (a) small single host, scale up first (more vCPU/RAM per
   host), then scale out; assumption on usage must be confirmed.
 - OWNER DECISION: budget ceiling and a written usage portrait.
+- Recorded 2026-10-23 (owner response): **zero budget** — recorded as a
+  `HARD CONSTRAINT`: no spending, subscriptions, paid infrastructure, or
+  provisioning is authorized for current work. A ceiling must still be
+  set before any provisioning is ever approved; until then WP-2 and all
+  spend-bearing packages are blocked.
 
 ### D-HOST-5 · Budget ceiling and cost owner
 
@@ -139,6 +185,9 @@ consolidated at the end; no owner decision is made silently.
 - Recommendation: a single small dedicated host (D-HOST-1) with a defined
   monthly ceiling, reviewed after the first evidence cycle.
 - OWNER DECISION: ceiling, owner of the spending, and how it is recorded.
+- Recorded 2026-10-23 (owner response): **zero budget** — see D-HOST-4.
+  The cost owner and an eventual ceiling therefore remain `UNDECIDED`, and
+  nothing may be purchased in the meantime.
 
 ### D-HOST-6 · Network boundaries and administrative access
 
@@ -199,6 +248,13 @@ consolidated at the end; no owner decision is made silently.
   `per_run_microvm` target without a specific review approval).
 - OWNER DECISION: candidate runtime and acceptance of the associated
   operational maturity argument.
+- Recorded 2026-10-23 (owner response): **Firecracker preferred** — a
+  preference for evaluation only. The candidate still must pass
+  host-kernel compatibility checks with the (not yet chosen) host, the
+  threat-model review (D-RUNTIME-2), implementation, real guest-observed
+  measurements (WP-4), and independent review (WP-9). A mechanical
+  `MECHANISM_LEVEL` entry is added only after a real measurement exists —
+  never by this preference.
 - Blocked until made: WP-3 runtime integration, WP-4 measurement.
 
 ### D-RUNTIME-2 · Threat model and isolation guarantees
@@ -308,6 +364,12 @@ consolidated at the end; no owner decision is made silently.
   start integration with a fake or local-only provider; the current
   plaintext-at-rest limitation stays explicit until the real manager is
   wired and round-trip tested. OWNER DECISION: manager class and vendor.
+- Recorded 2026-10-23 (owner response): **managed KMS preferred** —
+  a conditional preference that applies only if the eventual hosting
+  ecosystem supports a managed KMS. The hosting choice, vendor, key
+  custody rules, and all tested integration remain `UNDECIDED`; the
+  plaintext-at-rest limitation stays explicit and encryption stays
+  unwired.
 - Blocks: WP-5 (external KMS integration), production claim of
   encryption-at-rest.
 
@@ -524,6 +586,13 @@ consolidated at the end; no owner decision is made silently.
 ---
 
 ## Consolidated recommendations and approval summary
+
+The table is unchanged in structure and content; for the five decisions
+with recorded owner responses (2026-10-23), a preference now exists but
+**final approval is still needed** on the unresolved remainder of each —
+see "Recorded owner responses" at the top of this document and the
+per-decision recorded lines. No "Yes" in this table has silently turned
+into an "approved".
 
 | ID | Question | Recommendation | Confidence | Owner needed? |
 |---|---|---|---|---|
