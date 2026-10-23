@@ -13,6 +13,7 @@ when a stage report claims it is wrong; update it when the code changes.
 | Every standing decision | [docs/adr/README.md](docs/adr/README.md), esp. ADR-004 (planes), ADR-008 (trust model), ADR-010 (toolchain) |
 | Execution plane status | [docs/operations/EXECUTION.md](docs/operations/EXECUTION.md) |
 | Execution host contract and runbook | [docs/operations/EXECUTION-HOST.md](docs/operations/EXECUTION-HOST.md) and [docs/operations/EXECUTION-HOST-RUNBOOK.md](docs/operations/EXECUTION-HOST-RUNBOOK.md) |
+| Production readiness (10J) | [docs/operations/PRODUCTION-READINESS-ASSESSMENT.md](docs/operations/PRODUCTION-READINESS-ASSESSMENT.md) and [docs/operations/PRODUCTION-READINESS-ROADMAP.md](docs/operations/PRODUCTION-READINESS-ROADMAP.md) |
 | Durable jobs and the outbox | [docs/operations/DURABLE-JOBS.md](docs/operations/DURABLE-JOBS.md) |
 | Commands, config, HTTP contract | [README.md](README.md) |
 
