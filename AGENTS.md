@@ -17,6 +17,7 @@ when a stage report claims it is wrong; update it when the code changes.
 | Infrastructure decisions (10K) | [docs/operations/INFRASTRUCTURE-DECISIONS.md](docs/operations/INFRASTRUCTURE-DECISIONS.md), [docs/operations/INFRASTRUCTURE-OPTIONS-ANALYSIS.md](docs/operations/INFRASTRUCTURE-OPTIONS-ANALYSIS.md), and [docs/operations/INFRASTRUCTURE-IMPLEMENTATION-PLAN.md](docs/operations/INFRASTRUCTURE-IMPLEMENTATION-PLAN.md) |
 | Owner decision sheet (10K/WP-1) | [docs/operations/OWNER-DECISION-SHEET.md](docs/operations/OWNER-DECISION-SHEET.md) |
 | Firecracker feasibility (10K, read-only) | [docs/operations/FIRECRACKER-FEASIBILITY-ASSESSMENT.md](docs/operations/FIRECRACKER-FEASIBILITY-ASSESSMENT.md) — candidate assessment only; nothing installed or provisioned |
+| Firecracker threat model (10K, read-only) | [docs/operations/FIRECRACKER-THREAT-MODEL.md](docs/operations/FIRECRACKER-THREAT-MODEL.md) — analysis of proposed architecture; distinguishes implemented from proposed |
 | Durable jobs and the outbox | [docs/operations/DURABLE-JOBS.md](docs/operations/DURABLE-JOBS.md) |
 | Commands, config, HTTP contract | [README.md](README.md) |
 
