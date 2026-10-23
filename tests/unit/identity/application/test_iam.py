@@ -130,6 +130,33 @@ class FakeStore:
     ) -> None:
         self.writes.append(("add_membership", {"user_id": user_id, "admin": org_admin}))
 
+    async def find_user(self, *, issuer: str, subject: str) -> str | None:
+        self.writes.append(("find_user", {"subject": subject}))
+        return "user-1" if self.writes else None
+
+    async def add_grant(
+        self,
+        *,
+        org_id: str,
+        user_id: str,
+        repo_id: str,
+        grant: Grant,
+        granted_by: str,
+    ) -> bool:
+        self.writes.append(
+            (
+                "add_grant",
+                {"repo_id": repo_id, "grant": grant, "granted_by": granted_by},
+            )
+        )
+        return True
+
+    async def revoke_grant(
+        self, *, org_id: str, user_id: str, repo_id: str, grant: Grant
+    ) -> bool:
+        self.writes.append(("revoke_grant", {"repo_id": repo_id, "grant": grant}))
+        return False
+
     async def revoke_user_sessions(self, *, user_id: str, reason: str) -> int:
         self.writes.append(
             ("revoke_user_sessions", {"user_id": user_id, "reason": reason})

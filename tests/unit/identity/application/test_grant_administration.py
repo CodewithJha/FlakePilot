@@ -4,6 +4,9 @@ revocation invariant, and compatibility with the real `decide()` rules (ADR-011,
 import asyncio
 import re
 import uuid
+from collections.abc import Coroutine
+from datetime import timedelta
+from typing import Any
 
 import pytest
 
@@ -22,7 +25,10 @@ from flakepilot.identity.application.authorization import (
     OrgAccess,
     decide,
 )
-from flakepilot.identity.application.iam import OPERATOR_CLI_ISSUER_ID
+from flakepilot.identity.application.iam import (
+    OPERATOR_CLI_ISSUER_ID,
+    CiUploadPrincipal,
+)
 from flakepilot.shared_kernel.events import Channel, Event, Origin
 
 CLI = Origin(Channel.CLI, "run-1")
@@ -47,9 +53,56 @@ class FakeAdminStore:
         self.grants: dict[tuple[str, str, str, str], str] = {}
         self.live_sessions: dict[str, int] = {}
         self.events: list[Event] = []
+        self.tokens: dict[bytes, tuple[str, str, str]] = {}
+        self.sessions: dict[bytes, str] = {}
 
     async def append_event(self, event: Event) -> None:
         self.events.append(event)
+
+    async def upsert_user(
+        self, *, issuer: str, subject: str, login: str
+    ) -> tuple[str, bool]:
+        raise AssertionError("these use cases never upsert users")
+
+    async def create_session(
+        self, *, id_hash: bytes, user_id: str, lifetime: timedelta
+    ) -> None:
+        self.sessions[id_hash] = user_id
+
+    async def revoke_session(self, *, id_hash: bytes, reason: str) -> str | None:
+        raise AssertionError("these use cases never revoke one session")
+
+    async def active_session_user(
+        self, *, id_hash: bytes, idle: timedelta, touch_after: timedelta
+    ) -> str | None:
+        return self.sessions.get(id_hash)
+
+    async def create_ci_upload_token(
+        self,
+        *,
+        token_id: str,
+        org_id: str,
+        repo_id: str,
+        token_hash: bytes,
+        display_prefix: str,
+        created_by: str,
+    ) -> None:
+        self.tokens[token_hash] = (token_id, org_id, repo_id)
+
+    async def revoke_ci_upload_token(
+        self, *, org_id: str, repo_id: str, token_id: str
+    ) -> bool:
+        raise AssertionError("these use cases never revoke CI tokens")
+
+    async def active_ci_upload_token(
+        self, *, token_hash: bytes
+    ) -> CiUploadPrincipal | None:
+        token_id, org_id, repo_id = self.tokens[token_hash]
+        return CiUploadPrincipal(token_id=token_id, org_id=org_id, repo_id=repo_id)
+
+    async def create_org(self, *, org_id: str, name: str) -> bool:
+        """False, writing nothing, if an org name equal ignoring case exists."""
+        raise AssertionError("these use cases never create orgs")
 
     async def org_exists(self, *, org_id: str) -> bool:
         return org_id in self.orgs
@@ -133,7 +186,7 @@ def enrolled(
     return fake
 
 
-def run(awaitable) -> object:
+def run[T](awaitable: Coroutine[Any, Any, T]) -> T:
     return asyncio.run(awaitable)
 
 

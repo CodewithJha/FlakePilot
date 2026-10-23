@@ -15,11 +15,13 @@ from flakepilot.identity.domain.access import (
 
 __all__ = [
     "CodeHostAccess",
+    "Decision",
     "Grant",
     "OrgAccess",
     "PermissionDenied",
     "ResourceNotFound",
     "authorize",
+    "decide",
 ]
 
 

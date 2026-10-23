@@ -112,17 +112,6 @@ async def sign_in(engine: AsyncEngine, subject: str = MEMBER_ID) -> str:
     )
 
 
-class _IdentifyFake:
-    def __init__(self, subject: str) -> None:
-        self.subject = subject
-
-    def authorization_url(self, *, state: str, code_challenge: str) -> str:
-        return f"https://github.test/authorize?state={state}"
-
-    async def identify(self, *, code: str, code_verifier: str) -> VerifiedIdentity:
-        return VerifiedIdentity(ISSUER, self.subject, f"member-{self.subject}")
-
-
 async def outbox_rows(
     engine: AsyncEngine, where: str, table: str = "iam", **params: object
 ) -> list[Any]:
@@ -270,7 +259,7 @@ def test_register_repository_round_trip_conflicts_and_relay(url: str) -> None:
             "SELECT org_id::text FROM repo.repositories WHERE id = :r",
             r=repo_id,
         )
-        return stored
+        return str(stored)
 
     assert run(url, conflicts) == org_id
     [[event_count]] = run(
@@ -304,7 +293,7 @@ def test_a_failed_registration_event_rolls_the_insert_back(url: str) -> None:
     class FailingRegistration(SqlRegistrationStore):
         """Appends every event twice: the second insert violates the primary key."""
 
-        async def append_event(self, event: Any) -> None:  # type: ignore[override]
+        async def append_event(self, event: Any) -> None:
             await super().append_event(event)
             await super().append_event(event)
 
@@ -460,7 +449,7 @@ def test_member_and_grant_round_trip_with_decide_compatibility(url: str) -> None
     )
     assert repeat.returncode == 0 and repeat.stdout == "not_held\n"
 
-    async def after_revoke(engine: AsyncEngine) -> tuple[Decision, list[Any]]:
+    async def after_revoke(engine: AsyncEngine) -> tuple[Decision | None, list[Any]]:
         view_after = await _decide_for(engine, org_id, repo_id)
         events = await outbox_rows(
             engine,
@@ -486,7 +475,7 @@ async def _member_user(engine: AsyncEngine) -> str:
     [[user_id]] = await sql(
         engine, "SELECT id::text FROM iam.users WHERE idp_subject = :s", s=MEMBER_ID
     )
-    return user_id
+    return str(user_id)
 
 
 async def _decide_for(
