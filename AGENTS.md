@@ -81,14 +81,39 @@ them to the worker or the composition root.
   repository. Live minting is NOT VERIFIED — say so, do not claim it.
 - A green test suite is not proof of security, isolation, or encryption.
 
-## Git conventions
+## Development workflow and Git conventions
 
+- All work happens in the verified local checkout
+  `/Users/priyanshujha/Projects/FlakePilot` on the Mac. Never edit a cloud or
+  remote checkout and push from it. If that repository is inaccessible or
+  synchronization would be unsafe, stop and report instead of working
+  elsewhere.
+- Before development: inspect `git status --short` first, preserve every user
+  change (including untracked files), then `git fetch` and compare with
+  `origin/main`. Fast-forward only when cleanly behind; investigate divergence
+  or unexplained local commits before proceeding.
+- Never run `git reset --hard`, `git clean`, a destructive checkout, or a
+  stash that silently hides work. Never force-push or rewrite published
+  history.
 - Work directly on `main`. No branches or PRs unless a direct change would be
-  unsafe. Never force-push or rewrite published history.
-- Small, logically separated commits. Run the test suite before committing.
-- Author `Priyanshu Jha <155089480+CodewithJha@users.noreply.github.com>`,
-  unsigned commits, no co-author or tool-attribution trailers.
-- Never backdate commits or claim work that was not performed.
+  unsafe.
+- Verify `git config user.name` / `user.email` before every commit. Both
+  author and committer must be
+  `Priyanshu Jha <155089480+CodewithJha@users.noreply.github.com>`
+  (repository-local config; fix only that if it drifts). Unsigned commits,
+  no co-author or tool-attribution trailers, no backdating, no fabricated
+  authorship.
+- Run the gates below before committing, and review `git diff` and
+  `git diff --cached` so no unrelated change, secret, credential, or generated
+  junk enters the commit. Small, logically separated commits.
+- Push completed commits to `origin/main` once checks pass and direct-to-main
+  is safe — do not stop after editing files. Then verify the pushed SHA on
+  GitHub and the actual Actions run for that commit; report failing, pending,
+  or unavailable CI honestly.
+- If tests fail, the diff shows surprises, or the branch diverged, keep the
+  work locally and report the blocker instead of pushing. If no change is
+  needed, report that no commit was necessary; never commit empty changes to
+  show activity.
 
 ## Gates
 
