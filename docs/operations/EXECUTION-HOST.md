@@ -2,7 +2,7 @@
 
 Stage 10G. This page is the contract for a future host, with the Stage 10H transport notes below. No host was provisioned, no virtual machine was created, and nothing here was deployed. Untrusted execution stays disabled. `IsolationChecks` stay false. The reference adapter in `flakepilot.execution.application.reference_host` is an in-process simulation. Tests also open a loopback TLS listener in front of it. Neither one is a microVM, and neither one is production isolation.
 
-The binding rules remain [ADR-004](../adr/ADR-004-control-plane-and-execution-plane.md) and [ADR-008](../adr/ADR-008-deployment-and-trust-model.md). The control-plane behavior is [EXECUTION](EXECUTION.md).
+The binding rules remain [ADR-004](../adr/ADR-004-control-plane-and-execution-plane.md) and [ADR-008](../adr/ADR-008-deployment-and-trust-model.md). The control-plane behavior is [EXECUTION](EXECUTION.md). The operator procedure for measuring a candidate host lives in [EXECUTION-HOST-RUNBOOK](EXECUTION-HOST-RUNBOOK.md).
 
 ## Threat assumptions
 
