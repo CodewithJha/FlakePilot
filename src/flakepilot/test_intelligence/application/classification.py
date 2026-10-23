@@ -1,8 +1,8 @@
 """Classify one test identity on demand (ADR-013 deviation 5: not stored, no event).
 
-Read-only and deterministic. Needs `repo.view`. Code-host access is supplied by the caller,
-from REPO's `CodeHostAccessVerifier` once it exists (same as IAM's use cases). A test
-identity outside the org and repo is not found.
+Read-only and deterministic. Needs `repo.view`. The code-host standing comes from the
+caller: REPO's `CodeHostAccessVerifier` result, resolved by the composition (same as
+IAM's use cases). A test identity outside the org and repo is not found.
 """
 
 import uuid

@@ -22,7 +22,9 @@ from typing import Any, Protocol
 from flakepilot.integrations.application.ports import (
     CodeHost,
     CodeHostError,
+    CodeHostRole,
     commit_sha_ok,
+    github_login_ok,
     github_name_ok,
     github_owner_ok,
 )
@@ -107,6 +109,49 @@ class GitHubCodeHost:
         if status != 200 or not body:
             raise CodeHostError("source_unverified", unavailable=status >= 500)
         return body
+
+    async def repository_permission(
+        self, *, owner: str, name: str, login: str
+    ) -> CodeHostRole:
+        """The account's repository permission, as the code host reports it for this
+        canonical repository (GET .../collaborators/{login}/permission: the provider
+        maps custom roles like maintain and triage onto the base roles).
+
+        The answer is the role, or a `CodeHostError`: 404 is ambiguous (the account
+        may not be a collaborator, or the installation may not see the repository),
+        and every other refused answer is a lookup this deployment could not make.
+        Neither becomes a permission. No token is able to call: same as source.
+        """
+        if not (
+            github_owner_ok(owner) and github_name_ok(name) and github_login_ok(login)
+        ):
+            raise CodeHostError("invalid_revision")
+        url = (
+            f"{API}/repos/{urllib.parse.quote(owner, safe='')}/"
+            f"{urllib.parse.quote(name, safe='')}/collaborators/"
+            f"{urllib.parse.quote(login, safe='')}/permission"
+        )
+        if not url.startswith(f"{API}/"):
+            raise CodeHostError("invalid_revision")
+        status, body = await self._call(url, MAX_JSON_BYTES, owner, name)
+        if status in (301, 302, 303, 307, 308):
+            raise CodeHostError("rejected_redirect")
+        if status == 404:
+            # Ambiguous on purpose: not one verifiable permission level.
+            raise CodeHostError("access_unverified", unavailable=False)
+        if status != 200:
+            # Refused or rate-limited lookups, bad credentials, provider trouble:
+            # none is a permission fact about the account.
+            raise CodeHostError("access_unverified", unavailable=True)
+        try:
+            payload = json.loads(body)
+        except ValueError:
+            raise CodeHostError("source_unverified", unavailable=True) from None
+        role = payload.get("permission") if isinstance(payload, dict) else None
+        resolved = CodeHostRole.from_report(role)
+        if resolved is None:
+            raise CodeHostError("source_unverified", unavailable=True)
+        return resolved
 
     def _url(self, owner: str, name: str, tail: str) -> str:
         if not (

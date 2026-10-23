@@ -20,6 +20,7 @@ from flakepilot.identity.application.iam import (
     IdentityProvider,
     UnitOfWork,
 )
+from flakepilot.identity.application.verification import CodeHostAccessVerifier
 from flakepilot.identity.infrastructure.store import SqlIamStore
 from flakepilot.integrations.infrastructure.ai import NullAiAssist
 from flakepilot.integrations.infrastructure.artifact_store import LocalFsArtifactStore
@@ -36,7 +37,10 @@ from flakepilot.interface.composition_root.database import (
     transaction,
 )
 from flakepilot.interface.composition_root.reproduction import Reproductions
-from flakepilot.interface.composition_root.run_views import RunViews
+from flakepilot.interface.composition_root.run_views import (
+    RunViews,
+    code_access_verifier,
+)
 from flakepilot.interface.composition_root.settings import (
     GitHubApp,
     Secret,
@@ -152,6 +156,9 @@ def create_app(
     settings: Settings,
     engine_factory: EngineFactory = create_engine,
     identity_provider_factory: IdentityProviderFactory = github_identity_provider,
+    access_verifier: Callable[
+        [AsyncEngine, Settings], CodeHostAccessVerifier
+    ] = code_access_verifier,
 ) -> FastAPI:
     """Build the app. No I/O happens until the server runs the lifespan.
 
@@ -191,7 +198,11 @@ def create_app(
             else None
         )
         app.state.reproductions = Reproductions(engine, settings)
-        app.state.run_views = RunViews(ti_unit_of_work(engine))
+        app.state.run_views = RunViews(
+            ti_unit_of_work(engine),
+            access_verifier(engine, settings),
+            app.state.iam.login,
+        )
         app.state.ready = True
         try:
             yield

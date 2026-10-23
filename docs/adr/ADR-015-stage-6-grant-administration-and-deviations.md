@@ -68,8 +68,8 @@ four explicit `Grant` values (`repo.view`, `repo.investigate`, `repo.approve`,
 
 | # | Deviation | What restores the documented behaviour |
 |---|---|---|
-| 1 | **Membership and grant mutations run only through the operator CLI.** HAR's sign-in Run View and the HTTP route have no administration surface | REPO's `CodeHostAccessVerifier` (ADR-011 I), plus an owner decision on member consent, then an authenticated session-admin route |
-| 2 | **Grantee code-host access is not checked at grant time.** `granted_by` records the deterministic operator issuer, so the ADR-011 Decision I chain is not satisfied on the grant side either. `may_grant()`'s code-host argument is satisfied in the operator channel without it | A verifier and an owner decision; until then every grant carries an audit event that names the operator issuer |
+| 1 | **Membership and grant mutations run only through the operator CLI.** HAR's sign-in Run View and the HTTP route have no administration surface | REPO's `CodeHostAccessVerifier` (ADR-011 I, now implemented — ADR-016), plus an owner decision on member consent, then an authenticated session-admin route |
+| 2 | **Grantee code-host access is not checked at grant time.** The verifier exists (ADR-016); the operator channel does not call it yet | An owner decision on live-verified operator grants, then the wiring |
 | 3 | **`repo.repositories` has no foreign key to IAM and no code-host verification.** "Registered" means the operator bound it; nothing proves the code host's installation | The verifier, and an owner decision on what a binding means (PRODUCT-SCOPE §3.3) |
 | 4 | **The binding cross-check lives in the composition root as a flow check** because the dependency matrix forbids IAM → REPO | A shared policy object, if the matrix is ever changed by a new ADR |
 

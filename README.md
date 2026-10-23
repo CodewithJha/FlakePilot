@@ -234,6 +234,17 @@ rules `decide()` uses. Membership and grant changes revoke the member's live
 sign-in sessions. A foreign-org or unregistered repo is refused with one
 message (the org is not named), and every refusal exits 1.
 
+The authenticated session-user run view verifies code-host access before
+serving a run: REPO's `CodeHostAccessVerifier` implementation checks the
+viewer's account handle against the run's canonical repository as FlakePilot's
+GitHub App installation (ADR-016), and `repo.view` is then decided under
+PRODUCT-SCOPE §3.1's intersection rule. A deployment without
+`FLAKEPILOT_GITHUB_APP_ID` and `FLAKEPILOT_GITHUB_APP_PRIVATE_KEY` configured
+cannot verify anything, so the authenticated run view answers 404 (fail
+closed, without disclosure) until the App is configured; the operator CLI
+report is unaffected. Verification says nothing about which commit produced a
+run: the revision status stays `unchecked`.
+
 The worker is a second process. It does not serve HTTP. Stop it with `SIGINT` or `SIGTERM`; it finishes the batch it has already claimed.
 
 ```sh

@@ -245,6 +245,16 @@ class SqlIamStore:
         user_id: str | None = found.scalar_one_or_none()
         return user_id
 
+    async def github_login(self, *, user_id: str) -> str | None:
+        try:
+            uuid.UUID(user_id)
+        except ValueError:
+            return None
+        found = await self._session.execute(
+            select(users.c.github_login).where(users.c.id == user_id)
+        )
+        return found.scalar_one_or_none()
+
     async def add_grant(
         self,
         *,

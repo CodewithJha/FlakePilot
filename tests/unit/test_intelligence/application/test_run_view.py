@@ -9,10 +9,13 @@ from typing import Any
 import pytest
 
 from flakepilot.identity.application.authorization import (
+    CodeHostAccess,
     Grant,
     OrgAccess,
     ResourceNotFound,
 )
+
+READ = CodeHostAccess.READ
 from flakepilot.shared_kernel.events import Event
 from flakepilot.test_intelligence.application.run_view import (
     ClassifiedRunReport,
@@ -278,38 +281,36 @@ ADMIN = OrgAccess("user-a", ORG, org_admin=True)
 OUTSIDER = OrgAccess("user-b", ORG_B, org_admin=False)
 
 
-def test_the_org_scoped_lookup_happens_before_any_classification_or_report() -> None:
-    """The use case resolves the run's repo inside the org first, then reads."""
+def test_the_authorization_and_the_read_share_one_unit_of_work() -> None:
+    """The decision and the read happen inside one store unit; the caller resolved
+    the run's repo inside the org (and verified code-host access) beforehand."""
     store = FakeTiStore(REPORT)
     store.knows(TEST_ID, None)
-    asyncio.run(viewer(store).classified_report_for(ADMIN, org_id=ORG, run_id=RUN))
-    assert store.repo_lookups == [(ORG, RUN)]
+    asyncio.run(
+        viewer(store).classified_report_for(
+            ADMIN, org_id=ORG, repo_id=REPO, run_id=RUN, code_host=READ
+        )
+    )
+    assert store.repo_lookups == []
     assert store.report_calls == [(ORG, REPO, RUN)]
     assert store.observed == [TEST_ID]
-
-
-def test_a_run_outside_the_callers_org_is_not_found_nothing_disclosed() -> None:
-    store = FakeTiStore(REPORT)
-    with pytest.raises(ResourceNotFound):
-        asyncio.run(
-            viewer(store).classified_report_for(
-                ADMIN, org_id=ORG, run_id=RUN[:-1] + "4"
-            )
-        )
-    assert store.report_calls == [] and store.observed == []
 
 
 def test_non_canonical_identifiers_are_not_sent_to_the_store() -> None:
     store = FakeTiStore(REPORT)
     viewer_instance = viewer(store)
-    for org_id, run_id in (("ORG", RUN), (ORG, "x" * 36)):
+    for org_id, repo_id, run_id in (
+        ("ORG", REPO, RUN),
+        (ORG, REPO, "x" * 36),
+        (ORG, "x" * 36, RUN),
+    ):
         with pytest.raises(ResourceNotFound):
             asyncio.run(
                 viewer_instance.classified_report_for(
-                    ADMIN, org_id=org_id, run_id=run_id
+                    ADMIN, org_id=org_id, repo_id=repo_id, run_id=run_id, code_host=READ
                 )
             )
-    assert store.repo_lookups == []
+    assert store.report_calls == [] and store.observed == []
 
 
 def test_view_without_grant_is_denied_as_not_found() -> None:
@@ -321,7 +322,11 @@ def test_view_without_grant_is_denied_as_not_found() -> None:
     store = FakeTiStore(REPORT)
     member = OrgAccess("member", ORG, org_admin=False)  # no grants on the repo
     with pytest.raises(ResourceNotFound):
-        asyncio.run(viewer(store).classified_report_for(member, org_id=ORG, run_id=RUN))
+        asyncio.run(
+            viewer(store).classified_report_for(
+                member, org_id=ORG, repo_id=REPO, run_id=RUN, code_host=READ
+            )
+        )
     assert store.report_calls == [] and store.observed == []
 
 
@@ -329,7 +334,9 @@ def test_a_viewer_from_another_org_is_denied_at_the_decision_itself() -> None:
     store = FakeTiStore(REPORT)
     with pytest.raises(ResourceNotFound):
         asyncio.run(
-            viewer(store).classified_report_for(OUTSIDER, org_id=ORG, run_id=RUN)
+            viewer(store).classified_report_for(
+                OUTSIDER, org_id=ORG, repo_id=REPO, run_id=RUN, code_host=READ
+            )
         )
     assert store.report_calls == [] and store.observed == []
 
@@ -342,7 +349,9 @@ def test_an_authorized_member_sees_the_verdict() -> None:
         "member", ORG, org_admin=False, grants=frozenset({(REPO, Grant.VIEW)})
     )
     result = asyncio.run(
-        viewer(store).classified_report_for(member, org_id=ORG, run_id=RUN)
+        viewer(store).classified_report_for(
+            member, org_id=ORG, repo_id=REPO, run_id=RUN, code_host=READ
+        )
     )
     [entry] = result.cases
     assert entry.classification is not None

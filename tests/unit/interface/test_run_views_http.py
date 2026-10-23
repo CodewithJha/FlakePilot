@@ -23,6 +23,7 @@ from flakepilot.identity.application.authorization import (
     ResourceNotFound,
 )
 from flakepilot.identity.application.iam import SessionPrincipal
+from flakepilot.identity.application.verification import AccessVerification
 from flakepilot.interface.composition_root import Secret, Settings, create_app
 from flakepilot.interface.composition_root.run_views import RunViews
 from flakepilot.interface.http import auth
@@ -154,8 +155,28 @@ class FakeIam:
             principal.user_id, org_id, org_admin=False, grants=frozenset(grants)
         )
 
+    async def login(self, principal: SessionPrincipal) -> str | None:
+        """The account's code-host handle, as the real Iam reads it from its records."""
+        return f"login-of-{principal.user_id}"
 
-def app_with(store: FakeRunStore, iam: FakeIam) -> FastAPI:
+
+class FakeVerifier:
+    """REPO's verifier contract, canned. Records the lookups the flow makes."""
+
+    def __init__(self, answer: AccessVerification) -> None:
+        self._answer = answer
+        self.calls: list[tuple[str, str, str]] = []
+
+    async def verify(
+        self, *, login: str, org_id: str, repo_id: str
+    ) -> AccessVerification:
+        self.calls.append((login, org_id, repo_id))
+        return self._answer
+
+
+def app_with(
+    store: FakeRunStore, iam: FakeIam, verifier: FakeVerifier | None = None
+) -> FastAPI:
     app = create_app(SETTINGS)
 
     @asynccontextmanager
@@ -165,7 +186,11 @@ def app_with(store: FakeRunStore, iam: FakeIam) -> FastAPI:
     # Same wiring the lifespan does when sign-in is configured.
     app.state.auth_config = auth.AuthConfig("https://fp.example", True)
     app.state.iam = iam
-    app.state.run_views = RunViews(unit_of_work)
+    app.state.run_views = RunViews(
+        unit_of_work,
+        verifier if verifier is not None else FakeVerifier(AccessVerification.READ),
+        iam.login,
+    )
     return app
 
 
@@ -290,3 +315,51 @@ def test_a_non_canonical_org_in_the_url_is_a_validation_error() -> None:
     status, _, _body = get_run(app_with(store, iam), org="zz")
     assert status == 422
     assert store.repo_lookups == [] and store.report_calls == []
+
+
+def test_the_verified_lookup_targets_the_principal_and_the_runs_repo() -> None:
+    """The verifier sees the verified principal's handle and the run's canonical repo."""
+    store = FakeRunStore(report("x"))
+    iam = FakeIam({SESSION: USER}, {(USER, ORG): [(REPO, Grant.VIEW)]})
+    verifier = FakeVerifier(AccessVerification.READ)
+    status, _, _body = get_run(app_with(store, iam, verifier))
+    assert status == 200
+    assert verifier.calls == [("login-of-user-with-view", ORG, REPO)]
+    assert iam.access_calls == [(USER, ORG)]
+
+
+def test_unverified_code_host_outcomes_deny_without_disclosure() -> None:
+    """An unavailable, indeterminate, or unbound lookup never shows the run: the same
+    non-disclosing 404 as "no grant", and the report is never read."""
+    iam = FakeIam({SESSION: USER}, {(USER, ORG): [(REPO, Grant.VIEW)]})
+    for answer in (
+        AccessVerification.UNAVAILABLE,
+        AccessVerification.INDETERMINATE,
+        AccessVerification.UNBOUND,
+    ):
+        store = FakeRunStore(report("x"))
+        status, _, body = get_run(app_with(store, iam, FakeVerifier(answer)))
+        assert status == 404, answer
+        assert '"not_found"' in body.decode()
+        assert store.report_calls == [] and store.observed == []
+
+
+def test_verified_no_access_denies_like_a_missing_grant() -> None:
+    """A verified code-host NONE is a fact: the run stays not found."""
+    store = FakeRunStore(report("x"))
+    iam = FakeIam({SESSION: USER}, {(USER, ORG): [(REPO, Grant.VIEW)]})
+    status, _, body = get_run(
+        app_with(store, iam, FakeVerifier(AccessVerification.NONE))
+    )
+    assert (status, body.decode().count('"not_found"')) == (404, 1)
+    assert store.report_calls == [] and store.observed == []
+
+
+def test_a_verified_write_standing_serves_the_view() -> None:
+    """Any verified standing at or above read satisfies the read requirement."""
+    store = FakeRunStore(report("x"))
+    iam = FakeIam({SESSION: USER}, {(USER, ORG): [(REPO, Grant.VIEW)]})
+    status, _, _body = get_run(
+        app_with(store, iam, FakeVerifier(AccessVerification.WRITE))
+    )
+    assert status == 200

@@ -1,5 +1,6 @@
 """Vendor-neutral port contracts owned by INT (ADR-003). Adapters live in infrastructure."""
 
+import enum
 import re
 from dataclasses import dataclass
 from typing import Protocol
@@ -204,6 +205,38 @@ def github_name_ok(value: str) -> bool:
         and not value.startswith(".")
         and "/" not in value
     )
+
+
+_LOGIN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})")
+
+
+def github_login_ok(value: str) -> bool:
+    """A plausible GitHub account handle. Whether it belongs to anyone is a code-host
+    question, not a shape question; callers must still refuse unusable shapes."""
+    return _LOGIN.fullmatch(value) is not None
+
+
+class CodeHostRole(enum.Enum):
+    """A code-host account's repository permission, as the provider reports it
+    (`none`, legacy base roles `read`/`write`/`admin`; the provider maps custom
+    roles like `maintain` and `triage` onto these). Final names only; a role the
+    provider reports that maps to none of these is not evidence."""
+
+    NONE = "none"
+    READ = "read"
+    WRITE = "write"
+    ADMIN = "admin"
+
+    @classmethod
+    def from_report(cls, value: object) -> "CodeHostRole | None":
+        """The role a provider response names, or None when the name is out of
+        the known set: an unusable answer, never a permission."""
+        if isinstance(value, str):
+            try:
+                return cls(value)
+            except ValueError:
+                return None
+        return None
 
 
 class CodeHostError(Exception):

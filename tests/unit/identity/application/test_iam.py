@@ -134,6 +134,10 @@ class FakeStore:
         self.writes.append(("find_user", {"subject": subject}))
         return "user-1" if self.writes else None
 
+    async def github_login(self, *, user_id: str) -> str | None:
+        self.writes.append(("github_login", {"user_id": user_id}))
+        return "member"
+
     async def add_grant(
         self,
         *,

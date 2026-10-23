@@ -110,6 +110,9 @@ class FakeAdminStore:
     async def find_user(self, *, issuer: str, subject: str) -> str | None:
         return self.users.get((issuer, subject))
 
+    async def github_login(self, *, user_id: str) -> str | None:
+        return f"login-{user_id}"
+
     async def ensure_user(
         self, *, issuer: str, subject: str, login: str | None
     ) -> tuple[str, bool]:

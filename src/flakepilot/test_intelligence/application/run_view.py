@@ -8,14 +8,16 @@ repo) scope explicitly, the trust `bootstrap-org` already establishes.
 
 `classified_report_for` is the authenticated-user path. The caller supplies an
 `OrgAccess` already built by IAM from its own records for a verified session
-principal (never from request input). It mirrors the shipped execution view
+principal (never from request input), and the code-host standing REPO's
+`CodeHostAccessVerifier` verified for this caller and this run's repository.
+It mirrors the shipped execution view
 (`execution.application.reproduction.inspect`): a run outside the caller's org
 is not found — a cross-org request learns nothing — and `repo.view` is decided
-over code-host READ, FlakePilot's standing for the repositories it serves, the
-same access every existing session read is granted. No per-user live code-host
-verification exists yet (`TestClassification` still waits for REPO's
-verifier); that affects revision pinning alone, and the revision status stays
-`unchecked` in any case.
+under PRODUCT-SCOPE §3.1's intersection rule with the verified standing. The
+composition root resolves the standing and denies (fail closed, non-disclosing)
+before this use case when verification could not be completed. The revision
+status stays `unchecked` in any case: revision verification is a separate,
+real mechanism (`pin_revision`), not access verification.
 
 Both attach each test's verdict from the stored evidence by calling the only
 classification implementation there is: the deterministic, versioned domain
@@ -103,27 +105,34 @@ class RunViewer:
             )
 
     async def classified_report_for(
-        self, access: OrgAccess, *, org_id: str, run_id: str
+        self,
+        access: OrgAccess,
+        *,
+        org_id: str,
+        repo_id: str,
+        run_id: str,
+        code_host: CodeHostAccess,
     ) -> ClassifiedRunReport:
         """The authenticated view of one run in the caller's org.
 
         `access` is IAM's record for the verified session principal; the org in
-        the URL is only a lookup key. The run must live in that org (a run in
-        another org is not found, never "forbidden" — non-disclosure), and
-        `repo.view` is authorized exactly as the shipped execution views are.
+        the URL is only a lookup key. The caller has already resolved the run's
+        repo inside that org (a run in another org is not found there — a
+        cross-org request learns nothing) and the code-host standing REPO's
+        `CodeHostAccessVerifier` verified for this caller and this repository;
+        the composition resolves it and passes the verified result (unverified
+        outcomes deny before this call). `repo.view` is then authorized under
+        the same intersection rule as the operator path's sibling use cases.
         """
-        if not (_is_uuid(org_id) and _is_uuid(run_id)):
+        if not (_is_uuid(org_id) and _is_uuid(repo_id) and _is_uuid(run_id)):
             raise ResourceNotFound
         async with self._unit_of_work() as store:
-            repo_id = await store.run_repo_id(org_id=org_id, run_id=run_id)
-            if repo_id is None:
-                raise ResourceNotFound
             authorize(
                 access,
                 Grant.VIEW,
                 org_id=org_id,
                 repo_id=repo_id,
-                code_host=CodeHostAccess.READ,
+                code_host=code_host,
             )
             return await self._load(
                 store, org_id=org_id, repo_id=repo_id, run_id=run_id

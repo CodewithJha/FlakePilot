@@ -198,6 +198,12 @@ class IamStore(Protocol):
         bootstrapped. Reads only; unlike `ensure_user`, it never creates a row."""
         ...
 
+    async def github_login(self, *, user_id: str) -> str | None:
+        """The account's code-host handle, from IAM's own user record. Reads only.
+        A user signed in without a usable handle (login fell back to the subject)
+        still returns it; the verifier decides what an unusable handle means."""
+        ...
+
     async def add_grant(
         self,
         *,
@@ -346,6 +352,13 @@ class Iam:
         if access is None:
             raise ResourceNotFound
         return access
+
+    async def login(self, principal: SessionPrincipal) -> str | None:
+        """The principal account's code-host handle, from IAM's own user record.
+        Read-only; verification callers pass it to REPO's `CodeHostAccessVerifier`.
+        """
+        async with self._unit_of_work() as store:
+            return await store.github_login(user_id=principal.user_id)
 
     async def find_user(self, *, issuer: str, subject: str) -> str | None:
         """Read-only lookup for operator commands. Never creates a row."""

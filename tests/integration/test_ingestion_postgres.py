@@ -8,7 +8,7 @@ import secrets
 import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -26,9 +26,12 @@ from flakepilot.identity.application.authorization import (
     ResourceNotFound,
 )
 from flakepilot.identity.application.iam import CiUploadPrincipal, digest
+from flakepilot.integrations.application.ports import CodeHostError, CodeHostRole
 from flakepilot.integrations.infrastructure.junit import JUnitParser
 from flakepilot.interface.composition_root import Secret, Settings, create_app
 from flakepilot.interface.composition_root.database import create_engine, transaction
+from flakepilot.repository.application.verification import BoundCodeAccessVerifier
+from flakepilot.repository.infrastructure.store import SqlRepoDirectory
 from flakepilot.shared_kernel.events import Channel, Event, Origin
 from flakepilot.test_intelligence.application.classification import TestClassification
 from flakepilot.test_intelligence.application.ingestion import Ingestion
@@ -891,14 +894,29 @@ class _UnusedIdentityProvider:
 VIEW_COOKIE = "__Host-flakepilot_session"
 
 
+def repo_directory(
+    engine: AsyncEngine,
+) -> Callable[[], AbstractAsyncContextManager[SqlRepoDirectory]]:
+    @asynccontextmanager
+    async def open() -> AsyncIterator[SqlRepoDirectory]:
+        async with transaction(engine) as session:
+            yield SqlRepoDirectory(session)
+
+    return open
+
+
 def test_run_view_authorizes_a_signed_in_member_over_real_tables(
     url: str, artifact_dir: Path
 ) -> None:
-    """The HTTP run view: real sessions, memberships, grants, and evidence.
+    """The HTTP run view: real sessions, memberships, grants, evidence, verifier.
 
-    One authorized member sees the run view with the rule set's verdict; a
-    member without `repo.view`, a stranger's session, and no session at all
-    learn nothing (404/404/401). All through the real `Iam` and real SQL.
+    The composition runs REPO's `BoundCodeAccessVerifier` over the real
+    binding and IAM login reads; only the provider answer is canned (a GitHub
+    App installed on the repository). One verified member sees the run view
+    with the rule set's verdict; a member without `repo.view`, a stranger's
+    session, and no session at all learn nothing (404/404/401). An
+    unavailable provider denies the same non-disclosing way. The real default
+    verifier (no installation credentials configured) denies too: fail closed.
     """
 
     async def scenario(engine: AsyncEngine) -> None:
@@ -924,17 +942,13 @@ def test_run_view_authorizes_a_signed_in_member_over_real_tables(
             h=digest(token),
             p=token[4:12],
         )
-        for user, issuer_subject in (
-            (viewer, "v-1"),
-            (no_grant, "n-1"),
-            (outsider, "o-1"),
-        ):
+        for user, subject in ((viewer, "v-1"), (no_grant, "n-1"), (outsider, "o-1")):
             await sql(
                 engine,
                 "INSERT INTO iam.users (id, idp_issuer, idp_subject, github_login, "
                 "created_at) VALUES (:u, 'https://github.test', :s, :s, now())",
                 u=user,
-                s=issuer_subject,
+                s=subject,
             )
             await sql(
                 engine,
@@ -950,6 +964,14 @@ def test_run_view_authorizes_a_signed_in_member_over_real_tables(
             o=org,
             u=viewer,
             r=repo,
+        )
+        # The binding the verifier resolves: this org's repository.
+        await sql(
+            engine,
+            "INSERT INTO repo.repositories (id, org_id, host, owner, name, created_at) "
+            "VALUES (:r, :o, 'github', 'acme', 'web', now())",
+            r=repo,
+            o=org,
         )
         for user, session_id in (
             (viewer, ok_session),
@@ -982,7 +1004,82 @@ def test_run_view_authorizes_a_signed_in_member_over_real_tables(
             assert status == 201
             run_id = content["run_id"]
 
-        app = create_app(
+        class InstalledRole:
+            """The provider as an installed App: one canned role per answer."""
+
+            def __init__(self, role: CodeHostRole) -> None:
+                self._role = role
+                self.calls: list[tuple[str, str, str]] = []
+
+            async def repository_permission(
+                self, *, owner: str, name: str, login: str
+            ) -> CodeHostRole:
+                self.calls.append((owner, name, login))
+                return self._role
+
+        class UnreachableProvider:
+            async def repository_permission(self, **kw: Any) -> CodeHostRole:
+                raise CodeHostError("access_unverified", unavailable=True)
+
+        def app_with(provider: Any) -> FastAPI:
+            def verifier_factory(engine: AsyncEngine, settings: Settings) -> Any:
+                return BoundCodeAccessVerifier(repo_directory(engine), provider)
+
+            return create_app(
+                Settings(
+                    Secret(url),
+                    artifact_dir=artifact_dir,
+                    public_origin="https://flakpilot-view.test",
+                ),
+                identity_provider_factory=lambda _: _UnusedIdentityProvider(),
+                access_verifier=verifier_factory,
+            )
+
+        async def get(
+            app: FastAPI, path: str, session_id: str | None
+        ) -> tuple[int, str]:
+            headers = (
+                []
+                if session_id is None
+                else [("cookie", f"{VIEW_COOKIE}={session_id}")]
+            )
+            async with app.router.lifespan_context(app):
+                got, _, body = await send_raw(app, "GET", path, headers)
+            return got, body.decode()
+
+        path = f"/orgs/{org}/runs/{run_id}"
+
+        # Verified code-host read: the view is served.
+        read_provider = InstalledRole(CodeHostRole.READ)
+        granted, page = await get(app_with(read_provider), path, ok_session)
+        assert granted == 200, page
+        assert "flaky" in page and "deterministic_regression" in page
+        assert "unchecked" in page
+        # The lookup named the binding's canonical identity and the account handle.
+        assert read_provider.calls == [("acme", "web", "v-1")]
+
+        # A verified code-host NONE is a fact: the same non-disclosing denial.
+        none_status, none_body = await get(
+            app_with(InstalledRole(CodeHostRole.NONE)), path, ok_session
+        )
+        assert none_status == 404 and '"not_found"' in none_body
+
+        # An unavailable provider is not evidence either: denied, run never read.
+        down_status, down_body = await get(
+            app_with(UnreachableProvider()), path, ok_session
+        )
+        assert down_status == 404 and '"not_found"' in down_body
+
+        # The verified member's own session, grant removed at the decision: 404.
+        grantless, _ = await get(app_with(read_provider), path, grantless_session)
+        stranger, _ = await get(app_with(read_provider), path, stray_session)
+        anonymous, _ = await get(app_with(read_provider), path, None)
+        assert (grantless, stranger, anonymous) == (404, 404, 401)
+        assert (await get(app_with(read_provider), path, "not-a-session"))[0] == 401
+
+        # Production default: no GitHub App credentials configured, so the real
+        # verifier's provider can mint no token and answers unavailable. Fail closed.
+        default_app = create_app(
             Settings(
                 Secret(url),
                 artifact_dir=artifact_dir,
@@ -990,27 +1087,7 @@ def test_run_view_authorizes_a_signed_in_member_over_real_tables(
             ),
             identity_provider_factory=lambda _: _UnusedIdentityProvider(),
         )
-        async with app.router.lifespan_context(app):
-
-            async def get(path: str, session_id: str | None) -> tuple[int, str]:
-                headers = (
-                    []
-                    if session_id is None
-                    else [("cookie", f"{VIEW_COOKIE}={session_id}")]
-                )
-                got, _, body = await send_raw(app, "GET", path, headers)
-                return got, body.decode()
-
-            path = f"/orgs/{org}/runs/{run_id}"
-            granted, page = await get(path, ok_session)
-            assert granted == 200
-            assert "flaky" in page and "deterministic_regression" in page
-            assert "unchecked" in page
-            grantless, _ = await get(path, grantless_session)
-            stranger, _ = await get(path, stray_session)
-            anonymous, _ = await get(path, None)
-            assert (grantless, stranger, anonymous) == (404, 404, 401)
-            # A session value that matches nothing is just unauthenticated.
-            assert (await get(path, "not-a-session"))[0] == 401
+        default_status, default_body = await get(default_app, path, ok_session)
+        assert default_status == 404 and '"not_found"' in default_body
 
     run(url, scenario)
