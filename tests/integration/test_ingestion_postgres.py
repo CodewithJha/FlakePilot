@@ -32,6 +32,7 @@ from flakepilot.interface.composition_root.database import create_engine, transa
 from flakepilot.shared_kernel.events import Channel, Event, Origin
 from flakepilot.test_intelligence.application.classification import TestClassification
 from flakepilot.test_intelligence.application.ingestion import Ingestion
+from flakepilot.test_intelligence.application.run_view import RunViewer
 from flakepilot.test_intelligence.application.store import TiStore
 from flakepilot.test_intelligence.domain.classification import FailureClass, Reason
 from flakepilot.test_intelligence.domain.results import HEADERS
@@ -706,6 +707,104 @@ def test_classification_over_ingested_history(url: str, artifact_dir: Path) -> N
                 test_id=ids["regress"],
                 code_host=READ,
             )
+
+    run(url, scenario)
+
+
+def test_run_report_classification_over_ingested_history(
+    url: str, artifact_dir: Path
+) -> None:
+    """The operator report classifies each reported test from stored evidence.
+
+    Hand-written upload bodies throughout: no repository code runs anywhere.
+    """
+
+    async def scenario(engine: AsyncEngine) -> None:
+        org, repo = str(uuid.uuid4()), str(uuid.uuid4())
+        token = "fpi_" + secrets.token_urlsafe(32)
+        await sql(
+            engine,
+            "INSERT INTO iam.orgs (id, name, created_at) VALUES (:o, 'RunView', now())",
+            o=org,
+        )
+        await sql(
+            engine,
+            "INSERT INTO iam.ci_upload_tokens (id, org_id, repo_id, token_hash, "
+            "display_prefix, created_by, created_at, revoked_at) VALUES "
+            "(:id, :org, :repo, :h, :p, :id, now(), NULL)",
+            id=str(uuid.uuid4()),
+            org=org,
+            repo=repo,
+            h=digest(token),
+            p=token[4:12],
+        )
+        async with client(url, artifact_dir) as api:
+            status, _ = await api.upload(
+                token,
+                report(
+                    ("vr", "view-flaky", ""),
+                    ("vr", "view-regress", ""),
+                    ("vr", "view-single", ""),
+                    ("vr", "view-clean", ""),
+                ),
+                metadata(commit_sha=OLD, ci_run_id="v-0"),
+            )
+            assert status == 201
+            status, content = await api.upload(
+                token,
+                report(
+                    ("vr", "view-flaky", "<flakyFailure/>"),
+                    ("vr", "view-regress", FAIL + "<rerunFailure/>"),
+                    ("vr", "view-single", FAIL),
+                    ("vr", "view-clean", ""),
+                ),
+                metadata(commit_sha=NEW, ci_run_id="v-1"),
+            )
+            assert status == 201
+            run_id = content["run_id"]
+        names = ("view-flaky", "view-regress", "view-single", "view-clean")
+        ids = {n: await identity_id(engine, repo, n) for n in names}
+
+        @asynccontextmanager
+        async def unit_of_work() -> AsyncIterator[TiStore]:
+            async with transaction(engine) as session:
+                yield SqlTiStore(session)
+
+        detailed = await RunViewer(unit_of_work).classified_report(
+            org_id=org, repo_id=repo, run_id=run_id
+        )
+        by_name = {entry.case.name: entry for entry in detailed.cases}
+        assert set(by_name) == set(names)
+        # The identity key is what the evidence query read with.
+        for name, entry in by_name.items():
+            assert entry.case.test_id == ids[name]
+        flaky = by_name["view-flaky"].classification
+        assert flaky is not None
+        assert (flaky.failure_class, flaky.reason, flaky.target_sha) == (
+            FailureClass.FLAKY,
+            None,
+            NEW,
+        )
+        regress = by_name["view-regress"].classification
+        assert regress is not None
+        assert (regress.failure_class, regress.reason) == (
+            FailureClass.DETERMINISTIC_REGRESSION,
+            None,
+        )
+        assert regress.target_sha == NEW
+        assert regress.evidence["baseline_sha"] == OLD
+        single = by_name["view-single"].classification
+        assert single is not None
+        assert (single.failure_class, single.reason) == (
+            FailureClass.INCONCLUSIVE,
+            Reason.INSUFFICIENT_HISTORY,
+        )
+        clean = by_name["view-clean"].classification
+        assert clean is not None
+        assert (clean.failure_class, clean.reason) == (
+            FailureClass.INCONCLUSIVE,
+            Reason.INSUFFICIENT_HISTORY,
+        )
 
     run(url, scenario)
 

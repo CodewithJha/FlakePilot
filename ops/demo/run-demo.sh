@@ -4,9 +4,13 @@
 #   1. migrate the demo database, start the API and worker that already exist
 #   2. bootstrap an org with the operator CLI (the command the README documents)
 #   3. issue a CI upload token with the operator CLI (new in this MVP)
-#   4. POST the demo JUnit fixture from ops/demo/ (clearly hand-written, no
-#      repository code was ever executed to produce it)
-#   5. render the stored run as a read-only HTML report with the operator CLI
+#   4. POST two demo JUnit fixtures from ops/demo/ (clearly hand-written, no
+#      repository code was ever executed to produce them): a passing baseline
+#      on an earlier commit, then the flaky/failing run. Both stay fixtures.
+#   5. render the stored run as a read-only HTML report with the operator CLI:
+#      attempt chains plus each test's classification from the deterministic
+#      rule set ti-classification/1 (flaky / deterministic_regression with the
+#      baseline evidence / a truthful inconclusive)
 #
 # Prerequisites: PostgreSQL (already running) with a database created:
 #
@@ -83,7 +87,25 @@ TOKEN=$(uv run python -m flakepilot.interface.composition_root issue-ci-upload-t
   --org-id "$ORG_ID" --repo-id "$REPO_ID" 2>/dev/null | tail -n 1)
 echo "token prefix: ${TOKEN:0:12}..."
 
-echo "== ingesting the demo JUnit fixture (POST /ingest/junit, the API's existing path)"
+echo "== ingesting the demo JUnit fixtures (POST /ingest/junit, the API's existing path)"
+echo "   1/2: the passing baseline (hand-written fixture, earlier demo commit)"
+BASELINE_SHA="2424242424242424242424242424242424242424"
+RESPONSE=$(curl -fsS -X POST "$BASE/ingest/junit" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/xml" \
+  -H "X-FlakePilot-CI-Source: demo-fixture" \
+  -H "X-FlakePilot-CI-Run-Id: demo-run-baseline" \
+  -H "X-FlakePilot-CI-Attempt: 1" \
+  -H "X-FlakePilot-Job-Name: demo.test-suite" \
+  -H "X-FlakePilot-Commit-Sha: $BASELINE_SHA" \
+  -H "X-FlakePilot-Ref: refs/heads/demo" \
+  -H "X-FlakePilot-Environment: demo.local" \
+  -H "X-FlakePilot-Started-At: 2026-10-23T12:00:00+00:00" \
+  -H "X-FlakePilot-Finished-At: 2026-10-23T12:05:00+00:00" \
+  --data-binary @ops/demo/fixture-junit-baseline.xml)
+echo "ingest summary: $RESPONSE"
+
+echo "   2/2: the flaky/failing run (same tests, later demo commit)"
 RESPONSE=$(curl -fsS -X POST "$BASE/ingest/junit" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/xml" \
@@ -94,8 +116,8 @@ RESPONSE=$(curl -fsS -X POST "$BASE/ingest/junit" \
   -H "X-FlakePilot-Commit-Sha: $DEMO_SHA" \
   -H "X-FlakePilot-Ref: refs/heads/demo" \
   -H "X-FlakePilot-Environment: demo.local" \
-  -H "X-FlakePilot-Started-At: $(date -u +%Y-%m-%dT%H:%M:%S+00:00)" \
-  -H "X-FlakePilot-Finished-At: $(date -u +%Y-%m-%dT%H:%M:%S+00:00)" \
+  -H "X-FlakePilot-Started-At: 2026-10-23T12:10:00+00:00" \
+  -H "X-FlakePilot-Finished-At: 2026-10-23T12:15:00+00:00" \
   --data-binary @ops/demo/fixture-junit.xml)
 RUN_ID=$(printf '%s' "$RESPONSE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["run_id"])')
 echo "run: $RUN_ID"

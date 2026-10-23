@@ -12,10 +12,19 @@ from flakepilot.interface.composition_root.operator import (
     run_ci_run_report,
     run_issue_ci_upload_token,
 )
+from flakepilot.test_intelligence.application.run_view import (
+    ClassifiedCase,
+    ClassifiedRunReport,
+)
 from flakepilot.test_intelligence.application.store import (
     ReportedCase,
     RunReport,
     RunSummary,
+)
+from flakepilot.test_intelligence.domain.classification import (
+    Classification,
+    FailureClass,
+    Reason,
 )
 
 ORG = "11111111-2222-4333-8444-555555555555"
@@ -113,31 +122,104 @@ def _report() -> RunReport:
                 classname="demo.auth",
                 name="test_login & <totals>",
                 attempts=("failed", "passed"),
+                test_id="dddddddd-eeee-4fff-8aaa-000000000003",
             ),
         ),
     )
 
 
-def test_html_report_renders_the_stored_run_and_escapes_names() -> None:
+FLAKY = Classification(
+    failure_class=FailureClass.FLAKY,
+    reason=None,
+    target_sha="0" * 40,
+    evidence={
+        "environment": "demo.local",
+        "failed": 1,
+        "passed": 1,
+        "target_runs": ["run-a", "run<b>"],
+    },
+    rule_version="ti-classification/1",
+)
+
+
+def _classified(
+    classification: Classification | None = FLAKY,
+) -> ClassifiedRunReport:
+    run = _report()
+    [case] = run.results
+    return ClassifiedRunReport(
+        run=run, cases=(ClassifiedCase(case=case, classification=classification),)
+    )
+
+
+def test_html_report_escapes_names_and_all_recorded_evidence() -> None:
     from flakepilot.interface.composition_root.operator import _html_report
 
-    rendered = _html_report(_report())
+    rendered = _html_report(_classified())
     assert "<h2>Summary</h2>" in rendered
     assert "test_login &amp; &lt;totals&gt;" in rendered
     assert "failed &rarr; passed" in rendered
     assert "operator demo" in rendered
     assert "revision status stays <code>unchecked</code>" in rendered
+    assert "run&lt;b&gt;" in rendered  # evidence values are escaped too
+    assert "flaky<br><span" in rendered
+    assert "rule ti-classification/1" in rendered
+    assert "target_sha " + "0" * 40 in rendered
 
 
-def test_json_report_carries_the_attempt_chain() -> None:
+def test_html_report_shows_unavailable_when_there_is_no_verdict() -> None:
+    from flakepilot.interface.composition_root.operator import _html_report
+
+    rendered = _html_report(_classified(None))
+    assert "classification unavailable" in rendered
+
+
+def test_html_report_carries_the_reason_when_the_rule_set_gives_one() -> None:
+    from flakepilot.interface.composition_root.operator import _html_report
+
+    verdict = Classification(
+        failure_class=FailureClass.INCONCLUSIVE,
+        reason=Reason.NO_PASSING_BASELINE,
+        target_sha="0" * 40,
+        evidence={"failed": 2},
+        rule_version="ti-classification/1",
+    )
+    rendered = _html_report(_classified(verdict))
+    assert "inconclusive" in rendered and "no_passing_baseline" in rendered
+
+
+def test_json_report_carries_the_attempt_chain_and_the_verdict() -> None:
     import json
 
     from flakepilot.interface.composition_root.operator import _json_report
 
-    payload = json.loads(_json_report(_report()))
+    payload = json.loads(_json_report(_classified()))
     assert payload["summary"]["attempts"] == 2
-    assert payload["results"][0]["attempts"] == ["failed", "passed"]
-    assert payload["revision_status"] == "unchecked"
+    first = payload["results"][0]
+    assert first["attempts"] == ["failed", "passed"]  # regression: chain intact
+    assert first["classname"] == "demo.auth"
+    assert first["test_id"] == "dddddddd-eeee-4fff-8aaa-000000000003"
+    verdict = first["classification"]
+    assert verdict is not None
+    assert verdict["failure_class"] == "flaky"
+    assert verdict["reason"] is None
+    assert verdict["target_sha"] == "0" * 40
+    assert verdict["rule_version"] == "ti-classification/1"
+    assert verdict["evidence"]["environment"] == "demo.local"
+    assert verdict["evidence"]["target_runs"] == [
+        "run-a",
+        "run<b>",
+    ]  # not escaped in JSON
+    assert json.dumps(verdict["evidence"])  # evidence survives a real JSON round-trip
+
+
+def test_json_report_uses_null_when_no_verdict_exists() -> None:
+    import json
+
+    from flakepilot.interface.composition_root.operator import _json_report
+
+    payload = json.loads(_json_report(_classified(None)))
+    assert payload["results"][0]["classification"] is None
 
 
 def test_server_entry_point_still_refuses_unknown_commands() -> None:

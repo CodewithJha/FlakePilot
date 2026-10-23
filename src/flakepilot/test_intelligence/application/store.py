@@ -61,11 +61,16 @@ class RejectedUpload:
 
 @dataclass(frozen=True)
 class ReportedCase:
-    """One test identity as a run reports it, attempts in order."""
+    """One test identity as a run reports it, attempts in order.
+
+    `test_id` is the stored identity's ID in this (org, repo) pair: the key
+    the classification evidence query reads with.
+    """
 
     classname: str
     name: str
     attempts: tuple[str, ...]
+    test_id: str
 
 
 @dataclass(frozen=True)

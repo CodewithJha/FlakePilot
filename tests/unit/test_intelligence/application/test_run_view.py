@@ -10,13 +10,29 @@ import pytest
 
 from flakepilot.identity.application.authorization import ResourceNotFound
 from flakepilot.shared_kernel.events import Event
-from flakepilot.test_intelligence.application.run_view import RunViewer
+from flakepilot.test_intelligence.application.run_view import (
+    ClassifiedRunReport,
+    RunViewer,
+)
 from flakepilot.test_intelligence.application.store import (
     ReportedCase,
     RunReport,
     RunSummary,
     TiStore,
 )
+from flakepilot.test_intelligence.domain.classification import (
+    FailureClass,
+    Observation,
+    Reason,
+)
+from flakepilot.test_intelligence.domain.results import RunSource
+
+ORG = "11111111-2222-4333-8444-555555555555"
+REPO = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+RUN = "cccccccc-dddd-4eee-8fff-000000000001"
+TEST_ID = "dddddddd-eeee-4fff-8aaa-000000000003"
+SHA = "0" * 40
+RECEIVED = datetime(2026, 10, 23, tzinfo=UTC)
 
 ORG = "11111111-2222-4333-8444-555555555555"
 REPO = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
@@ -42,6 +58,7 @@ REPORT = RunReport(
             classname="demo.auth",
             name="test_login_succeeds",
             attempts=("failed", "passed"),
+            test_id=TEST_ID,
         ),
     ),
 )
@@ -54,6 +71,11 @@ class FakeTiStore:
         self.stored = stored
         self.report_calls: list[tuple[str, str, str]] = []
         self.appended: list[str] = []
+        self.observations_by_test: dict[str, list[Observation] | None] = {}
+        self.observed: list[str] = []
+
+    def knows(self, test_id: str, history: list[Observation] | None) -> None:
+        self.observations_by_test[test_id] = history
 
     async def append_event(self, event: Event) -> None:
         self.appended.append(event.name)
@@ -90,8 +112,12 @@ class FakeTiStore:
             return self.stored
         return None
 
-    async def observations(self, **kwargs: Any) -> None:
-        del kwargs
+    async def observations(
+        self, *, org_id: str, repo_id: str, test_id: str
+    ) -> list[Observation] | None:
+        assert (org_id, repo_id) == (ORG, REPO)
+        self.observed.append(test_id)
+        return self.observations_by_test.get(test_id)
 
 
 def viewer(store: FakeTiStore) -> RunViewer:
@@ -135,3 +161,102 @@ def test_non_canonical_ids_are_not_found_without_a_query() -> None:
     with pytest.raises(ResourceNotFound):
         asyncio.run(v.report(org_id=ORG, repo_id=REPO, run_id=unknown_run))
     assert store.report_calls == [(ORG, REPO, unknown_run)]
+
+
+def observation(
+    run_id: str,
+    attempts: tuple[str, ...] = (),
+    *,
+    sha: str = SHA,
+    source: RunSource = RunSource.CI_UPLOAD,
+) -> Observation:
+    from flakepilot.test_intelligence.domain.results import Outcome
+
+    return Observation(
+        run_id=run_id,
+        commit_sha=sha,
+        environment="demo.local",
+        received_at=RECEIVED,
+        source=source,
+        attempts=tuple(Outcome(a) for a in attempts),
+    )
+
+
+def test_classification_uses_the_stored_evidence_over_the_identity_history() -> None:
+    store = FakeTiStore(REPORT)
+    store.knows(TEST_ID, [observation("run-x", ("failed", "passed"))])
+    result = asyncio.run(
+        viewer(store).classified_report(org_id=ORG, repo_id=REPO, run_id=RUN)
+    )
+    assert isinstance(result, ClassifiedRunReport)
+    assert result.run is REPORT
+    assert store.observed == [TEST_ID]  # one evidence read per case
+    [entry] = result.cases
+    assert entry.case is REPORT.results[0]
+    verdict = entry.classification
+    assert verdict is not None
+    assert verdict.failure_class is FailureClass.FLAKY
+    assert verdict.reason is None
+    assert verdict.target_sha == SHA
+    assert verdict.rule_version == "ti-classification/1"
+    assert verdict.evidence["environment"] == "demo.local"
+    assert verdict.evidence["target_runs"] == ["run-x"]
+    assert verdict.evidence["failed"] == 1 and verdict.evidence["passed"] == 1
+
+
+def test_insufficient_evidence_is_reported_as_the_rule_set_states_it() -> None:
+    store = FakeTiStore(REPORT)
+    store.knows(TEST_ID, [observation("run-x", ("passed",))])
+    [entry] = asyncio.run(
+        viewer(store).classified_report(org_id=ORG, repo_id=REPO, run_id=RUN)
+    ).cases
+    verdict = entry.classification
+    assert verdict is not None
+    assert (verdict.failure_class, verdict.reason) == (
+        FailureClass.INCONCLUSIVE,
+        Reason.INSUFFICIENT_HISTORY,
+    )
+
+
+def test_non_ci_runs_are_excluded_evidence_and_listed() -> None:
+    store = FakeTiStore(REPORT)
+    store.knows(
+        TEST_ID, [observation("sandbox-x", ("failed",), source=RunSource.SANDBOX)]
+    )
+    [entry] = asyncio.run(
+        viewer(store).classified_report(org_id=ORG, repo_id=REPO, run_id=RUN)
+    ).cases
+    verdict = entry.classification
+    assert verdict is not None
+    assert verdict.failure_class is FailureClass.INCONCLUSIVE
+    assert verdict.evidence["excluded_runs"] == ["sandbox-x"]
+
+
+def test_an_identity_without_a_verdict_is_rendered_as_unavailable_not_guessed() -> None:
+    store = FakeTiStore(REPORT)
+    store.knows(TEST_ID, None)  # the identity is not in this (org, repo) pair
+    [entry] = asyncio.run(
+        viewer(store).classified_report(org_id=ORG, repo_id=REPO, run_id=RUN)
+    ).cases
+    assert entry.classification is None
+    assert entry.case.attempts == ("failed", "passed")  # the chain is still shown
+
+
+def test_classified_report_is_fail_closed_like_the_plain_read() -> None:
+    store = FakeTiStore(None)
+    v = viewer(store)
+    for org_id, repo_id, run_id in (
+        ("ORG", REPO, RUN),
+        (ORG, REPO.upper(), RUN),
+        (ORG, REPO, "x" * 36),
+    ):
+        with pytest.raises(ResourceNotFound):
+            asyncio.run(
+                v.classified_report(org_id=org_id, repo_id=repo_id, run_id=run_id)
+            )
+    assert store.report_calls == [] and store.observed == []
+    # A canonical but unknown run is looked up once (no evidence read) and not found.
+    unknown_run = RUN[:-1] + "3"
+    with pytest.raises(ResourceNotFound):
+        asyncio.run(v.classified_report(org_id=ORG, repo_id=REPO, run_id=unknown_run))
+    assert store.report_calls == [(ORG, REPO, unknown_run)] and store.observed == []

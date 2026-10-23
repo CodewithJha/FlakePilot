@@ -8,7 +8,7 @@ Evidence-based investigation and verification of recurring test failures. See [P
 
 - **No UI.** The API is the only interface.
 - **CI upload tokens are issued only by the operator CLI** (`issue-ci-upload-token`, see the demo journey below). No HTTP route exists for them yet.
-- **Classification isn't exposed over HTTP.** It exists only as an application use case (ADR-013).
+- **Classification isn't exposed over HTTP.** It exists as an authorization-checked use case (ADR-013), and the operator CLI's `ci-run-report` attaches each test's verdict — deterministic rule set `ti-classification/1`, with the evidence it was computed from — neither of which is an HTTP route.
 - **Parsing is synchronous.** Reports are parsed inside the upload request. A separate worker process runs durable jobs and delivers outbox rows to the audit log. No retention or stage job is registered. See [DURABLE-JOBS](docs/operations/DURABLE-JOBS.md).
 - **No quotas or rate limits.** AI spend is not checked either (ADR-014).
 - **AI assist is off unless an org admin enables it.** The use case exists, the process wires only `NullAiAssist`, and there is no HTTP route. A missing provider answers `unavailable`. See ADR-014.
@@ -90,22 +90,34 @@ Step by step:
    stored; the raw token is shown once. The token may upload reports to this
    one (org, repo) pair and nothing else.
 
-5. **Upload the demo fixture** (a hand-written JUnit file in Maven Surefire
-   rerun style, committed at [ops/demo/fixture-junit.xml](ops/demo/fixture-junit.xml)):
+5. **Upload the demo fixtures** (hand-written JUnit files in Maven Surefire
+   rerun style, committed under [ops/demo](ops/demo/)): the passing baseline on
+   an earlier demo commit, then the flaky/failing run. Both are fixtures —
+   clearly labelled as such; no repository code produced or ran them.
 
    ```sh
+   curl -sS -X POST localhost:8000/ingest/junit \
+     -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/xml" \
+     -H "X-FlakePilot-CI-Source: demo-fixture" -H "X-FlakePilot-CI-Run-Id: demo-run-baseline" \
+     -H "X-FlakePilot-CI-Attempt: 1" -H "X-FlakePilot-Job-Name: demo.test-suite" \
+     -H "X-FlakePilot-Commit-Sha: 2424242424242424242424242424242424242424" \
+     -H "X-FlakePilot-Ref: refs/heads/demo" -H "X-FlakePilot-Environment: demo.local" \
+     -H "X-FlakePilot-Started-At: 2026-10-23T12:00:00+00:00" \
+     -H "X-FlakePilot-Finished-At: 2026-10-23T12:05:00+00:00" \
+     --data-binary @ops/demo/fixture-junit-baseline.xml
+
    curl -sS -X POST localhost:8000/ingest/junit \
      -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/xml" \
      -H "X-FlakePilot-CI-Source: demo-fixture" -H "X-FlakePilot-CI-Run-Id: demo-run-1" \
      -H "X-FlakePilot-CI-Attempt: 1" -H "X-FlakePilot-Job-Name: demo.test-suite" \
      -H "X-FlakePilot-Commit-Sha: 000102030405060708090a0b0c0d0e0f10111213" \
      -H "X-FlakePilot-Ref: refs/heads/demo" -H "X-FlakePilot-Environment: demo.local" \
-     -H "X-FlakePilot-Started-At: 2026-10-23T12:00:00+00:00" \
-     -H "X-FlakePilot-Finished-At: 2026-10-23T12:05:00+00:00" \
+     -H "X-FlakePilot-Started-At: 2026-10-23T12:10:00+00:00" \
+     -H "X-FlakePilot-Finished-At: 2026-10-23T12:15:00+00:00" \
      --data-binary @ops/demo/fixture-junit.xml
    ```
 
-   The `201` response carries the upload ID, run ID, and the summary counts.
+   Each `201` response carries the upload ID, run ID, and the summary counts.
 
 6. **See the stored run** (new in this MVP; read-only operator report):
 
@@ -115,19 +127,27 @@ Step by step:
        --format html --out demo-run.html && open demo-run.html
    ```
 
-   The HTML report shows the run's summary counts, the upload metadata, and
-   each test's attempt chain ("failed → passed" marks the flaky test). It
-   states plainly that the commit SHA is what CI reported (`revision_status`
-   stays `unchecked`) and that the raw report body is stored as a plaintext
+   The report shows the run's summary counts, the upload metadata, each test's
+   attempt chain, and each test's **classification** — the deterministic,
+   versioned rule set `ti-classification/1` applied to the stored CI evidence
+   (no confidence scores, no model output). On the demo data: the flaky test
+   is classified `flaky` at the failing commit with the passing and failing
+   attempt counts as evidence; the failing test is classified
+   `deterministic_regression` **because a real earlier stored run passed it in
+   the same environment** (`baseline_sha` names that run's commit); a test
+   that only passed reports a truthful `inconclusive` /
+   `insufficient_history`. The commit SHA is what CI reported, the revision
+   status stays `unchecked`, and the raw report body is stored as a plaintext
    file. `--format json` is available for scripts.
 
 Known limits of this journey: there is no interactive UI and no session-authenticated
 read route usable without GitHub sign-in credentials (see "GitHub App sign-in"
-below); the classification use case exists but is not exposed in any interface;
-reproduction runs remain fail-closed (`inconclusive` / `execution_closed`, no
-source fetched); artifacts are plaintext and retention deletes nothing; the
-demo org/token are created by you, on your machine, out of the process's
-control plane.
+below); classification is surfaced only through the operator report (the
+rule set version and evidence are rendered, so every verdict is traceable to
+the stored facts it was computed from); reproduction runs remain fail-closed
+(`inconclusive` / `execution_closed`, no source fetched); artifacts are
+plaintext and retention deletes nothing; the demo org/token are created by
+you, on your machine, out of the process's control plane.
 
 ## Configuration
 

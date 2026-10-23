@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- FlakePilot MVP demo fixture — NOT a real CI run.
+     The passing baseline for the demo journey: the same three tests as
+     fixture-junit.xml, all passing on an earlier commit, so the run report
+     can show a verdict backed by a real stored baseline. Hand-written; no
+     repository code was executed to produce it. -->
+<testsuite name="demo.suite" tests="3" failures="0" errors="0" skipped="0">
+  <testcase classname="demo.auth" name="test_login_succeeds" time="0.140"/>
+  <testcase classname="demo.auth" name="test_session_cookie_is_secure" time="0.041"/>
+  <testcase classname="demo.checkout" name="test_cart_totals_round_to_cents" time="0.092"/>
+</testsuite>

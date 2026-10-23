@@ -315,6 +315,7 @@ class SqlTiStore:
             )
         found = await self._session.execute(
             select(
+                test_identities.c.id,
                 test_identities.c.classname,
                 test_identities.c.name,
                 test_results.c.outcome,
@@ -336,10 +337,11 @@ class SqlTiStore:
                 test_results.c.attempt,
             )
         )
-        cases: dict[tuple[str, str], list[str]] = {}
+        cases: dict[tuple[str, str], tuple[str, list[str]]] = {}
         for case_row in found:
             key = (case_row.classname, case_row.name)
-            cases.setdefault(key, []).append(case_row.outcome)
+            _, chain = cases.setdefault(key, (case_row.id, []))
+            chain.append(case_row.outcome)
         return RunReport(
             run_id=row.id,
             org_id=org_id,
@@ -363,8 +365,13 @@ class SqlTiStore:
             size_bytes=upload_row.size_bytes if upload_row else None,
             artifact_key=upload_row.artifact_key if upload_row else None,
             results=tuple(
-                ReportedCase(classname=name[0], name=name[1], attempts=tuple(chain))
-                for name, chain in cases.items()
+                ReportedCase(
+                    classname=name[0],
+                    name=name[1],
+                    attempts=tuple(chain),
+                    test_id=identity,
+                )
+                for name, (identity, chain) in cases.items()
             ),
         )
 

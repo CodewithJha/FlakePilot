@@ -9,8 +9,11 @@ Subcommands of `python -m flakepilot.interface.composition_root`:
   once and never stored; only its SHA-256 is.
 - `ci-run-report --org-id <uuid> --repo-id <uuid> --run-id <uuid> [options]`:
   render a stored run as read-only JSON or a self-contained HTML file. The
-  report says exactly what the stored run says: nothing here runs code, and
-  artifacts stay plaintext files (see the artifact-store docstring).
+  report says exactly what the stored run says: per-test attempt chains plus
+  each test's classification from the deterministic, versioned rule set
+  `ti-classification/1`, including its target revision, reason and evidence.
+  Nothing here runs code, artifacts stay plaintext files (see the
+  artifact-store docstring), and revision verification stays unchecked.
 
 Both run one short-lived engine like `bootstrap-org` and are audited through
 their use cases. Failures print the cause class and never a database detail
@@ -39,8 +42,11 @@ from flakepilot.interface.composition_root.database import (
     dispose_engine,
 )
 from flakepilot.shared_kernel.events import Channel, Origin
-from flakepilot.test_intelligence.application.run_view import RunViewer
-from flakepilot.test_intelligence.application.store import RunReport
+from flakepilot.test_intelligence.application.run_view import (
+    ClassifiedCase,
+    ClassifiedRunReport,
+    RunViewer,
+)
 
 
 def _uuid_ok(value: str) -> bool:
@@ -138,46 +144,65 @@ async def _issue_token(settings: Settings, org_id: str, repo_id: str) -> str:
         await dispose_engine(engine)
 
 
-async def _run_report(settings: Settings, args: argparse.Namespace) -> RunReport:
+async def _run_report(
+    settings: Settings, args: argparse.Namespace
+) -> ClassifiedRunReport:
     engine = create_engine(settings.database_url.reveal())
     try:
-        return await RunViewer(ti_unit_of_work(engine)).report(
+        return await RunViewer(ti_unit_of_work(engine)).classified_report(
             org_id=args.org_id, repo_id=args.repo_id, run_id=args.run_id
         )
     finally:
         await dispose_engine(engine)
 
 
-def _summary_json(report: RunReport) -> dict[str, Any]:
+def _classification_json(
+    classification: Any,
+) -> dict[str, Any] | None:
+    """Exactly the domain verdict: rule version, class, reason, target, evidence."""
+    if classification is None:
+        return None
     return {
-        "run_id": report.run_id,
-        "org_id": report.org_id,
-        "repo_id": report.repo_id,
-        "upload_id": report.upload_id,
-        "source": report.source,
-        "commit_sha": report.commit_sha,
-        "environment": report.environment,
-        "revision_status": report.revision_status,
+        "failure_class": classification.failure_class.value,
+        "reason": classification.reason.value if classification.reason else None,
+        "target_sha": classification.target_sha,
+        "rule_version": classification.rule_version,
+        "evidence": dict(classification.evidence),
+    }
+
+
+def _summary_json(report: ClassifiedRunReport) -> dict[str, Any]:
+    return {
+        "run_id": report.run.run_id,
+        "org_id": report.run.org_id,
+        "repo_id": report.run.repo_id,
+        "upload_id": report.run.upload_id,
+        "source": report.run.source,
+        "commit_sha": report.run.commit_sha,
+        "environment": report.run.environment,
+        "revision_status": report.run.revision_status,
         "summary": {
-            "tests": report.summary.tests,
-            "attempts": report.summary.attempts,
-            "passed": report.summary.passed,
-            "failed": report.summary.failed,
-            "errored": report.summary.errored,
-            "skipped": report.summary.skipped,
+            "tests": report.run.summary.tests,
+            "attempts": report.run.summary.attempts,
+            "passed": report.run.summary.passed,
+            "failed": report.run.summary.failed,
+            "errored": report.run.summary.errored,
+            "skipped": report.run.summary.skipped,
         },
         "results": [
             {
-                "classname": case.classname,
-                "name": case.name,
-                "attempts": list(case.attempts),
+                "classname": entry.case.classname,
+                "name": entry.case.name,
+                "attempts": list(entry.case.attempts),
+                "test_id": entry.case.test_id,
+                "classification": _classification_json(entry.classification),
             }
-            for case in report.results
+            for entry in report.cases
         ],
     }
 
 
-def _json_report(report: RunReport) -> str:
+def _json_report(report: ClassifiedRunReport) -> str:
     return json.dumps(_summary_json(report), indent=2, default=str) + "\n"
 
 
@@ -185,25 +210,58 @@ def _fail_cascade(value: Any) -> str:
     return "&mdash;" if value in (None, "") else html.escape(str(value))
 
 
-def _html_report(report: RunReport) -> str:
-    metadata = report.metadata
+def _evidence_text(classification: Any) -> str:
+    """The verdict's own recorded facts, deterministically ordered and escaped.
+
+    No fact is added, reworded, or dropped: every key the rule set recorded
+    (counts, run IDs, environments, SHAs) is shown; empty entries are omitted.
+    """
+    items = []
+    for key in sorted(classification.evidence):
+        value = classification.evidence[key]
+        if value is None or value == [] or value == "":
+            continue
+        rendered = (
+            ", ".join(str(v) for v in value) if isinstance(value, list) else str(value)
+        )
+        items.append(f"{html.escape(key)}={html.escape(rendered)}")
+    note = f" &middot; rule {html.escape(classification.rule_version)}"
+    target = classification.target_sha
+    if target:
+        note += f" &middot; target_sha {html.escape(target)}"
+    return (f"{note} &middot; " if items else note) + " &middot; ".join(items)
+
+
+def _classification_cell(entry: ClassifiedCase) -> str:
+    verdict = entry.classification
+    if verdict is None:
+        return html.escape("classification unavailable")
+    head = html.escape(verdict.failure_class.value)
+    if verdict.reason:
+        head += f' <span class="note">({html.escape(verdict.reason.value)})</span>'
+    return f'{head}<br><span class="note">{_evidence_text(verdict)}</span>'
+
+
+def _html_report(report: ClassifiedRunReport) -> str:
+    run = report.run
+    metadata = run.metadata
     rows: list[tuple[str, Any]] = [
         ("CI source", metadata.ci_source if metadata else None),
         ("CI run ID", metadata.ci_run_id if metadata else None),
         ("CI attempt", metadata.ci_attempt if metadata else None),
         ("Job name", metadata.job_name if metadata else None),
-        ("Commit SHA", report.commit_sha),
+        ("Commit SHA", run.commit_sha),
         ("Ref", metadata.ref if metadata else None),
         (
             "Environment",
-            metadata.environment if metadata else report.environment,
+            metadata.environment if metadata else run.environment,
         ),
         ("Started at", metadata.started_at if metadata else None),
         ("Finished at", metadata.finished_at if metadata else None),
-        ("Received", report.received_at),
-        ("Revision status", report.revision_status),
-        ("Raw report size (bytes)", report.size_bytes),
-        ("Artifact key (plaintext file)", report.artifact_key),
+        ("Received", run.received_at),
+        ("Revision status", run.revision_status),
+        ("Raw report size (bytes)", run.size_bytes),
+        ("Artifact key (plaintext file)", run.artifact_key),
     ]
     metadata_rows = "\n".join(
         f"<tr><th>{html.escape(str(name))}</th><td>{_fail_cascade(value)}</td></tr>"
@@ -211,11 +269,14 @@ def _html_report(report: RunReport) -> str:
     )
     case_rows = "\n".join(
         "<tr>"
-        f"<td>{html.escape(case.classname)}</td>"
-        f"<td>{html.escape(case.name)}</td>"
-        f"<td>{html.escape(' &rarr; '.join(attempt for attempt in case.attempts))}</td>"
+        f"<td>{html.escape(entry.case.classname)}</td>"
+        f"<td>{html.escape(entry.case.name)}</td>"
+        "<td>"
+        f"{html.escape(' &rarr; '.join(attempt for attempt in entry.case.attempts))}"
+        "</td>"
+        f"<td>{_classification_cell(entry)}</td>"
         "</tr>"
-        for case in report.results
+        for entry in report.cases
     )
     return f"""<!doctype html>
 <html lang="en">
@@ -230,30 +291,30 @@ def _html_report(report: RunReport) -> str:
   th {{ background: #f4f4f8; font-weight: 600; }}
   td code {{ font-size: 0.8rem; word-break: break-all; }}
   .summary td:last-child {{ font-weight: 600; }}
-  .note {{ color: #555; font-size: 0.85rem; }}
+  .note {{ color: #555; font-size: 0.8rem; }}
   .muted {{ color: #777; }}
 </style>
 </head>
 <body>
 <h1>FlakePilot run report (operator demo)</h1>
 <p class="muted">
-Run <code>{report.run_id}</code> &middot; org <code>{html.escape(report.org_id)}</code>
-&middot; repo <code>{html.escape(report.repo_id)}</code>
+Run <code>{run.run_id}</code> &middot; org <code>{html.escape(run.org_id)}</code>
+&middot; repo <code>{html.escape(run.repo_id)}</code>
 &middot; generated {datetime.now(UTC).isoformat(timespec="seconds")}
 </p>
 <p>This is a read-only view of what one CI upload stored. It does not execute
 anything and it is not evidence of code-host verification: the commit SHA is
-what CI reported, and the revision status stays <code>{report.revision_status}</code>
+what CI reported, and the revision status stays <code>{run.revision_status}</code>
 in this MVP.</p>
 
 <h2>Summary</h2>
 <table class="summary">
-<tr><th>Tests</th><td>{report.summary.tests}</td></tr>
-<tr><th>Attempts</th><td>{report.summary.attempts}</td></tr>
-<tr><th>Passed (final)</th><td>{report.summary.passed}</td></tr>
-<tr><th>Failed (final)</th><td>{report.summary.failed}</td></tr>
-<tr><th>Errored (final)</th><td>{report.summary.errored}</td></tr>
-<tr><th>Skipped</th><td>{report.summary.skipped}</td></tr>
+<tr><th>Tests</th><td>{run.summary.tests}</td></tr>
+<tr><th>Attempts</th><td>{run.summary.attempts}</td></tr>
+<tr><th>Passed (final)</th><td>{run.summary.passed}</td></tr>
+<tr><th>Failed (final)</th><td>{run.summary.failed}</td></tr>
+<tr><th>Errored (final)</th><td>{run.summary.errored}</td></tr>
+<tr><th>Skipped</th><td>{run.summary.skipped}</td></tr>
 </table>
 
 <h2>Upload</h2>
@@ -261,15 +322,21 @@ in this MVP.</p>
 <p class="note">The raw report body is stored unparsed at the artifact key above
 (a plaintext file; encryption is not wired in this MVP).</p>
 
-<h2>Tests and attempts</h2>
+<h2>Tests, attempts, and classification</h2>
 <table>
-<tr><th>Classname</th><th>Test name</th><th>Attempts (chronological)</th></tr>
+<tr><th>Classname</th><th>Test name</th><th>Attempts (chronological)</th><th>Classification</th></tr>
 {case_rows}
 </table>
 <p class="note">An attempt chain like &ldquo;failed &rarr; passed&rdquo; is a
 recurring failure within the CI run itself: the test failed at least once
-before its final outcome. Per-test classification exists as a use case but is
-not wired into any interface in this MVP.</p>
+before its final outcome. The classification column is the deterministic,
+versioned rule set's verdict over this test's stored CI evidence
+(<code>ti-classification/1</code>; no confidence scores, no model output).
+&ldquo;inconclusive&rdquo; is a real verdict when the stored evidence cannot
+support a stronger one &mdash; for example <code>no_passing_baseline</code>
+when no earlier CI run passed the test in an environment that fails at the
+target revision. Only CI-report evidence counts; FlakePilot's own runs are
+excluded and listed as <code>excluded_runs</code>.</p>
 </body>
 </html>
 """
