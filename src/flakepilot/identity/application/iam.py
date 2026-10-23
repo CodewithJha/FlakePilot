@@ -193,6 +193,31 @@ class IamStore(Protocol):
         self, *, org_id: str, user_id: str, org_admin: bool
     ) -> None: ...
 
+    async def find_user(self, *, issuer: str, subject: str) -> str | None:
+        """The user's ID, or None when (issuer, subject) has never signed in or been
+        bootstrapped. Reads only; unlike `ensure_user`, it never creates a row."""
+        ...
+
+    async def add_grant(
+        self,
+        *,
+        org_id: str,
+        user_id: str,
+        repo_id: str,
+        grant: Grant,
+        granted_by: str,
+    ) -> bool:
+        """False when the grantee already held exactly this grant (the repeat is not an
+        error). Callers check membership first; the foreign key into memberships is the
+        racing guarantee that a non-member is never granted."""
+        ...
+
+    async def revoke_grant(
+        self, *, org_id: str, user_id: str, repo_id: str, grant: Grant
+    ) -> bool:
+        """Whether the row existed and is gone now (so a repeat is not an error)."""
+        ...
+
     async def revoke_user_sessions(self, *, user_id: str, reason: str) -> int:
         """The number of active sessions revoked."""
         ...
@@ -321,6 +346,20 @@ class Iam:
         if access is None:
             raise ResourceNotFound
         return access
+
+    async def find_user(self, *, issuer: str, subject: str) -> str | None:
+        """Read-only lookup for operator commands. Never creates a row."""
+        if not _PROVIDER_SUBJECT.fullmatch(subject):
+            return None
+        async with self._unit_of_work() as store:
+            return await store.find_user(issuer=issuer, subject=subject)
+
+    async def org_exists(self, org_id: str) -> bool:
+        """Read-only lookup for operator commands. A malformed org ID does not exist."""
+        if not uuid_ok(org_id):
+            return False
+        async with self._unit_of_work() as store:
+            return await store.org_exists(org_id=org_id)
 
     async def create_ci_upload_token(
         self,

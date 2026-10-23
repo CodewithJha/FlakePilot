@@ -6,7 +6,7 @@ Times come from PostgreSQL (`now()`), so expiry and idle checks agree across pro
 import uuid
 from datetime import timedelta
 
-from sqlalchemy import ColumnElement, func, select, update
+from sqlalchemy import ColumnElement, delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -237,6 +237,60 @@ class SqlIamStore:
                 created_at=func.now(),
             )
         )
+
+    async def find_user(self, *, issuer: str, subject: str) -> str | None:
+        found = await self._session.execute(
+            select(users.c.id).where(self._identity(issuer, subject))
+        )
+        user_id: str | None = found.scalar_one_or_none()
+        return user_id
+
+    async def add_grant(
+        self,
+        *,
+        org_id: str,
+        user_id: str,
+        repo_id: str,
+        grant: Grant,
+        granted_by: str,
+    ) -> bool:
+        # Arbitrates only on the primary key: a repeat returns False and writes nothing.
+        created = await self._session.execute(
+            insert(repo_grants)
+            .values(
+                org_id=org_id,
+                user_id=user_id,
+                repo_id=repo_id,
+                grant=grant.value,
+                granted_by=granted_by,
+                created_at=func.now(),
+            )
+            .on_conflict_do_nothing(
+                index_elements=[
+                    repo_grants.c.org_id,
+                    repo_grants.c.user_id,
+                    repo_grants.c.repo_id,
+                    repo_grants.c.grant,
+                ]
+            )
+            .returning(repo_grants.c.user_id)
+        )
+        return created.first() is not None
+
+    async def revoke_grant(
+        self, *, org_id: str, user_id: str, repo_id: str, grant: Grant
+    ) -> bool:
+        gone = await self._session.execute(
+            delete(repo_grants)
+            .where(
+                repo_grants.c.org_id == org_id,
+                repo_grants.c.user_id == user_id,
+                repo_grants.c.repo_id == repo_id,
+                repo_grants.c.grant == grant.value,
+            )
+            .returning(repo_grants.c.user_id)
+        )
+        return gone.first() is not None
 
     async def revoke_user_sessions(self, *, user_id: str, reason: str) -> int:
         revoked = await self._session.execute(

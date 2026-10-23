@@ -1,5 +1,7 @@
 """Entry point: `python -m flakepilot.interface.composition_root` runs the server;
-`... bootstrap-org --help` onboards an org; `... worker` runs the leased job worker;
+`... bootstrap-org --help` onboards an org; `... register-repo | add-member | grant |
+revoke | show-access --help` administer members, bindings and grants (operator trust);
+`... worker` runs the leased job worker;
 `... issue-ci-upload-token --help` issues a CI token; `... ci-run-report --help`
 renders a stored run."""
 
@@ -13,7 +15,8 @@ from flakepilot.interface.composition_root import Settings, SettingsError, creat
 
 _USAGE = (
     "Usage: python -m flakepilot.interface.composition_root "
-    "[bootstrap-org | worker | issue-ci-upload-token | ci-run-report]"
+    "[bootstrap-org | register-repo | add-member | grant | revoke | show-access | "
+    "issue-ci-upload-token | ci-run-report | worker]"
 )
 
 
@@ -27,6 +30,18 @@ def main() -> None:
         from flakepilot.interface.composition_root.bootstrap import run_bootstrap_org
 
         sys.exit(run_bootstrap_org(settings, args[1:]))
+    if args[:1] and args[0] in (
+        "register-repo",
+        "add-member",
+        "grant",
+        "revoke",
+        "show-access",
+    ):
+        from flakepilot.interface.composition_root.administration import (
+            run_administration,
+        )
+
+        sys.exit(run_administration(settings, args))
     if args[:1] == ["issue-ci-upload-token"]:
         from flakepilot.interface.composition_root.operator import (
             run_issue_ci_upload_token,

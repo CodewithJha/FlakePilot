@@ -214,6 +214,26 @@ Sign-in endpoints: `GET /auth/github/login`, `GET /auth/github/callback` and `PO
 uv run python -m flakepilot.interface.composition_root bootstrap-org --name "Acme" --admin-github-id 12345 --admin-login octocat
 ```
 
+Grant administration (register repositories, add members, grant or revoke
+permissions) is also operator CLI only — no HTTP route (ADR-015). Session-admin
+granting is blocked until a code-host access verifier exists (ADR-011 I), so
+these commands carry the same operator trust as `bootstrap-org`; every
+mutation is audited with the operator as actor:
+
+```sh
+uv run python -m flakepilot.interface.composition_root register-repo --org-id $ORG_ID --repo-id $REPO_ID --owner acme --name payments
+uv run python -m flakepilot.interface.composition_root add-member --org-id $ORG_ID --member-github-id 67890 --member-login demo-member
+uv run python -m flakepilot.interface.composition_root grant --org-id $ORG_ID --member-github-id 67890 --repo-id $REPO_ID --grant repo.view
+uv run python -m flakepilot.interface.composition_root revoke --org-id $ORG_ID --member-github-id 67890 --repo-id $REPO_ID --grant repo.view
+uv run python -m flakepilot.interface.composition_root show-access --org-id $ORG_ID --member-github-id 67890 [--repo-id $REPO_ID]
+```
+
+Repositories must be registered in the org before a member can be granted
+access; `show-access` renders the standing per repo through the same domain
+rules `decide()` uses. Membership and grant changes revoke the member's live
+sign-in sessions. A foreign-org or unregistered repo is refused with one
+message (the org is not named), and every refusal exits 1.
+
 The worker is a second process. It does not serve HTTP. Stop it with `SIGINT` or `SIGTERM`; it finishes the batch it has already claimed.
 
 ```sh

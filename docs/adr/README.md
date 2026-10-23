@@ -20,6 +20,7 @@ The ADR index, plus the Stage 1.4 technology decision inventory. ADRs are number
 | [ADR-012](ADR-012-event-envelope-and-outbox.md) | Event envelope, per-context outbox, and IAM event names | Accepted |
 | [ADR-013](ADR-013-stage-4-ingestion-scope-and-deviations.md) | Stage 4 ingestion scope and deviations | Accepted |
 | [ADR-014](ADR-014-stage-5-ai-platform-and-deviations.md) | Stage 5 AI platform scope and deviations | Accepted |
+| [ADR-015](ADR-015-stage-6-grant-administration-and-deviations.md) | Stage 6 grant administration scope and deviations | Accepted |
 
 ## Stage 1.4 decision inventory (2026-10-20)
 

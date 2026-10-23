@@ -64,7 +64,7 @@ Not in the original review list, but memberships and sessions need a principal t
 | `user_id` | uuid | Not null |
 | `repo_id` | uuid | Not null; REPO's ID, no foreign key |
 | `grant` | text | Check: one of `repo.view`, `repo.investigate`, `repo.approve`, `repo.configure` (the `Grant` values) |
-| `granted_by` | uuid | Not null; the granting user (no foreign key, so removing the granter keeps history) |
+| `granted_by` | uuid | Not null; the granting user (no foreign key, so removing the granter keeps history). Grants issued through the operator CLI record a deterministic operator issuer (uuid5 of `flakepilot:operator_cli`), not a signed-in user (ADR-015) |
 | `created_at` | timestamptz | Not null |
 | | | Primary key (`org_id`, `user_id`, `repo_id`, `grant`): grant and revoke are idempotent |
 | | | Foreign key (`org_id`, `user_id`) → `memberships` on delete cascade: a grant can only name a member of **the same org** |
