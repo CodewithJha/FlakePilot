@@ -2,13 +2,15 @@
 
 The operator is the same trust `bootstrap-org` already establishes: one human command
 channel that creates the org's first admin. These commands extend that channel to
-members and grants, because ongoing session-admin administration cannot safely authorize
-yet: per ADR-011 I a grant requires evidence that the *grantee* holds matching code-host
-access, and no code-host verifier exists (`source_unverified` / `unchecked` everywhere).
-Operations here therefore never claim a grantee's code-host access; the intersection is
-still enforced by `decide()` at decision time, so a wrongly issued `repo.view` grant
-becomes inert the moment a real verifier replaces the deployment's read standing. A
-future session-admin flow must check `may_grant()` before creating rows.
+members and grants, because ongoing session-admin administration is not authorized
+yet: per ADR-011 I a grant requires evidence that the *grantee* holds matching
+code-host access, and the operator channel does not consult REPO's
+`CodeHostAccessVerifier` (ADR-015 deviation 2, pending an owner decision; ADR-016
+wired the verifier into the Run View flow). Operations here therefore never claim a
+grantee's code-host access; the intersection is still enforced by `decide()` at
+decision time, so a wrongly issued `repo.view` grant is inert under every unverified
+or denied code-host outcome. A future session-admin flow must check `may_grant()`
+with the verifier's verified standing before creating rows.
 
 Every mutation is one unit of work: the change, then its audit event, then the
 session-revocation invariant (any membership or grant change revokes the affected
@@ -299,8 +301,8 @@ def access_overview(
 ) -> AccessOverview:
     """Walk the member's standing per repo through the same domain rules `decide()` uses.
     Repos named with no grants are still listed, so the operator sees an empty standing
-    too. `code_host` is the caller's standing — today the deployment's read standing,
-    since a per-user verifier does not exist yet (never presented as verified access).
+    too. `code_host` is the caller's standing — the deployment's read standing on both
+    channels (never presented as verified access; ADR-015 §2).
     """
     repos: list[RepoOverview] = []
     for repo_id in repo_ids:
@@ -336,10 +338,12 @@ def access_overview(
 def session_access_overview(
     access: OrgAccess, repo_ids: Sequence[str]
 ) -> AccessOverview:
-    """The overview as any session sees it: the deployment's read standing, since a
-    per-user verifier does not exist yet (ADR-011 Decision I). The standing is chosen
-    here, in the application layer, so composition code never supplies code-host
-    permission itself. It is never presented as verified access.
+    """The overview for the operator channel: the deployment's read standing. The
+    channel does not consult REPO's `CodeHostAccessVerifier` (ADR-015 deviation 2,
+    owner decision pending), so this standing is a display policy chosen here, in
+    the application layer, so composition code never supplies code-host permission
+    itself. It is never presented as verified access; the Run View flow is where
+    per-user verification happens (ADR-016).
     """
     return access_overview(access, repo_ids, CodeHostAccess.READ)
 

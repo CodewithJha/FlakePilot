@@ -20,14 +20,16 @@ Subcommands of `python -m flakepilot.interface.composition_root`:
   delete the grant; a repeat is not an error.
 - `show-access --org-id <uuid> --member-github-id <id> [--repo-id <uuid>]`: render a
   member's org standing through the same `decide()` rules the views use. The code-host
-  standing shown is the deployment's read standing: a per-user code-host verifier does
-  not exist yet, so it is NOT evidence that the member holds code-host access (D2).
+  standing shown is the deployment's read standing. The operator channel does not
+  consult REPO's `CodeHostAccessVerifier` (ADR-015 deviation 2, owner decision
+  pending), so it is NOT evidence that the member holds code-host access (D2).
 
 Trust in one sentence: these mutations carry the operator's authority, are audited as
 `operator_cli` events in their own context outboxes, and bridge the gap until
-session-admin flows can safely check `may_grant()` (ADR-011 I needs a code-host
-verifier); nothing here claims a grantee holds code-host access. Errors name the
-problem and never a database detail or another org's existence.
+session-admin flows can safely check `may_grant()` with the verifier's verified
+standing (ADR-011 I; ADR-015 deviation 2 keeps this channel's grants unverified
+pending an owner decision); nothing here claims a grantee holds code-host access.
+Errors name the problem and never a database detail or another org's existence.
 """
 
 import argparse
@@ -287,7 +289,8 @@ def _render(overview: AccessOverview) -> None:
     print(f"org {overview.org_id} (org_admin={str(overview.org_admin).lower()})")
     print(
         "code-host standing: deployment read "
-        "(a per-user code-host verifier does not exist yet; this is not verified access)"
+        "(the operator channel does not consult the code-host verifier; "
+        "this is not verified access)"
     )
     if not overview.repos:
         print("  no explicit grants and no repo requested")
