@@ -403,3 +403,76 @@ def test_the_ai_api_key_never_appears_in_repr_or_str() -> None:
         settings.ai_api_key is not None
         and settings.ai_api_key.reveal() == "local-secret-key-9"
     )
+
+
+SENTRY_DSN = "https://0123abcdpublic@o42.ingest.example.invalid/4508"
+
+
+def test_sentry_dsn_is_optional_and_stays_out_of_repr() -> None:
+    assert Settings.from_environ({"FLAKEPILOT_DATABASE_URL": DSN}).sentry_dsn is None
+    settings = Settings.from_environ(
+        {"FLAKEPILOT_DATABASE_URL": DSN, "FLAKEPILOT_SENTRY_DSN": SENTRY_DSN}
+    )
+    assert settings.sentry_dsn is not None
+    assert settings.sentry_dsn.reveal() == SENTRY_DSN
+    for text in (repr(settings), str(settings)):
+        assert "0123abcdpublic" not in text
+
+
+@pytest.mark.parametrize(
+    "dsn",
+    [
+        "http://0123abcdpublic@o42.ingest.example.invalid/4508",
+        "https://0123abcdpublic:legacysecret@o42.ingest.example.invalid/4508",
+        "https://o42.ingest.example.invalid/4508",
+        "https://0123abcdpublic@o42.ingest.example.invalid/",
+        "https://0123abcdpublic@o42.ingest.example.invalid/4508?x=1",
+        "https://0123abcdpublic@/4508",
+    ],
+)
+def test_invalid_sentry_dsn_is_refused_without_echoing_it(dsn: str) -> None:
+    with pytest.raises(SettingsError) as error:
+        Settings.from_environ(
+            {"FLAKEPILOT_DATABASE_URL": DSN, "FLAKEPILOT_SENTRY_DSN": dsn}
+        )
+    assert "FLAKEPILOT_SENTRY_DSN" in str(error.value)
+    assert "0123abcdpublic" not in str(error.value)
+    assert "legacysecret" not in str(error.value)
+
+
+def test_auth0_issuer_is_off_unless_both_are_set() -> None:
+    settings = Settings.from_environ({"FLAKEPILOT_DATABASE_URL": DSN})
+    assert (settings.auth0_domain, settings.auth0_audience) == (None, None)
+    settings = Settings.from_environ(
+        {
+            "FLAKEPILOT_DATABASE_URL": DSN,
+            "FLAKEPILOT_AUTH0_DOMAIN": "flakepilot.us.auth0.com",
+            "FLAKEPILOT_AUTH0_AUDIENCE": "https://api.flakepilot.example",
+        }
+    )
+    assert settings.auth0_domain == "flakepilot.us.auth0.com"
+    assert settings.auth0_audience == "https://api.flakepilot.example"
+    for half in ("FLAKEPILOT_AUTH0_DOMAIN", "FLAKEPILOT_AUTH0_AUDIENCE"):
+        with pytest.raises(SettingsError, match="must be set together"):
+            Settings.from_environ({"FLAKEPILOT_DATABASE_URL": DSN, half: "x.auth0.com"})
+
+
+@pytest.mark.parametrize(
+    "domain",
+    [
+        "https://tenant.auth0.com",
+        "tenant.auth0.com/",
+        "Tenant.Auth0.com",
+        "tenant.auth0.com:443",
+        "localhost",
+    ],
+)
+def test_auth0_domain_must_be_a_bare_host_name(domain: str) -> None:
+    with pytest.raises(SettingsError, match="FLAKEPILOT_AUTH0_DOMAIN"):
+        Settings.from_environ(
+            {
+                "FLAKEPILOT_DATABASE_URL": DSN,
+                "FLAKEPILOT_AUTH0_DOMAIN": domain,
+                "FLAKEPILOT_AUTH0_AUDIENCE": "https://api.flakepilot.example",
+            }
+        )

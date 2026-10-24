@@ -109,7 +109,10 @@ class RequestContextMiddleware:
         try:
             await self.app(scope, receive, send_with_request_id)
         except Exception:
-            _logger.exception("unhandled exception")
+            template = getattr(scope.get("route"), "path_format", None)
+            _logger.exception(
+                "unhandled exception", extra={"route": template} if template else None
+            )
             if started:
                 raise
             response = JSONResponse(

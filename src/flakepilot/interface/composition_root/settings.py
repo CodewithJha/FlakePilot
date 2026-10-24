@@ -89,6 +89,11 @@ class Settings:
     ai_endpoint: str | None = None
     ai_model: str | None = None
     ai_api_key: Secret | None = None
+    # Opt-in error reporting (goal 7). Unset: nothing is sent anywhere.
+    sentry_dsn: Secret | None = None
+    # Auth0 agent-token issuer (goal 9): both set, or neither (verification off).
+    auth0_domain: str | None = None
+    auth0_audience: str | None = None
 
     @classmethod
     def from_environ(cls, environ: Mapping[str, str]) -> "Settings":
@@ -149,6 +154,7 @@ class Settings:
             )
 
         artifact_dir = environ.get("FLAKEPILOT_ARTIFACT_DIR") or None
+        auth0_domain, auth0_audience = _auth0(environ)
         return cls(
             Secret(database_url),
             log_level=log_level,
@@ -183,6 +189,9 @@ class Settings:
             ai_endpoint=_ai_endpoint(environ),
             ai_model=_ai_model(environ),
             ai_api_key=_ai_api_key(environ),
+            sentry_dsn=_sentry_dsn(environ),
+            auth0_domain=auth0_domain,
+            auth0_audience=auth0_audience,
         )
 
 
@@ -282,6 +291,55 @@ def _ai_api_key(environ: Mapping[str, str]) -> Secret | None:
     if len(key) > 500 or any(character.isspace() for character in key):
         raise SettingsError("FLAKEPILOT_AI_API_KEY is not a key")
     return Secret(key)
+
+
+def _sentry_dsn(environ: Mapping[str, str]) -> Secret | None:
+    """https://<public key>@<host>[/<prefix>]/<project id>; no legacy secret key."""
+    dsn = environ.get("FLAKEPILOT_SENTRY_DSN") or None
+    if dsn is None:
+        return None
+    try:
+        parts = urlsplit(dsn)
+        parts.port  # noqa: B018 - raises ValueError on an invalid port
+    except ValueError:
+        raise SettingsError("FLAKEPILOT_SENTRY_DSN is not a valid DSN") from None
+    if (
+        len(dsn) > 300
+        or parts.scheme != "https"
+        or not parts.hostname
+        or not re.fullmatch(r"[A-Za-z0-9]{1,64}", parts.username or "")
+        or parts.password is not None
+        or not re.fullmatch(r"(/[A-Za-z0-9._-]+)*/[0-9]{1,20}", parts.path)
+        or parts.query
+        or parts.fragment
+    ):
+        raise SettingsError(
+            "FLAKEPILOT_SENTRY_DSN must be https://<public key>@<host>/<project id>"
+        )
+    return Secret(dsn)
+
+
+_HOSTNAME = re.compile(
+    r"(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}"
+)
+
+
+def _auth0(environ: Mapping[str, str]) -> tuple[str | None, str | None]:
+    domain = environ.get("FLAKEPILOT_AUTH0_DOMAIN") or None
+    audience = environ.get("FLAKEPILOT_AUTH0_AUDIENCE") or None
+    if domain is None and audience is None:
+        return None, None
+    if domain is None or audience is None:
+        raise SettingsError(
+            "FLAKEPILOT_AUTH0_DOMAIN and FLAKEPILOT_AUTH0_AUDIENCE must be set together"
+        )
+    if not _HOSTNAME.fullmatch(domain):
+        raise SettingsError(
+            "FLAKEPILOT_AUTH0_DOMAIN must be a lowercase host name, e.g. tenant.auth0.com"
+        )
+    if len(audience) > 200 or not audience.isprintable() or " " in audience:
+        raise SettingsError("FLAKEPILOT_AUTH0_AUDIENCE must be an API identifier")
+    return domain, audience
 
 
 def _artifact_dir(value: str) -> Path:

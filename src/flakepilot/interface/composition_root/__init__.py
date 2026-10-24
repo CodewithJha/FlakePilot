@@ -37,6 +37,9 @@ from flakepilot.interface.composition_root.database import (
     register_database_error_handler,
     transaction,
 )
+from flakepilot.interface.composition_root.error_reporting import (
+    configure_error_reporting,
+)
 from flakepilot.interface.composition_root.reproduction import Reproductions
 from flakepilot.interface.composition_root.run_views import (
     RunViews,
@@ -170,6 +173,7 @@ def create_app(
     the auth endpoints answer 503 `auth_not_configured` (fail closed).
     """
     configure_logging(settings.log_level)
+    configure_error_reporting(settings)
     identity_provider = identity_provider_factory(settings)
     artifacts = (
         LocalFsArtifactStore(settings.artifact_dir)
