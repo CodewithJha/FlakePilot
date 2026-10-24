@@ -6,7 +6,16 @@ adapters), PRODUCT-SCOPE P1–P6 (sponsor independence), and the
 [stage-10K infrastructure registers](OWNER-DECISION-SHEET.md) remain the
 governing documents. Statuses were verified against the repository at commit
 `3d5b6b3` on 2026-10-24 by inspecting source, tests, `uv.lock` (44 packages,
-no sponsor dependency), docs, and CI — a dependency declaration, a placeholder,
+no sponsor dependency), docs, and CI, and **re-audited and frozen at
+`b9d1295`** (Sprint 11, 2026-10-24): every goal re-checked against source,
+`uv.lock`, and tests at that commit — no sponsor package, SDK import, or
+placeholder exists anywhere; the Sprint 8–10 commits (runs index, discovery,
+security headers, env-example documentation) touch no sponsor goal, so no
+status changed. The matrix is now **frozen for the local-only release**: a
+status changes only with new, verifiable implementation or integration
+evidence, or an owner decision being made. Any residual uncertainty on an
+entry is recorded in that entry, not resolved silently. A dependency
+declaration, a placeholder,
 or related local functionality is **not** an integration, and nothing is back-
 dated. One status per goal, from this fixed ladder:
 
