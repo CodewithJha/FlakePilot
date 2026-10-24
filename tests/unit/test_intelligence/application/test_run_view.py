@@ -83,6 +83,7 @@ class FakeTiStore:
         self.repo_lookups: list[tuple[str, str]] = []
         self.index_entries: tuple[RunIndexEntry, ...] = ()
         self.index_calls: list[tuple[str, str, int]] = []
+        self.history_responses: dict[int, tuple[Any, ...]] = {}
 
     def knows(self, test_id: str, history: list[Observation] | None) -> None:
         self.observations_by_test[test_id] = history
@@ -137,6 +138,17 @@ class FakeTiStore:
         assert (org_id, repo_id) == (ORG, REPO)
         self.observed.append(test_id)
         return self.observations_by_test.get(test_id)
+
+    async def repo_history(
+        self,
+        *,
+        org_id: str,
+        repo_id: str,
+        cutoff: Any,
+        max_tests: int = 100,
+    ) -> tuple[Any, ...]:
+        assert (org_id, repo_id) == (ORG, REPO)
+        return self.history_responses.get(max_tests, ())
 
     def page(self, entries: tuple[RunIndexEntry, ...]) -> None:
         self.index_entries = entries

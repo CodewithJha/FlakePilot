@@ -100,6 +100,16 @@ class RunReport:
 
 
 @dataclass(frozen=True)
+class IdentityHistory:
+    """One test identity's stored history, newest run last."""
+
+    test_id: str
+    classname: str
+    name: str
+    observations: tuple[Observation, ...]
+
+
+@dataclass(frozen=True)
 class RunIndexEntry:
     """One stored run's lean identity for listings, read-only.
 
@@ -168,6 +178,20 @@ class TiStore(Protocol):
         self, *, org_id: str, repo_id: str, test_id: str
     ) -> list[Observation] | None:
         """The identity's history, or None if it is not in this org and repo."""
+        ...
+
+    async def repo_history(
+        self,
+        *,
+        org_id: str,
+        repo_id: str,
+        cutoff: datetime,
+        max_tests: int = 100,
+    ) -> tuple[IdentityHistory, ...]:
+        """Histories of at most `max_tests` identities with activity at or before
+        `cutoff`, the most recently active first. Histories include only runs at
+        or before the cutoff (the leakage guard for prioritization).
+        """
         ...
 
     async def run_report(

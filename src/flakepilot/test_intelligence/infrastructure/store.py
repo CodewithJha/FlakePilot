@@ -5,6 +5,7 @@ Every statement is scoped by (org_id, repo_id). Times come from PostgreSQL (`now
 
 import uuid
 from collections.abc import Sequence
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import LargeBinary, any_, bindparam, func, select, text
@@ -13,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from flakepilot.shared_kernel.events import Event
 from flakepilot.test_intelligence.application.store import (
+    IdentityHistory,
     NewUpload,
     ProcessedUpload,
     RejectedUpload,
@@ -489,3 +491,113 @@ class SqlTiStore:
             )
             for run_id, row in heads.items()
         ]
+
+    async def repo_history(
+        self,
+        *,
+        org_id: str,
+        repo_id: str,
+        cutoff: datetime,
+        max_tests: int = 100,
+    ) -> tuple[IdentityHistory, ...]:
+        if max_tests < 1:
+            return ()
+        # Identities with activity at or before the cutoff, newest activity first.
+        active = await self._session.execute(
+            select(
+                test_identities.c.id,
+                func.max(runs.c.received_at).label("latest"),
+            )
+            .join(
+                test_results,
+                (test_results.c.org_id == test_identities.c.org_id)
+                & (test_results.c.repo_id == test_identities.c.repo_id)
+                & (test_results.c.test_id == test_identities.c.id),
+            )
+            .join(
+                runs,
+                (runs.c.org_id == test_results.c.org_id)
+                & (runs.c.repo_id == test_results.c.repo_id)
+                & (runs.c.id == test_results.c.run_id),
+            )
+            .where(
+                test_identities.c.org_id == org_id,
+                test_identities.c.repo_id == repo_id,
+                runs.c.received_at <= cutoff,
+            )
+            .group_by(test_identities.c.id)
+            .order_by(func.max(runs.c.received_at).desc(), test_identities.c.id)
+            .limit(max_tests)
+        )
+        chosen = {row.id: row.latest for row in active}
+        if not chosen:
+            return ()
+        names = await self._session.execute(
+            select(
+                test_identities.c.id,
+                test_identities.c.classname,
+                test_identities.c.name,
+            ).where(test_identities.c.id.in_(chosen))
+        )
+        labels: dict[str, tuple[str, str]] = {
+            row.id: (row.classname, row.name) for row in names
+        }
+        # The histories, run at or before the cutoff only (leakage guard).
+        rows = await self._session.execute(
+            select(
+                test_results.c.test_id,
+                runs.c.id,
+                runs.c.commit_sha,
+                runs.c.environment,
+                runs.c.received_at,
+                runs.c.source,
+                test_results.c.outcome,
+            )
+            .join(
+                runs,
+                (runs.c.org_id == test_results.c.org_id)
+                & (runs.c.repo_id == test_results.c.repo_id)
+                & (runs.c.id == test_results.c.run_id),
+            )
+            .where(
+                test_results.c.org_id == org_id,
+                test_results.c.repo_id == repo_id,
+                test_results.c.test_id.in_(chosen),
+                runs.c.received_at <= cutoff,
+            )
+            .order_by(
+                runs.c.received_at,
+                runs.c.id,
+                test_results.c.attempt,
+            )
+        )
+        grouped: dict[str, dict[str, Any]] = {}
+        attempts_by_run: dict[tuple[str, str], list[Any]] = {}
+        for row in rows:
+            grouped.setdefault(row.test_id, {})[row.id] = row
+            attempts_by_run.setdefault((row.test_id, row.id), []).append(
+                Outcome(row.outcome)
+            )
+        histories: list[IdentityHistory] = []
+        for test_id in chosen:
+            observations = tuple(
+                Observation(
+                    run_id=run_id,
+                    commit_sha=head.commit_sha,
+                    environment=head.environment,
+                    received_at=head.received_at,
+                    source=RunSource(head.source),
+                    attempts=tuple(attempts_by_run[(test_id, run_id)]),
+                )
+                for run_id, head in grouped.get(test_id, {}).items()
+            )
+            classname, name = labels[test_id]
+            histories.append(
+                IdentityHistory(
+                    test_id=test_id,
+                    classname=classname,
+                    name=name,
+                    observations=observations,
+                )
+            )
+        return tuple(histories)
