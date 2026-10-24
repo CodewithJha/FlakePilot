@@ -13,7 +13,12 @@ from flakepilot.diagnosis.application.assist import (
     AssistResult,
     UntrustedPart,
 )
-from flakepilot.diagnosis.application.store import AiPolicy, AiRequestRecord, DiagStore
+from flakepilot.diagnosis.application.store import (
+    IN_FLIGHT,
+    AiPolicy,
+    AiRequestRecord,
+    DiagStore,
+)
 from flakepilot.diagnosis.domain.output import DataPolicy, DiagnosisOutcome
 from flakepilot.identity.application.authorization import (
     CodeHostAccess,
@@ -54,6 +59,15 @@ class Memory:
 
     async def record_request(self, request: AiRequestRecord) -> None:
         self.requests.append(request)
+
+    async def finish_request(self, request: AiRequestRecord) -> None:
+        [index] = [
+            i
+            for i, row in enumerate(self.requests)
+            if (row.id, row.org_id, row.validation_reason)
+            == (request.id, request.org_id, IN_FLIGHT)
+        ]
+        self.requests[index] = request
 
     async def append_event(self, event: Event) -> None:
         self.events.append(event)
@@ -320,7 +334,104 @@ def test_invalid_input_writes_nothing() -> None:
 
 def test_a_failed_outbox_write_keeps_nothing() -> None:
     store = Memory()
+    store.policies[ORG] = AiPolicy(DataPolicy.EVIDENCE_ONLY, False)
+    port = Counting(FakeAiAssist())
     store.fail = True
     with pytest.raises(RuntimeError, match="outbox"):
-        run_assist(assist(store, FakeAiAssist()), admin())
+        run_assist(assist(store, port), admin())
     assert store.requests == [] and store.events == []
+    assert port.calls == 0  # no durable intent, no call
+
+
+class Exploding:
+    """A port whose call never answers: it raises, or never returns."""
+
+    def __init__(self, error: BaseException | None) -> None:
+        self.error = error
+        self.seen: list[tuple[int, list[str]]] = []
+        self.store: Memory | None = None
+
+    def describe(self) -> AiCapabilities:
+        return AiCapabilities(available=True, provider="hosted_test")
+
+    async def submit(self, request: AiRequest) -> AiResponse:
+        assert self.store is not None
+        # What is durable at the moment the bytes would leave the process.
+        self.seen.append(
+            (len(self.store.requests), [e.name for e in self.store.events])
+        )
+        if self.error is not None:
+            raise self.error
+        await asyncio.sleep(3600)
+        raise AssertionError("unreachable")
+
+
+def _intent_row_survives(port: Exploding, store: Memory) -> None:
+    [row] = store.requests
+    assert (row.outcome, row.validation_reason) == (
+        DiagnosisOutcome.UNAVAILABLE,
+        IN_FLIGHT,
+    )
+    assert (row.provider, row.model, row.raw_output) == ("hosted_test", None, None)
+    assert [event.name for event in store.events] == ["diag.ai_request.sent"]
+    assert store.events[0].subject.id == row.id
+    assert set(store.events[0].payload) == {
+        "policy",
+        "retain_raw",
+        "provider",
+        "size_bytes",
+        "content_sha256",
+    }
+    assert port.seen == [(1, ["diag.ai_request.sent"])]
+
+
+def test_intent_is_recorded_before_a_provider_call_that_raises() -> None:
+    store = Memory()
+    store.policies[ORG] = AiPolicy(DataPolicy.EVIDENCE_ONLY, False)
+    port = Exploding(ConnectionResetError("peer reset"))
+    port.store = store
+    with pytest.raises(ConnectionResetError):
+        run_assist(Assist(unit(store), port), admin())
+    _intent_row_survives(port, store)
+
+
+def test_intent_is_recorded_before_a_provider_call_that_times_out() -> None:
+    store = Memory()
+    store.policies[ORG] = AiPolicy(DataPolicy.EVIDENCE_ONLY, False)
+    port = Exploding(None)
+    port.store = store
+
+    async def bounded() -> None:
+        await asyncio.wait_for(
+            Assist(unit(store), port).assist(
+                admin(),
+                org_id=ORG,
+                repo_id=REPO,
+                code_host=READ,
+                instructions="summarize",
+                parts=(UntrustedPart("log", "fail"),),
+                evidence_ids=frozenset({EVIDENCE}),
+                origin=ORIGIN,
+            ),
+            timeout=0.05,
+        )
+
+    with pytest.raises(TimeoutError):
+        asyncio.run(bounded())
+    _intent_row_survives(port, store)
+
+
+def test_an_answered_call_finishes_the_same_row() -> None:
+    store = Memory()
+    store.policies[ORG] = AiPolicy(DataPolicy.EVIDENCE_ONLY, False)
+    result = run_assist(
+        assist(store, FakeAiAssist(scripts={"summarize": '{"hypotheses":[]}'})),
+        admin(),
+    )
+    [row] = store.requests
+    assert row.id == result.request_id
+    assert (row.outcome, row.validation_reason) == (
+        DiagnosisOutcome.NO_HYPOTHESIS,
+        None,
+    )
+    assert [event.subject.id for event in store.events] == [row.id, row.id]

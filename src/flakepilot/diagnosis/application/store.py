@@ -6,6 +6,10 @@ from typing import Protocol
 from flakepilot.diagnosis.domain.output import DataPolicy, DiagnosisOutcome
 from flakepilot.shared_kernel.events import Event
 
+# The `validation_reason` of a request recorded before its provider call. A row
+# left with it means the call was attempted and no answer was ever recorded.
+IN_FLIGHT = "awaiting_provider"
+
 
 @dataclass(frozen=True)
 class AiPolicy:
@@ -43,5 +47,10 @@ class DiagStore(Protocol):
     async def set_policy(self, org_id: str, policy: AiPolicy) -> None: ...
 
     async def record_request(self, request: AiRequestRecord) -> None: ...
+
+    async def finish_request(self, request: AiRequestRecord) -> None:
+        """Overwrite the in-flight row with the same id and org; raises when
+        there is none, so a finished row is never rewritten."""
+        ...
 
     async def append_event(self, event: Event) -> None: ...

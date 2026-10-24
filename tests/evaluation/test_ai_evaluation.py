@@ -58,6 +58,9 @@ class _Memory:
     async def record_request(self, request: AiRequestRecord) -> None:
         self.requests.append(request)
 
+    async def finish_request(self, request: AiRequestRecord) -> None:
+        self.requests[-1] = request
+
     async def append_event(self, event: Event) -> None:
         self.events.append(event)
 

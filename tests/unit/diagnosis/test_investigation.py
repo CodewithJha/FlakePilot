@@ -166,6 +166,9 @@ class FakeDiagStore:
     async def record_request(self, request: object) -> None:
         self.requests.append(request)
 
+    async def finish_request(self, request: object) -> None:
+        self.requests[-1] = request
+
     async def append_event(self, event: Event) -> None:
         self.events.append(event)
 

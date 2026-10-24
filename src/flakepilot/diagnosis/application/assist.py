@@ -1,10 +1,12 @@
 """Org-gated assist. AI is disabled unless the org policy says otherwise.
 
-The composition root wires `NullAiAssist` only. This use case does not check an AI
-spend quota, and it does not emit `quota.denied`: IAM has no quota store (ADR-014).
-`NullAiAssist` and `FakeAiAssist` have no network side effect, so the request row and
-its outbox events are written in one transaction after the in-process call. A future
-network adapter must record intent before the call. There is no HTTP route.
+This use case does not check an AI spend quota, and it does not emit `quota.denied`:
+IAM has no quota store (ADR-014). Adapters may be network models, so intent is durable
+before any byte leaves: the request row (reason `IN_FLIGHT`) and `diag.ai_request.sent`
+commit in one transaction before the port is called, and the outcome and
+`diag.diagnosis.recorded` commit in a second one after it. A call that raises, hangs, or
+is cancelled leaves the in-flight row and the sent event behind as the record that it
+was attempted. A disabled policy calls nothing and writes one final row.
 """
 
 import hashlib
@@ -15,7 +17,12 @@ from collections.abc import Callable, Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 
-from flakepilot.diagnosis.application.store import AiPolicy, AiRequestRecord, DiagStore
+from flakepilot.diagnosis.application.store import (
+    IN_FLIGHT,
+    AiPolicy,
+    AiRequestRecord,
+    DiagStore,
+)
 from flakepilot.diagnosis.domain.output import (
     MAX_OUTPUT_BYTES,
     Claim,
@@ -134,10 +141,51 @@ class Assist:
         )
         payload = _payload(instructions, parts, evidence_ids)
         digest = hashlib.sha256(payload)
+        request_id = str(uuid.uuid4())
         async with self._unit_of_work() as store:
             policy = await store.policy(org_id)
+            enabled = policy.level is not DataPolicy.DISABLED
+            if enabled:
+                provider = self._port.describe().provider
+                await store.record_request(
+                    AiRequestRecord(
+                        id=request_id,
+                        org_id=org_id,
+                        repo_id=repo_id,
+                        actor_id=access.principal_id,
+                        policy_level=policy.level,
+                        retain_raw=policy.retain_raw,
+                        provider=provider,
+                        model=None,
+                        payload_sha256=digest.digest(),
+                        payload_size=len(payload),
+                        outcome=DiagnosisOutcome.UNAVAILABLE,
+                        validation_reason=IN_FLIGHT,
+                        linked_count=0,
+                        unverified_count=0,
+                        contradicted_count=0,
+                        raw_output=None,
+                    )
+                )
+                await store.append_event(
+                    _event(
+                        "diag.ai_request.sent",
+                        access,
+                        origin,
+                        Subject("ai_request", request_id),
+                        org_id,
+                        repo_id,
+                        payload={
+                            "policy": policy.level.value,
+                            "retain_raw": policy.retain_raw,
+                            "provider": provider,
+                            "size_bytes": len(payload),
+                            "content_sha256": digest.hexdigest(),
+                        },
+                    )
+                )
         response: AiResponse | None = None
-        if policy.level is not DataPolicy.DISABLED:
+        if enabled:
             response = await self._port.submit(
                 AiRequest(
                     instructions=instructions,
@@ -147,9 +195,10 @@ class Assist:
                     max_output_bytes=MAX_OUTPUT_BYTES,
                 )
             )
-        result, record, events = _decide(
+        result, record, event = _decide(
             access,
             origin,
+            request_id,
             org_id,
             repo_id,
             policy,
@@ -160,9 +209,11 @@ class Assist:
             response,
         )
         async with self._unit_of_work() as store:
-            await store.record_request(record)
-            for event in events:
-                await store.append_event(event)
+            if response is None:
+                await store.record_request(record)
+            else:
+                await store.finish_request(record)
+            await store.append_event(event)
         _logger.info("diagnosis %s %s", result.outcome.value, result.reason or "-")
         return result
 
@@ -207,6 +258,7 @@ def _canonical_uuid(value: str) -> bool:
 def _decide(
     access: OrgAccess,
     origin: Origin,
+    request_id: str,
     org_id: str,
     repo_id: str,
     policy: AiPolicy,
@@ -215,8 +267,7 @@ def _decide(
     digest_hex: str,
     evidence_ids: frozenset[str],
     response: AiResponse | None,
-) -> tuple[AssistResult, AiRequestRecord, tuple[Event, ...]]:
-    request_id = str(uuid.uuid4())
+) -> tuple[AssistResult, AiRequestRecord, Event]:
     linked = unverified = contradicted = 0
     raw: str | None = None
     model: str | None = None
@@ -224,15 +275,12 @@ def _decide(
         outcome = DiagnosisOutcome.UNAVAILABLE
         reason: str | None = "policy_disabled"
         provider = "none"
-        sent = False
     elif not response.available or response.output is None:
         outcome = DiagnosisOutcome.UNAVAILABLE
         reason = _code(response.reason)
         provider = response.provider
         model = response.model
-        sent = True
     else:
-        sent = True
         provider = response.provider
         model = response.model
         output = response.output
@@ -283,35 +331,19 @@ def _decide(
         "contradicted": contradicted,
         "raw_retained": raw is not None,
     }
-    subject = Subject("ai_request", request_id)
-    events: list[Event] = []
-    if sent:
-        events.append(
-            _event(
-                "diag.ai_request.sent",
-                access,
-                origin,
-                subject,
-                org_id,
-                repo_id,
-                payload=body,
-            )
-        )
-    events.append(
-        _event(
-            "diag.diagnosis.recorded",
-            access,
-            origin,
-            subject,
-            org_id,
-            repo_id,
-            after=outcome.value,
-            reason=reason,
-            payload=body,
-        )
+    event = _event(
+        "diag.diagnosis.recorded",
+        access,
+        origin,
+        Subject("ai_request", request_id),
+        org_id,
+        repo_id,
+        after=outcome.value,
+        reason=reason,
+        payload=body,
     )
     result = AssistResult(request_id, outcome, reason, linked, unverified, contradicted)
-    return result, record, tuple(events)
+    return result, record, event
 
 
 def _counts(claims: Sequence[Claim]) -> tuple[int, int, int]:

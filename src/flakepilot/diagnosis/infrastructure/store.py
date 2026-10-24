@@ -4,7 +4,11 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from flakepilot.diagnosis.application.store import AiPolicy, AiRequestRecord
+from flakepilot.diagnosis.application.store import (
+    IN_FLIGHT,
+    AiPolicy,
+    AiRequestRecord,
+)
 from flakepilot.diagnosis.domain.output import DataPolicy
 from flakepilot.diagnosis.infrastructure.tables import ai_policies, ai_requests, outbox
 from flakepilot.shared_kernel.events import Event
@@ -68,6 +72,28 @@ class SqlDiagStore:
                 created_at=func.now(),
             )
         )
+
+    async def finish_request(self, request: AiRequestRecord) -> None:
+        statement = (
+            ai_requests.update()
+            .where(
+                ai_requests.c.id == request.id,
+                ai_requests.c.org_id == request.org_id,
+                ai_requests.c.validation_reason == IN_FLIGHT,
+            )
+            .values(
+                provider=request.provider,
+                model=request.model,
+                outcome=request.outcome.value,
+                validation_reason=request.validation_reason,
+                linked_count=request.linked_count,
+                unverified_count=request.unverified_count,
+                contradicted_count=request.contradicted_count,
+                raw_output=request.raw_output,
+            )
+            .returning(ai_requests.c.id)
+        )
+        (await self._session.execute(statement)).one()
 
     async def append_event(self, event: Event) -> None:
         await self._session.execute(

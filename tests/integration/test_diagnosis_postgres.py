@@ -12,10 +12,20 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from flakepilot.diagnosis.application.assist import Assist, UntrustedPart
-from flakepilot.diagnosis.application.store import AiPolicy, AiRequestRecord, DiagStore
+from flakepilot.diagnosis.application.store import (
+    IN_FLIGHT,
+    AiPolicy,
+    AiRequestRecord,
+    DiagStore,
+)
 from flakepilot.diagnosis.domain.output import DataPolicy, DiagnosisOutcome
 from flakepilot.diagnosis.infrastructure.store import SqlDiagStore
 from flakepilot.identity.application.authorization import CodeHostAccess, OrgAccess
+from flakepilot.integrations.application.ports import (
+    AiCapabilities,
+    AiRequest,
+    AiResponse,
+)
 from flakepilot.integrations.infrastructure.ai import FakeAiAssist
 from flakepilot.interface.composition_root.database import create_engine, transaction
 from flakepilot.shared_kernel.events import (
@@ -294,6 +304,83 @@ def test_assist_commits_metadata_and_rolls_back_with_the_outbox(url: str) -> Non
             "diag.diagnosis.recorded",
         ),
     )
+
+
+class _Unreachable:
+    """A network-shaped port whose call fails after the bytes would have left."""
+
+    def describe(self) -> AiCapabilities:
+        return AiCapabilities(available=True, provider="hosted_test")
+
+    async def submit(self, request: AiRequest) -> AiResponse:
+        raise TimeoutError("socket timeout")
+
+
+def test_assist_intent_is_committed_before_the_provider_call(url: str) -> None:
+    org_id, repo_id, actor = (str(uuid.uuid4()) for _ in range(3))
+    access = OrgAccess(actor, org_id, org_admin=True)
+
+    @asynccontextmanager
+    async def unit_of_work(engine: AsyncEngine) -> AsyncIterator[DiagStore]:
+        async with transaction(engine) as session:
+            yield SqlDiagStore(session)
+
+    async def scenario(engine: AsyncEngine) -> tuple[list[Any], list[Any]]:
+        service = Assist(lambda: unit_of_work(engine), _Unreachable())
+        await service.set_policy(
+            access,
+            org_id=org_id,
+            policy=AiPolicy(DataPolicy.EVIDENCE_ONLY, False),
+            origin=Origin(Channel.HTTP, "assist-intent"),
+        )
+        with pytest.raises(TimeoutError):
+            await service.assist(
+                access,
+                org_id=org_id,
+                repo_id=repo_id,
+                code_host=CodeHostAccess.READ,
+                instructions="summarize",
+                parts=(UntrustedPart("log", "fail"),),
+                evidence_ids=frozenset(),
+                origin=Origin(Channel.HTTP, "assist-intent"),
+            )
+        rows = await sql(
+            engine,
+            "SELECT id, provider, outcome, validation_reason, model "
+            "FROM diag.ai_requests WHERE org_id = :org",
+            org=org_id,
+        )
+        events = await sql(
+            engine,
+            "SELECT name, subject_id FROM diag.outbox WHERE org_id = :org ORDER BY seq",
+            org=org_id,
+        )
+        return rows, events
+
+    rows, events = run(url, scenario)
+    [(request_id, provider, outcome, reason, model)] = rows
+    assert (provider, outcome, reason, model) == (
+        "hosted_test",
+        "unavailable",
+        IN_FLIGHT,
+        None,
+    )
+    assert [(name, str(subject)) for name, subject in events] == [
+        ("diag.ai_policy.updated", org_id),
+        ("diag.ai_request.sent", str(request_id)),
+    ]
+
+
+def test_finish_request_never_rewrites_a_finished_row(url: str) -> None:
+    async def scenario(engine: AsyncEngine) -> None:
+        finished = _request()
+        async with transaction(engine) as session:
+            await SqlDiagStore(session).record_request(finished)
+        async with transaction(engine) as session:
+            await SqlDiagStore(session).finish_request(finished)
+
+    with pytest.raises(exc.NoResultFound):
+        run(url, scenario)
 
 
 @pytest.fixture
