@@ -4,7 +4,7 @@ Constructing an adapter contacts nothing; a provider is built only when its
 settings are complete, and anything unset stays absent (or `NullAiAssist`), so
 an unconfigured process makes no hosted call at all. `status()` reports what
 this process would use, by provider code, never a key. "Configured" is not
-"working": none of these providers has been verified against a live API.
+"working": the process never probes a provider.
 
 The worker never calls this: it holds no provider credential.
 """
@@ -118,6 +118,6 @@ def _build(settings: Settings) -> HostedProviders:
 
 def log_status(providers: HostedProviders) -> None:
     _logger.info(
-        "hosted providers configured (none verified live): %s",
+        "hosted providers configured (not checked at runtime): %s",
         " ".join(f"{name}={value}" for name, value in providers.status().items()),
     )

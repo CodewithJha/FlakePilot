@@ -240,7 +240,7 @@ Optional, operator-run, local. Set `FLAKEPILOT_AI_ENDPOINT` and `FLAKEPILOT_AI_M
 
 ### Hosted providers (ADR-017)
 
-Every hosted provider is off, with no network contact, unless its settings are complete; a pair with one half set, and a value the adapter refuses, stop startup without echoing a key. They are read by the API process and the operator commands only — never give them to the worker. At startup the API logs one line with each provider's code (`hosted providers configured (none verified live): ai_assist=… research=…`); `provider-status` prints the same as JSON. "Configured" is not "working": the process never checks a provider's health. Which adapters have been run against the live service, and how, is recorded in [SPONSOR-IMPLEMENTATION-MAP](docs/operations/SPONSOR-IMPLEMENTATION-MAP.md#live-verification-record-2026-10-24).
+Every hosted provider is off, with no network contact, unless its settings are complete; a pair with one half set, and a value the adapter refuses, stop startup without echoing a key. They are read by the API process and the operator commands only — never give them to the worker. At startup the API logs one line with each provider's code (`hosted providers configured (not checked at runtime): ai_assist=… research=…`); `provider-status` prints the same as JSON. "Configured" is not "working": the process never checks a provider's health. Which adapters have been run against the live service, and how, is recorded in [SPONSOR-IMPLEMENTATION-MAP](docs/operations/SPONSOR-IMPLEMENTATION-MAP.md#live-verification-record-2026-10-24).
 
 | Provider | Variables | Used by | What leaves the process |
 |---|---|---|---|

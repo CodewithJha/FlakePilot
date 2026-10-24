@@ -96,5 +96,5 @@ def test_building_the_app_contacts_no_provider_and_logs_no_secret(
     [line] = [
         r.getMessage() for r in caplog.records if r.name == "flakepilot.providers"
     ]
-    assert "none verified live" in line and "ai_assist=gemini_api" in line
+    assert "(not checked at runtime)" in line and "ai_assist=gemini_api" in line
     assert not any(secret in caplog.text for secret in KEYS.values())

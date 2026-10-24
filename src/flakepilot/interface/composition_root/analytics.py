@@ -73,7 +73,10 @@ def _pair(parser: argparse.ArgumentParser) -> None:
 def run_provider_status(settings: Settings, argv: Sequence[str]) -> int:
     argparse.ArgumentParser(
         prog="provider-status",
-        description="Hosted providers this environment would use (none verified live).",
+        description=(
+            "Hosted providers this environment would use "
+            "(configured; not checked at runtime)."
+        ),
     ).parse_args(argv)
     try:
         status = hosted_providers(settings).status()

@@ -114,7 +114,7 @@ refusal naming the variable, never its value). "Wired opt-in" means the API's
 composition root builds the adapter only when the variable is set; unset means
 no adapter and no contact. Every provider variable belongs to the API service
 only. After setting any, check the startup log line `hosted providers
-configured (none verified live): …` or run `provider-status` in the shell.
+configured (not checked at runtime): …` or run `provider-status` in the shell.
 
 | Variable | Service | Secret | Source / value | Status |
 |---|---|---|---|---|
