@@ -23,7 +23,7 @@ from flakepilot.integrations.infrastructure.gemma import (
 )
 from flakepilot.integrations.infrastructure.hosted_http import HostedError
 
-KEY = "AIzaSyFAKE-test-key-0000000000000000000"
+KEY = ""
 MODEL = "gemma-4-26b-a4b-it"
 HYPOTHESES = json.dumps(
     {
