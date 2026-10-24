@@ -6,9 +6,14 @@ Evidence-based investigation and verification of recurring test failures. See [P
 
 **Pre-alpha. Not production-ready.** The backend foundations exist: sign-in, org bootstrap, CI upload tokens, JUnit ingestion and a failure classifier. Known gaps:
 
-- **No UI beyond one read-only page.** The session-user run view (`GET /orgs/{org_id}/runs/{run_id}`) is the only server-rendered HTML. It is read-only, requires a signed-in member with `repo.view`, and is answered 503 `auth_not_configured` when sign-in is not configured, like the other session routes.
+- **No UI beyond two read-only pages.** The session-user runs listing (`GET
+  /orgs/{org_id}/repos/{repo_id}/runs`) and run view
+  (`GET /orgs/{org_id}/runs/{run_id}`) are the only server-rendered HTML. They
+  are read-only, require a signed-in member with `repo.view` on the exact
+  repository, and are answered 503 `auth_not_configured` when sign-in is not
+  configured, like the other session routes.
 - **CI upload tokens are issued only by the operator CLI** (`issue-ci-upload-token`, see the demo journey below). No HTTP route exists for them yet.
-- **Classification isn't exposed over HTTP.** It exists as an authorization-checked use case (ADR-013), and the operator CLI's `ci-run-report` attaches each test's verdict — deterministic rule set `ti-classification/1`, with the evidence it was computed from — neither of which is an HTTP route.
+- **Classification has no JSON API.** Each test's verdict — deterministic rule set `ti-classification/1`, with the evidence it was computed from — is rendered in the two session run views and in the operator CLI's `ci-run-report`, but there is no HTTP endpoint returning classifications as data.
 - **Parsing is synchronous.** Reports are parsed inside the upload request. A separate worker process runs durable jobs and delivers outbox rows to the audit log. No retention or stage job is registered. See [DURABLE-JOBS](docs/operations/DURABLE-JOBS.md).
 - **No quotas or rate limits.** AI spend is not checked either (ADR-014).
 - **AI assist is off unless an org admin enables it.** The use case exists, the process wires only `NullAiAssist`, and there is no HTTP route. A missing provider answers `unavailable`. See ADR-014.
@@ -185,11 +190,11 @@ Settings come from environment variables only (see [`.env.example`](.env.example
 
 Without a client ID and secret, sign-in is off and the auth endpoints answer 503 `auth_not_configured`; a public origin on its own changes nothing. If the client ID or secret is set but any of the three is missing, **startup fails** (fail closed). Sign-in only authenticates; access comes from FlakePilot's own org membership and grants (ADR-011).
 
-### Session-user run view
+### Session-user run views
 
-`GET /orgs/{org_id}/runs/{run_id}` is the one server-rendered page for signed-in users: a read-only view of one stored run — summary counts, upload metadata, attempt chains, and each test's `ti-classification/1` verdict with its evidence (same rendering rules as the operator report: everything user-controlled is HTML-escaped, `inconclusive` is shown as the real verdict, revision status stays `unchecked`). It states plainly that nothing is verified or executed here.
+`GET /orgs/{org_id}/repos/{repo_id}/runs` lists one repository's stored runs, newest first (default page 50, hard bound 200), and `GET /orgs/{org_id}/runs/{run_id}` is the one read-only view of a stored run — summary counts, upload metadata, attempt chains, and each test's `ti-classification/1` verdict with its evidence (same rendering rules as the operator report: everything user-controlled is HTML-escaped, `inconclusive` is shown as the real verdict, revision status stays `unchecked`). The listing carries exactly the stored run rows — source, commit SHA, environment, revision status, received time, summary counts — and links each run to its run view; per-test verdicts live on each run's own view. Both pages state plainly that nothing is verified or executed here.
 
-Authorization chain: the session cookie authenticates the user; the org in the URL is only a lookup key — access comes from IAM's membership and `repo_grants` records for that user (`repo.view` is required, decided exactly as every other session read). A non-member, a member without `repo.view`, and a run of another org are all answered with the same 404 `not_found`: a cross-org request learns nothing. No session (bad or missing cookie) is 401 `unauthenticated`. There is no UI beyond this page and no link fabricating one.
+Authorization chain (identical for both routes): the session cookie authenticates the user; the org and repo in the URL are only lookup keys — access comes from IAM's membership and `repo_grants` records for that user (`repo.view` is required, decided exactly as every other session read, after the code-host standing REPO's `CodeHostAccessVerifier` verified for the exact (org, repo) pair, fail closed). An unbound repository, an unavailable or ambiguous verification, a non-member, a member without `repo.view`, and a resource of another org are all answered with the same 404 `not_found`: a cross-org request learns nothing. No session (bad or missing cookie) is 401 `unauthenticated`. A signed-in member whose repo has stored runs but empty evidence sees an empty listing, not an error. There is no other UI and no link fabricating one.
 
 ## Run the API
 
@@ -234,6 +239,16 @@ rules `decide()` uses. Membership and grant changes revoke the member's live
 sign-in sessions. A foreign-org or unregistered repo is refused with one
 message (the org is not named), and every refusal exits 1.
 
+`list-runs` lists one repository's stored runs, newest first (default page
+50, hard bound 200), read-only; it prints exactly the run IDs
+`ci-run-report` and the session run views accept, so the stored runs are
+discoverable without CI-side bookkeeping:
+
+```sh
+uv run python -m flakepilot.interface.composition_root list-runs \
+  --org-id $ORG_ID --repo-id $REPO_ID            # or --format json
+```
+
 `verify-github-app` is a read-only staging diagnostic for the GitHub App and
 the code-host access verifier (the Decision E runbook in
 [GRANT-AUTHORIZATION-DECISION-SHEET](docs/operations/GRANT-AUTHORIZATION-DECISION-SHEET.md)).
@@ -251,16 +266,17 @@ uv run python -m flakepilot.interface.composition_root verify-github-app \
   --allow-login collaborator-ok --deny-login not-a-collaborator
 ```
 
-The authenticated session-user run view verifies code-host access before
-serving a run: REPO's `CodeHostAccessVerifier` implementation checks the
-viewer's account handle against the run's canonical repository as FlakePilot's
-GitHub App installation (ADR-016), and `repo.view` is then decided under
-PRODUCT-SCOPE §3.1's intersection rule. A deployment without
-`FLAKEPILOT_GITHUB_APP_ID` and `FLAKEPILOT_GITHUB_APP_PRIVATE_KEY` configured
-cannot verify anything, so the authenticated run view answers 404 (fail
-closed, without disclosure) until the App is configured; the operator CLI
-report is unaffected. Verification says nothing about which commit produced a
-run: the revision status stays `unchecked`.
+The authenticated session-user run views (the runs listing and the run view)
+verify code-host access before serving: REPO's `CodeHostAccessVerifier`
+implementation checks the viewer's account handle against the exact canonical
+(org, repo) pair as FlakePilot's GitHub App installation (ADR-016), and
+`repo.view` is then decided under PRODUCT-SCOPE §3.1's intersection rule. A
+deployment without `FLAKEPILOT_GITHUB_APP_ID` and
+`FLAKEPILOT_GITHUB_APP_PRIVATE_KEY` configured cannot verify anything, so the
+authenticated routes answer 404 (fail closed, without disclosure) until the
+App is configured; the operator CLI report is unaffected. Verification says
+nothing about which commit produced a run: the revision status stays
+`unchecked`.
 
 The worker is a second process. It does not serve HTTP. Stop it with `SIGINT` or `SIGTERM`; it finishes the batch it has already claimed.
 

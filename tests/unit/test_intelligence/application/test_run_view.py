@@ -18,11 +18,13 @@ from flakepilot.identity.application.authorization import (
 READ = CodeHostAccess.READ
 from flakepilot.shared_kernel.events import Event
 from flakepilot.test_intelligence.application.run_view import (
+    MAX_INDEX_LIMIT,
     ClassifiedRunReport,
     RunViewer,
 )
 from flakepilot.test_intelligence.application.store import (
     ReportedCase,
+    RunIndexEntry,
     RunReport,
     RunSummary,
     TiStore,
@@ -79,6 +81,8 @@ class FakeTiStore:
         self.observations_by_test: dict[str, list[Observation] | None] = {}
         self.observed: list[str] = []
         self.repo_lookups: list[tuple[str, str]] = []
+        self.index_entries: tuple[RunIndexEntry, ...] = ()
+        self.index_calls: list[tuple[str, str, int]] = []
 
     def knows(self, test_id: str, history: list[Observation] | None) -> None:
         self.observations_by_test[test_id] = history
@@ -133,6 +137,15 @@ class FakeTiStore:
         assert (org_id, repo_id) == (ORG, REPO)
         self.observed.append(test_id)
         return self.observations_by_test.get(test_id)
+
+    def page(self, entries: tuple[RunIndexEntry, ...]) -> None:
+        self.index_entries = entries
+
+    async def runs_index(
+        self, *, org_id: str, repo_id: str, limit: int
+    ) -> tuple[RunIndexEntry, ...]:
+        self.index_calls.append((org_id, repo_id, limit))
+        return self.index_entries
 
 
 def viewer(store: FakeTiStore) -> RunViewer:
@@ -356,3 +369,76 @@ def test_an_authorized_member_sees_the_verdict() -> None:
     [entry] = result.cases
     assert entry.classification is not None
     assert entry.classification.failure_class is FailureClass.FLAKY
+
+
+# --- the runs index: the same fail-closed reads, one (org, repo) pair wide ---
+
+
+def index_entry(run: str = RUN) -> RunIndexEntry:
+    return RunIndexEntry(
+        run_id=run,
+        source="ci_upload",
+        commit_sha=SHA,
+        environment="demo.local",
+        revision_status="unchecked",
+        received_at=RECEIVED,
+        summary=RunSummary(
+            tests=1, attempts=1, passed=0, failed=1, errored=0, skipped=0
+        ),
+    )
+
+
+def test_the_index_lists_the_pair_newest_first_and_clamps_the_limit() -> None:
+    store = FakeTiStore()
+    store.page((index_entry(),))
+    index = asyncio.run(
+        viewer(store).runs_index(org_id=ORG, repo_id=REPO, limit=10_000)
+    )
+    assert index.entries == (index_entry(),)
+    # The use case clamps the limit: one honest page, not an unbounded query.
+    assert store.index_calls == [(ORG, REPO, MAX_INDEX_LIMIT)]
+    # And a nonsense-or-noncanonical pair is refused before any store call.
+    for org_id, repo_id in (("ORG", REPO), (ORG, REPO.upper()), (ORG, "x" * 36)):
+        with pytest.raises(ResourceNotFound):
+            asyncio.run(viewer(store).runs_index(org_id=org_id, repo_id=repo_id))
+    assert len(store.index_calls) == 1
+
+
+def test_the_operator_index_of_a_pair_without_runs_is_empty_not_an_error() -> None:
+    store = FakeTiStore()
+    index = asyncio.run(viewer(store).runs_index(org_id=ORG, repo_id=REPO))
+    assert index.entries == ()
+    assert store.index_calls == [(ORG, REPO, 50)]
+
+
+def test_the_member_index_needs_the_verified_standing_and_the_grant() -> None:
+    """Same intersection rule as every session read, before any listing query."""
+    member = OrgAccess(
+        "member", ORG, org_admin=False, grants=frozenset({(REPO, Grant.VIEW)})
+    )
+    grantless = OrgAccess("stranger", ORG, org_admin=False)
+
+    # No grant, or a code-host standing that verified no access: deny, no read.
+    for access, standing in ((grantless, READ), (member, CodeHostAccess.NONE)):
+        store = FakeTiStore()
+        store.page((index_entry(),))
+        with pytest.raises(ResourceNotFound):
+            asyncio.run(
+                viewer(store).runs_index_for(
+                    access, org_id=ORG, repo_id=REPO, code_host=standing
+                )
+            )
+        assert store.index_calls == []
+        assert store.report_calls == []
+
+    # Verified access plus the grant: the listing goes through.
+    store = FakeTiStore()
+    store.page((index_entry(),))
+    index = asyncio.run(
+        viewer(store).runs_index_for(
+            member, org_id=ORG, repo_id=REPO, code_host=READ, limit=3
+        )
+    )
+    assert index.org_id == ORG and index.repo_id == REPO
+    assert [entry.run_id for entry in index.entries] == [RUN]
+    assert store.index_calls == [(ORG, REPO, 3)]

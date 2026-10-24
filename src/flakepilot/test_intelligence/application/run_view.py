@@ -38,6 +38,7 @@ from flakepilot.identity.application.authorization import (
 )
 from flakepilot.test_intelligence.application.store import (
     ReportedCase,
+    RunIndexEntry,
     RunReport,
     TiStore,
     UnitOfWork,
@@ -55,6 +56,11 @@ def _is_uuid(value: str) -> bool:
         return False
 
 
+def _clamped(limit: int) -> int:
+    """One page's acceptable size, decided by the use case, not the transport."""
+    return max(1, min(limit, MAX_INDEX_LIMIT))
+
+
 @dataclass(frozen=True)
 class ClassifiedCase:
     """One reported case with the verdict its stored evidence supports."""
@@ -69,6 +75,21 @@ class ClassifiedRunReport:
 
     run: RunReport
     cases: tuple[ClassifiedCase, ...]
+
+
+@dataclass(frozen=True)
+class RunIndexReport:
+    """A (org, repo) pair's stored runs, newest first. Read-only throughout."""
+
+    org_id: str
+    repo_id: str
+    entries: tuple[RunIndexEntry, ...]
+
+
+MAX_INDEX_LIMIT = 200
+"""The listing page's hard bound. A listing is a read; a giant page would be
+just an unbounded query with extra steps, so the limit is clamped here — the
+same value for the operator CLI and the HTTP route."""
 
 
 class RunViewer:
@@ -137,6 +158,59 @@ class RunViewer:
             return await self._load(
                 store, org_id=org_id, repo_id=repo_id, run_id=run_id
             )
+
+    async def runs_index(
+        self, *, org_id: str, repo_id: str, limit: int = 50
+    ) -> RunIndexReport:
+        """The pair's stored runs, newest first (operator-trust channel).
+
+        Same trust channel as `classified_report`: the caller supplies the
+        (org, repo) scope explicitly. No code-host standing is involved — this
+        is an operator read of listing data, and it claims nothing about any
+        account's access.
+        """
+        if not (_is_uuid(org_id) and _is_uuid(repo_id)):
+            raise ResourceNotFound
+        async with self._unit_of_work() as store:
+            entries = await store.runs_index(
+                org_id=org_id, repo_id=repo_id, limit=_clamped(limit)
+            )
+        return RunIndexReport(org_id=org_id, repo_id=repo_id, entries=entries)
+
+    async def runs_index_for(
+        self,
+        access: OrgAccess,
+        *,
+        org_id: str,
+        repo_id: str,
+        code_host: CodeHostAccess,
+        limit: int = 50,
+    ) -> RunIndexReport:
+        """The authenticated listing of one pair's runs in the caller's org.
+
+        `access` is IAM's record for the verified session principal; the org
+        and repo in the URL are lookup keys only, and the code-host standing
+        REPO's `CodeHostAccessVerifier` verified for this caller and this
+        repository is passed in already resolved (unverified outcomes deny
+        before this call, fail closed and non-disclosing). `repo.view` is
+        decided under the same intersection rule as every other session read,
+        before any listing query runs. An authorized pair with no stored runs
+        is an empty list, not an error.
+        """
+        if not (_is_uuid(org_id) and _is_uuid(repo_id)):
+            raise ResourceNotFound
+        async with self._unit_of_work() as store:
+            authorize(
+                access,
+                Grant.VIEW,
+                org_id=org_id,
+                repo_id=repo_id,
+                code_host=code_host,
+            )
+            entries = await store.runs_index(
+                org_id=org_id, repo_id=repo_id, limit=_clamped(limit)
+            )
+        return RunIndexReport(org_id=org_id, repo_id=repo_id, entries=entries)
 
     async def _load(
         self, store: TiStore, *, org_id: str, repo_id: str, run_id: str

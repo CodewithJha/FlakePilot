@@ -7,6 +7,10 @@ Subcommands of `python -m flakepilot.interface.composition_root`:
   only way a CI token can be issued today; the API issues them for
   authenticated users once sign-in is configured. The raw token is printed
   once and never stored; only its SHA-256 is.
+- `list-runs --org-id <uuid> --repo-id <uuid> [--limit N] [--format json|table]`:
+  list a repository's stored runs, newest first, read-only. The run IDs it
+  prints are the ones `ci-run-report` and `GET /orgs/{org_id}/runs/{run_id}`
+  accept. Listing is a read, so it is not audited; it mutates nothing.
 - `ci-run-report --org-id <uuid> --repo-id <uuid> --run-id <uuid> [options]`:
   render a stored run as read-only JSON or a self-contained HTML file. The
   report says exactly what the stored run says: per-test attempt chains plus
@@ -48,6 +52,7 @@ from flakepilot.interface.composition_root.reporting import (
 from flakepilot.shared_kernel.events import Channel, Origin
 from flakepilot.test_intelligence.application.run_view import (
     ClassifiedRunReport,
+    RunIndexReport,
     RunViewer,
 )
 
@@ -116,6 +121,100 @@ def run_ci_run_report(settings: Settings, argv: Sequence[str]) -> int:
     else:
         sys.stdout.write(payload)
     return 0
+
+
+def run_list_runs(settings: Settings, argv: Sequence[str]) -> int:
+    args = _parse_list_runs(argv)
+    if not (_uuid_ok(args.org_id) and _uuid_ok(args.repo_id)):
+        # Format refusals name the flag, never the value, like the other gates.
+        for flag, value in (
+            ("--org-id", args.org_id),
+            ("--repo-id", args.repo_id),
+        ):
+            if not _uuid_ok(value):
+                print(f"list-runs: {flag} must be a canonical UUID", file=sys.stderr)
+        return 1
+    try:
+        index = asyncio.run(_list_runs(settings, args))
+    except Exception as exc:  # noqa: BLE001 - driver errors may carry connection details
+        _print_failure("list-runs failed", exc)
+        return 1
+    if args.format == "json":
+        print(json.dumps(_index_json(index), indent=2, default=str))
+    else:
+        for entry in index.entries:
+            received = (
+                entry.received_at.isoformat(timespec="seconds")
+                if entry.received_at is not None
+                else "-"
+            )
+            print(
+                f"{entry.run_id}  {received}  {entry.commit_sha}  "
+                f"{entry.environment}  revision={entry.revision_status}  "
+                f"passed={entry.summary.passed}/{entry.summary.tests} "
+                f"failed={entry.summary.failed}"
+            )
+        if not index.entries:
+            print("no stored runs for this (org, repo) pair yet")
+    return 0
+
+
+def _parse_list_runs(argv: Sequence[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="list-runs",
+        description=(
+            "List one repository's stored runs, newest first, read-only "
+            "(the run IDs ci-run-report and the session run view accept)."
+        ),
+    )
+    parser.add_argument("--org-id", required=True, help="org ID (a UUID)")
+    parser.add_argument("--repo-id", required=True, help="repo ID (a UUID)")
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=50,
+        help="at most this many rows, newest first (1-200; clamped by the use case)",
+    )
+    parser.add_argument("--format", choices=("table", "json"), default="table")
+    return parser.parse_args(argv)
+
+
+async def _list_runs(settings: Settings, args: argparse.Namespace) -> RunIndexReport:
+    engine = create_engine(settings.database_url.reveal())
+    try:
+        return await RunViewer(ti_unit_of_work(engine)).runs_index(
+            org_id=args.org_id, repo_id=args.repo_id, limit=args.limit
+        )
+    finally:
+        await dispose_engine(engine)
+
+
+def _index_json(index: RunIndexReport) -> dict[str, Any]:
+    return {
+        "org_id": index.org_id,
+        "repo_id": index.repo_id,
+        "runs": [
+            {
+                "run_id": entry.run_id,
+                "source": entry.source,
+                "commit_sha": entry.commit_sha,
+                "environment": entry.environment,
+                "revision_status": entry.revision_status,
+                "received_at": (
+                    entry.received_at.isoformat() if entry.received_at else None
+                ),
+                "summary": {
+                    "tests": entry.summary.tests,
+                    "attempts": entry.summary.attempts,
+                    "passed": entry.summary.passed,
+                    "failed": entry.summary.failed,
+                    "errored": entry.summary.errored,
+                    "skipped": entry.summary.skipped,
+                },
+            }
+            for entry in index.entries
+        ],
+    }
 
 
 def _parse_report(argv: Sequence[str]) -> argparse.Namespace:

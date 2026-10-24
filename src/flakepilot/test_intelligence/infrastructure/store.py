@@ -17,6 +17,7 @@ from flakepilot.test_intelligence.application.store import (
     ProcessedUpload,
     RejectedUpload,
     ReportedCase,
+    RunIndexEntry,
     RunReport,
     RunSummary,
 )
@@ -390,6 +391,52 @@ class SqlTiStore:
                 )
                 for name, (identity, chain) in cases.items()
             ),
+        )
+
+    async def runs_index(
+        self, *, org_id: str, repo_id: str, limit: int
+    ) -> tuple[RunIndexEntry, ...]:
+        """The pair's run rows, newest first (`received_at` DESC NULLS LAST,
+        then run ID DESC for a deterministic total order), at most `limit`."""
+        if limit < 1:
+            return ()
+        found = await self._session.execute(
+            select(
+                runs.c.id,
+                runs.c.source,
+                runs.c.commit_sha,
+                runs.c.environment,
+                runs.c.revision_status,
+                runs.c.received_at,
+                runs.c.tests,
+                runs.c.attempts,
+                runs.c.passed,
+                runs.c.failed,
+                runs.c.errored,
+                runs.c.skipped,
+            )
+            .where(runs.c.org_id == org_id, runs.c.repo_id == repo_id)
+            .order_by(runs.c.received_at.desc().nulls_last(), runs.c.id.desc())
+            .limit(limit)
+        )
+        return tuple(
+            RunIndexEntry(
+                run_id=row.id,
+                source=row.source,
+                commit_sha=row.commit_sha,
+                environment=row.environment,
+                revision_status=row.revision_status,
+                received_at=row.received_at,
+                summary=RunSummary(
+                    tests=row.tests,
+                    attempts=row.attempts,
+                    passed=row.passed,
+                    failed=row.failed,
+                    errored=row.errored,
+                    skipped=row.skipped,
+                ),
+            )
+            for row in found
         )
 
     async def observations(

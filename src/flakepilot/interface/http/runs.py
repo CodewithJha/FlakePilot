@@ -1,17 +1,18 @@
-"""Server-rendered run view for signed-in users.
+"""Server-rendered run views for signed-in users.
 
-`GET /orgs/{org_id}/runs/{run_id}` with a session cookie. There is no UI
-beyond this one read-only page: it reports what one stored CI upload and the
-stored evidence say — attempt chains, plus each test's classification from the
-deterministic rule set `ti-classification/1` — and it states plainly what it
-is not: not a claim of code-host verification, and no execution of anything.
+`GET /orgs/{org_id}/runs/{run_id}` and `GET
+/orgs/{org_id}/repos/{repo_id}/runs` with a session cookie: read-only views
+of the stored CI evidence — one run's attempt chains and per-test
+classification from the deterministic rule set `ti-classification/1`, and the
+listing of one repository's stored runs. They state plainly what they are
+not: not a claim of code-host verification, and no execution of anything.
 
-The org in the URL is only a lookup key. Authorization is `org_access` (IAM's
-records for the verified session principal; not a member is not found) and
-then the use case's authorization-checked read, which mirrors the shipped
-execution views: a run outside the caller's org is not found, so a cross-org
-request learns nothing, and viewing needs `repo.view` exactly as every other
-session read does.
+The org and repo in the URL are only lookup keys. Authorization is
+`org_access` (IAM's records for the verified session principal; not a member
+is not found) and then the use cases' authorization-checked reads, which
+mirror the shipped execution views: a resource outside the caller's scope is
+not found, so a cross-org request learns nothing, and viewing needs
+`repo.view` exactly as every other session read does.
 
 Every user-controlled string — test names, classnames, attempt outcomes, run
 IDs, SHAs, evidence values — is HTML-escaped, including the values inside the
@@ -32,6 +33,7 @@ from flakepilot.interface.composition_root.reporting import (
 )
 from flakepilot.interface.composition_root.run_views import (
     ClassifiedRunReport,
+    RunIndexReport,
 )
 from flakepilot.interface.http.auth import org_access
 
@@ -40,6 +42,76 @@ router = APIRouter(tags=["runs"])
 
 def _e(value: object) -> str:
     return html.escape(str(value))
+
+
+LIMIT_QUERY = 50
+"""The listing page's default; the use case clamps it. The limit is a query
+parameter, never an authorization boundary: what is listed is what
+`repo.view` already covers."""
+
+
+def _index_page(index: RunIndexReport) -> str:
+    rows = "\n".join(
+        "<tr>"
+        f'<td><a href="/orgs/{_e(index.org_id)}/runs/{_e(entry.run_id)}">{_e(entry.run_id[:8])}</a></td>'
+        f"<td><code>{_e(entry.commit_sha[:12])}</code></td>"
+        f"<td>{_e(entry.environment)}</td>"
+        f"<td>{_e(entry.source)}</td>"
+        f"<td>{_e(entry.revision_status)}</td>"
+        f"<td>{fail_cascade(entry.received_at)}</td>"
+        f"<td>{entry.summary.passed}/{entry.summary.tests} passed"
+        f" &middot; {entry.summary.failed} failed &middot;"
+        f" {entry.summary.skipped} skipped</td>"
+        "</tr>"
+        for entry in index.entries
+    )
+    body = (
+        f"""<table>
+<tr><th>Run</th><th>Commit</th><th>Environment</th><th>Source</th><th>Revision</th><th>Received</th><th>Summary</th></tr>
+{rows}
+</table>"""
+        if index.entries
+        else "<p>No stored runs for this repository yet. Runs appear here"
+        " when a CI upload with a token for this repository is ingested."
+        " There may be runs you cannot see; what you cannot see is not"
+        " listed.</p>"
+    )
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FlakePilot runs {_e(index.repo_id[:8])}</title>
+<style>
+  body {{ font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 60rem; color: #1a1a2e; }}
+  h1 {{ font-size: 1.3rem; }} h2 {{ font-size: 1.05rem; margin-top: 2rem; }}
+  table {{ border-collapse: collapse; width: 100%; }}
+  th, td {{ border: 1px solid #d5d5dc; padding: 0.35rem 0.6rem; text-align: left; font-size: 0.9rem; }}
+  th {{ background: #f4f4f8; font-weight: 600; }}
+  td code {{ font-size: 0.8rem; word-break: break-all; }}
+  .note {{ color: #555; font-size: 0.8rem; }}
+  .muted {{ color: #777; }}
+</style>
+</head>
+<body>
+<h1>FlakePilot runs</h1>
+<p class="muted">
+Repo <code>{_e(index.repo_id)}</code> &middot; org <code>{_e(index.org_id)}</code>
+&middot; showing at most {len(index.entries)} stored run(s), newest first
+</p>
+<p>This page lists the stored CI runs for one repository in your
+organization. Nothing is executed here and nothing is verified here: the
+commit SHAs are what the uploads reported, and each run's revision status
+stays <code>unchecked</code> until a real revision check has happened. Per-test
+verdicts live on each run's own view; a link here opens only that run's
+read-only view.</p>
+{body}
+<p class="note">Classification verdicts per test come from the deterministic,
+versioned rule set <code>ti-classification/1</code> on each run's view. This
+listing never claims code-host verification, revision ancestry, or execution.</p>
+</body>
+</html>
+"""
 
 
 def _page(report: ClassifiedRunReport) -> str:
@@ -144,4 +216,34 @@ router.add_api_route(
     methods=["GET"],
     status_code=200,
     summary="Read-only run view for the signed-in user",
+)
+
+
+async def runs_index(
+    org_id: UUID,
+    repo_id: str,
+    request: Request,
+    access: Annotated[OrgAccess, Depends(org_access)],
+    limit: int = LIMIT_QUERY,
+) -> HTMLResponse:
+    """One repository's stored runs, newest first, for the signed-in user.
+
+    `repo_id` in the URL is only a lookup key, exactly like the org: a
+    non-canonical value is the same 404 any unknown pair answers (decided in
+    the use case, no store read), and the authorization chain is the run
+    view's own: session -> IAM's records -> verified code-host standing on
+    this exact pair -> `repo.view`.
+    """
+    report = await request.app.state.run_views.runs_index(
+        access=access, org_id=str(org_id), repo_id=repo_id, limit=limit
+    )
+    return HTMLResponse(_index_page(report), status_code=200)
+
+
+router.add_api_route(
+    "/orgs/{org_id}/repos/{repo_id}/runs",
+    runs_index,
+    methods=["GET"],
+    status_code=200,
+    summary="Read-only listing of one repository's stored runs",
 )

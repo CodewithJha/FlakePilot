@@ -33,6 +33,7 @@ from flakepilot.repository.application.verification import (
 from flakepilot.repository.infrastructure.store import SqlRepoDirectory
 from flakepilot.test_intelligence.application.run_view import (
     ClassifiedRunReport,
+    RunIndexReport,
     RunViewer,
 )
 from flakepilot.test_intelligence.application.store import UnitOfWork
@@ -40,6 +41,7 @@ from flakepilot.test_intelligence.application.store import UnitOfWork
 __all__ = [
     "BoundCodeAccessVerifier",
     "ClassifiedRunReport",
+    "RunIndexReport",
     "RunViews",
     "code_access_verifier",
 ]
@@ -119,4 +121,33 @@ class RunViews:
             repo_id=repo_id,
             run_id=run_id,
             code_host=verified.standing,
+        )
+
+    async def runs_index(
+        self, *, access: OrgAccess, org_id: str, repo_id: str, limit: int
+    ) -> RunIndexReport:
+        """A pair's stored runs, newest first, authorization-checked.
+
+        Same chain as `classified`: the org and repo in the URL are lookup
+        keys; the principal's code-host standing on that exact repository is
+        verified before the use case runs (a principal with no handle, an
+        unavailable or indeterminate lookup, and a verified lack of access all
+        deny without disclosure); `repo.view` is decided under the same
+        intersection rule. An unbound repository denies like every
+        unverified-lookup outcome. The listing itself is read-only.
+        """
+        login = await self._login_reader(SessionPrincipal(access.principal_id))
+        if login is None:
+            # No handle to verify: not evidence, deny like every unverified answer.
+            verified = AccessVerification.INDETERMINATE
+        else:
+            verified = await self._verifier.verify(
+                login=login, org_id=org_id, repo_id=repo_id
+            )
+        return await RunViewer(self._unit_of_work).runs_index_for(
+            access=access,
+            org_id=org_id,
+            repo_id=repo_id,
+            code_host=verified.standing,
+            limit=limit,
         )

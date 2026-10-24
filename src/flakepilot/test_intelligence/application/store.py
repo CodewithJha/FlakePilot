@@ -99,6 +99,22 @@ class RunReport:
     results: tuple[ReportedCase, ...]
 
 
+@dataclass(frozen=True)
+class RunIndexEntry:
+    """One stored run's lean identity for listings, read-only.
+
+    Exactly the columns already stored for the run row; no classification is
+    computed here (per-test verdicts belong to each run's own view)."""
+
+    run_id: str
+    source: str
+    commit_sha: str
+    environment: str
+    revision_status: str
+    received_at: datetime | None
+    summary: RunSummary
+
+
 class TiStore(Protocol):
     async def append_event(self, event: Event) -> None: ...
 
@@ -158,6 +174,16 @@ class TiStore(Protocol):
         self, *, org_id: str, repo_id: str, run_id: str
     ) -> RunReport | None:
         """One run and its attempts, or None when it is not in this pair."""
+        ...
+
+    async def runs_index(
+        self, *, org_id: str, repo_id: str, limit: int
+    ) -> tuple[RunIndexEntry, ...]:
+        """The pair's stored runs, newest first, at most `limit` rows.
+
+        An (org, repo) pair with no stored runs is simply an empty tuple:
+        existence of the pair is the caller's authorization question, not a
+        listing answer."""
         ...
 
 

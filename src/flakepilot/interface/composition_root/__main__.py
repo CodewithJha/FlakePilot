@@ -1,6 +1,7 @@
 """Entry point: `python -m flakepilot.interface.composition_root` runs the server;
 `... bootstrap-org --help` onboards an org; `... register-repo | add-member | grant |
 revoke | show-access --help` administer members, bindings and grants (operator trust);
+`... list-runs --help` lists a repository's stored runs (read-only);
 `... verify-github-app --help` runs the read-only staging check of the GitHub App
 and the code-host access verifier;
 `... worker` runs the leased job worker;
@@ -18,7 +19,7 @@ from flakepilot.interface.composition_root import Settings, SettingsError, creat
 _USAGE = (
     "Usage: python -m flakepilot.interface.composition_root "
     "[bootstrap-org | register-repo | add-member | grant | revoke | show-access | "
-    "verify-github-app | issue-ci-upload-token | ci-run-report | worker]"
+    "list-runs | verify-github-app | issue-ci-upload-token | ci-run-report | worker]"
 )
 
 
@@ -56,6 +57,10 @@ def main() -> None:
         )
 
         sys.exit(run_issue_ci_upload_token(settings, args[1:]))
+    if args[:1] == ["list-runs"]:
+        from flakepilot.interface.composition_root.operator import run_list_runs
+
+        sys.exit(run_list_runs(settings, args[1:]))
     if args[:1] == ["ci-run-report"]:
         from flakepilot.interface.composition_root.operator import run_ci_run_report
 
