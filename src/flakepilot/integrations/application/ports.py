@@ -3,6 +3,7 @@
 import enum
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Protocol
 
 _CODE = re.compile(r"[a-z][a-z0-9_]{0,39}")
@@ -182,6 +183,124 @@ class AiAssistPort(Protocol):
     def describe(self) -> AiCapabilities: ...
 
     async def submit(self, request: AiRequest) -> AiResponse: ...
+
+
+_MAX_EXCERPT_BYTES = 8 * 1024
+# A source URL is http(s) only and at most 2048 bytes: it cannot be reached,
+# cited or revisited otherwise.
+_MAX_URL = 2_048
+
+
+@dataclass(frozen=True)
+class ResearchQuery:
+    """One bounded research question. Sourced text is always untrusted data."""
+
+    query: str
+    max_sources: int = 5
+
+    def __post_init__(self) -> None:
+        length = len(self.query.encode())
+        if not 1 <= length <= 512:
+            raise ValueError("a research question is 1-512 bytes")
+        if not 1 <= self.max_sources <= 10:
+            raise ValueError("max_sources is 1-10")
+
+
+@dataclass(frozen=True)
+class ResearchSource:
+    """One retrieved source with its provenance. The excerpt is untrusted content
+    (`name: text` framing and the citation checker treat it as data, never as
+    instructions); nothing here may carry budget or authority."""
+
+    url: str
+    title: str
+    retrieved_at: datetime
+    excerpt: str
+
+    def __post_init__(self) -> None:
+        if not self.url.startswith(("http://", "https://")) or len(self.url) > _MAX_URL:
+            raise ValueError("a source URL is an http(s) URL of at most 2048 bytes")
+        if len(self.title.encode()) > 200:
+            raise ValueError("a source title is at most 200 bytes")
+        if len(self.excerpt.encode()) > _MAX_EXCERPT_BYTES:
+            raise ValueError("a source excerpt is at most 8192 bytes")
+
+
+class ResearchProviderError(Exception):
+    """Research could not be performed. `reason` is short; provider text is never
+    echoed. `unavailable` means contact failed (network, timeout, 5xx, unreadable
+    response); otherwise the provider refused the query."""
+
+    def __init__(self, reason: str, *, unavailable: bool = False) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.unavailable = unavailable
+
+
+class ResearchProvider(Protocol):
+    """Bounded technical research (ADR-017 decision 4). Implementations must:
+    honor the query budget (`max_sources`), deduplicate by URL, fail closed on
+    every transport or shape failure with a short code, and never treat search
+    results as anything but data. Deterministic fixtures serve local truth;
+    live providers need owner-approved credentials."""
+
+    def describe(self) -> AiCapabilities: ...
+
+    async def search(self, query: ResearchQuery) -> tuple[ResearchSource, ...]: ...
+
+
+@dataclass(frozen=True)
+class SpeechRequest:
+    """A text brief to speak. The text must already be clean (no secrets, no raw
+    logs): the caller summarizes before this port is touched."""
+
+    text: str
+    voice: str = "default"
+
+    def __post_init__(self) -> None:
+        length = len(self.text.encode())
+        if not 1 <= length <= 4_096:
+            raise ValueError("a speech text is 1-4096 bytes")
+        _code(self.voice, "voice")
+
+
+@dataclass(frozen=True)
+class SpeechAudio:
+    """Generated audio: capped bytes and a fixed media type. `model` records
+    provenance as a short code, per the AiResponse contract."""
+
+    audio: bytes
+    media_type: str
+    provider: str
+    model: str | None
+
+    def __post_init__(self) -> None:
+        if not self.audio or len(self.audio) > 2 * 1024 * 1024:
+            raise ValueError("speech audio is 1 byte to 2 MiB")
+        if not 1 <= len(self.media_type) <= 100:
+            raise ValueError("a media type is 1-100 bytes")
+        _code(self.provider, "provider")
+        if self.model is not None:
+            _code(self.model, "model")
+
+
+class SpeechProviderError(Exception):
+    """Text could not be spoken. Same reason rules as ResearchProviderError."""
+
+    def __init__(self, reason: str, *, unavailable: bool = False) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.unavailable = unavailable
+
+
+class SpeechProvider(Protocol):
+    """Opt-in text-to-speech (ADR-017; goal 14). Absent by default: text-only
+    operation is the fallback and needs no port at all. Live speech providers
+    need owner-approved credentials; the text must never carry secrets."""
+
+    def describe(self) -> AiCapabilities: ...
+
+    async def speak(self, request: SpeechRequest) -> SpeechAudio: ...
 
 
 _SHA = re.compile(r"[0-9a-f]{40}")
