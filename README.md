@@ -234,6 +234,23 @@ rules `decide()` uses. Membership and grant changes revoke the member's live
 sign-in sessions. A foreign-org or unregistered repo is refused with one
 message (the org is not named), and every refusal exits 1.
 
+`verify-github-app` is a read-only staging diagnostic for the GitHub App and
+the code-host access verifier (the Decision E runbook in
+[GRANT-AUTHORIZATION-DECISION-SHEET](docs/operations/GRANT-AUTHORIZATION-DECISION-SHEET.md)).
+It verifies explicitly named collaborator handles against an explicitly
+registered (org, repo) binding through the real composition verifier, always
+runs a no-credentials fail-closed probe, counts every provider contact, and
+exits nonzero unless the requested live checks pass against a contacted
+provider. With no credentials configured it reports LIVE VERIFICATION NOT
+PERFORMED; it mutates nothing (no grant, membership, session, audit or outbox
+row):
+
+```sh
+uv run python -m flakepilot.interface.composition_root verify-github-app \
+  --label staging --org-id $ORG_ID --repo-id $REPO_ID --owner acme --name staging-pilot \
+  --allow-login collaborator-ok --deny-login not-a-collaborator
+```
+
 The authenticated session-user run view verifies code-host access before
 serving a run: REPO's `CodeHostAccessVerifier` implementation checks the
 viewer's account handle against the run's canonical repository as FlakePilot's
