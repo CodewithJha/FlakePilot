@@ -3,8 +3,9 @@
 `POST /orgs/{org_id}/runs/{run_id}/investigation` runs DIA's bounded
 investigation of one stored run and answers JSON: stage records, research
 sources, captured page hashes, the assist's counts, the history ranking, and
-the counts-only brief text. `POST .../investigation/brief` runs it again and
-answers the brief as audio, only when a speech provider is configured.
+the counts-only brief text and the report URL. `POST .../investigation/brief`
+runs it again and answers the brief as audio, only when a speech provider is
+configured, with the report URL in a `Link` header (never spoken).
 
 Both need a session (and, being POSTs, a same-origin request: CSRF), then
 `repo.investigate` on the run's repo with a verified code-host standing. The
@@ -87,6 +88,7 @@ def _body(report: InvestigationReport, report_url: str) -> dict[str, Any]:
             for p in ranked
         ],
         "brief": compose_brief(report, report_url=report_url),
+        "report_url": report_url,
     }
 
 
@@ -121,14 +123,19 @@ async def brief_audio(
     access: Annotated[OrgAccess, Depends(org_access)],
 ) -> Response:
     investigations: Investigations = request.app.state.investigations
+    report_url = _report_url(request, org_id, run_id)
     audio, media_type = await investigations.brief_audio(
         access=access,
         org_id=str(org_id),
         run_id=str(run_id),
         origin=request_origin(),
-        report_url=_report_url(request, org_id, run_id),
+        report_url=report_url,
     )
-    return Response(audio, media_type=media_type, headers=NO_STORE)
+    return Response(
+        audio,
+        media_type=media_type,
+        headers={**NO_STORE, "Link": f'<{report_url}>; rel="related"'},
+    )
 
 
 router.add_api_route(

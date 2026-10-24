@@ -2,7 +2,8 @@
 
 `compose_brief` turns a finished `InvestigationReport` into a short text:
 verdict counts, supporting evidence counts, uncertainty, deterministic next
-steps, and a link to the full report. It is built from counts and enum
+steps, and a note that the full report is linked (the URL itself travels
+beside the text, never in it). It is built from counts and enum
 values only — no test names, log lines, model text, page excerpts, or
 anything else a repository or provider wrote — so the text that may leave
 the process for a speech provider carries no repository content or secrets.
@@ -61,7 +62,9 @@ def _count(number: int, noun: str) -> str:
 
 
 def compose_brief(report: InvestigationReport, *, report_url: str) -> str:
-    link = _plain_link(report_url)
+    """`report_url` is checked but never spoken: read aloud, its IDs double
+    the audio. Callers hand the link out beside the text."""
+    _plain_link(report_url)
     cases = report.run.cases
     verdicts = Counter(
         case.classification.failure_class.value
@@ -123,7 +126,7 @@ def compose_brief(report: InvestigationReport, *, report_url: str) -> str:
         f"Evidence: {evidence}. "
         f"Uncertainty: {uncertainty}. Model claims are advisory. "
         f"Next steps: {' '.join(steps)} "
-        f"Full report: {link}"
+        "The full report is linked."
     )
     if len(brief.encode()) > MAX_BRIEF_BYTES:
         raise ValueError("the brief exceeds its length cap")

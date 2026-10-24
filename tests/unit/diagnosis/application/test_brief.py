@@ -158,7 +158,8 @@ def test_the_brief_states_verdicts_evidence_uncertainty_steps_and_link() -> None
     assert "Stabilize or quarantine the flaky tests." in brief
     assert "Collect more runs to settle the open verdicts." in brief
     assert "History ranks 3 tests for attention." in brief
-    assert brief.endswith(f"Full report: {LINK}")
+    assert brief.endswith("The full report is linked.")
+    assert "flakepilot.example.com" not in brief and "cccccccc" not in brief
 
 
 def test_no_repository_or_provider_text_reaches_the_brief() -> None:

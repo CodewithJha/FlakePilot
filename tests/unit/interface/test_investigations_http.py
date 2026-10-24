@@ -271,7 +271,9 @@ def test_an_investigator_gets_the_report_and_provenance_is_recorded() -> None:
     assert report["sources"] == report["pages"] == report["prioritized"] == []
     assert report["assist"]["outcome"] == "unavailable"
     assert report["brief"].startswith("FlakePilot investigation brief.")
-    assert report["brief"].endswith(f"{ORIGIN}/orgs/{ORG}/runs/{RUN}")
+    assert report["brief"].endswith("The full report is linked.")
+    assert report["report_url"] == f"{ORIGIN}/orgs/{ORG}/runs/{RUN}"
+    assert RUN not in report["brief"]
     assert SECRET_TEST_NAME not in report["brief"]
     assert recorded(diag) == ["complete"]
 
@@ -361,8 +363,10 @@ def test_the_brief_speaks_counts_only_and_returns_audio_unstored() -> None:
     assert body == b"ID3fake"
     assert dict(headers)["content-type"] == "audio/mpeg"
     assert dict(headers)["cache-control"] == "no-store"
+    assert dict(headers)["link"] == f'<{ORIGIN}/orgs/{ORG}/runs/{RUN}>; rel="related"'
     [spoken] = speech.requests
     assert spoken.text.startswith("FlakePilot investigation brief.")
+    assert RUN not in spoken.text and ORIGIN not in spoken.text
     assert SECRET_TEST_NAME not in spoken.text and "hunter2" not in spoken.text
     assert recorded(diag) == ["complete"]
 
