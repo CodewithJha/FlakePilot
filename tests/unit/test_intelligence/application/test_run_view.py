@@ -150,6 +150,18 @@ class FakeTiStore:
         assert (org_id, repo_id) == (ORG, REPO)
         return self.history_responses.get(max_tests, ())
 
+    async def failure_trend(
+        self,
+        *,
+        org_id: str,
+        repo_id: str,
+        start: Any,
+        end: Any,
+        bucket: str,
+        limit: int,
+    ) -> tuple[Any, ...]:
+        raise AssertionError("the run viewer never reads trends")
+
     def page(self, entries: tuple[RunIndexEntry, ...]) -> None:
         self.index_entries = entries
 

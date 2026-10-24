@@ -21,8 +21,10 @@ composition of normalized, integrity-governed rows, reassembled at read time:
   and `ti.test_identities` through `RunViewer` (one unit of work, tenant
   scoped by construction). The
   [SPONSOR-IMPLEMENTATION-MAP](SPONSOR-IMPLEMENTATION-MAP.md)
-  goals 2 and 6 add reliability statistics and prioritization over the same
-  rows — the same data, one copy, one authorization path.
+  goals 6 and 12 add reliability statistics, day/week trends, and
+  prioritization over the same rows, and goal 2's investigation composes
+  them — the same data, one copy, one authorization path (re-checked at
+  `3b93cb6`; see [TIGER-DATA-EVALUATION](TIGER-DATA-EVALUATION.md)).
 - Investigation provenance is **event rows** (`diag.investigation.recorded`,
   `iam.agent.delegated`, `diag.diagnosis.recorded`) in the same transaction
   discipline as the state they describe (ADR-012). Events are append-only;

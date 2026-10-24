@@ -110,6 +110,22 @@ class IdentityHistory:
 
 
 @dataclass(frozen=True)
+class TrendBucket:
+    """One (time bucket, environment) cell of CI-upload history.
+
+    A "test run" is one identity inside one run; it failed when any attempt
+    failed or errored, and it was flaky when a failing attempt was later
+    recovered by a passing one (the rule set's mechanical evidence)."""
+
+    bucket_start: datetime
+    environment: str
+    runs: int
+    test_runs: int
+    failed_test_runs: int
+    flaky_test_runs: int
+
+
+@dataclass(frozen=True)
 class RunIndexEntry:
     """One stored run's lean identity for listings, read-only.
 
@@ -192,6 +208,21 @@ class TiStore(Protocol):
         `cutoff`, the most recently active first. Histories include only runs at
         or before the cutoff (the leakage guard for prioritization).
         """
+        ...
+
+    async def failure_trend(
+        self,
+        *,
+        org_id: str,
+        repo_id: str,
+        start: datetime,
+        end: datetime,
+        bucket: str,
+        limit: int,
+    ) -> tuple[TrendBucket, ...]:
+        """CI-upload runs with `start < received_at <= end`, counted per UTC
+        `bucket` ("day" or "week") and environment, oldest bucket first, at
+        most `limit` cells. Plain `date_trunc`: no extension required."""
         ...
 
     async def run_report(

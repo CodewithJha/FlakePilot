@@ -5,7 +5,7 @@ Every statement is scoped by (org_id, repo_id). Times come from PostgreSQL (`now
 
 import uuid
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import LargeBinary, any_, bindparam, func, select, text
@@ -22,6 +22,7 @@ from flakepilot.test_intelligence.application.store import (
     RunIndexEntry,
     RunReport,
     RunSummary,
+    TrendBucket,
 )
 from flakepilot.test_intelligence.domain.classification import Observation
 from flakepilot.test_intelligence.domain.results import (
@@ -437,6 +438,85 @@ class SqlTiStore:
                     errored=row.errored,
                     skipped=row.skipped,
                 ),
+            )
+            for row in found
+        )
+
+    async def failure_trend(
+        self,
+        *,
+        org_id: str,
+        repo_id: str,
+        start: datetime,
+        end: datetime,
+        bucket: str,
+        limit: int,
+    ) -> tuple[TrendBucket, ...]:
+        if bucket not in ("day", "week"):
+            raise ValueError("the trend bucket is 'day' or 'week'")
+        if limit < 1:
+            return ()
+        failing = test_results.c.outcome.in_((Outcome.FAILED, Outcome.ERRORED))
+        # One row per (run, identity): flaky when the first failing attempt
+        # precedes the last passing one, i.e. a failure later recovered.
+        per_test = (
+            select(
+                runs.c.id.label("run_id"),
+                runs.c.environment,
+                func.date_trunc(bucket, func.timezone("UTC", runs.c.received_at)).label(
+                    "bucket_start"
+                ),
+                func.bool_or(failing).label("failed"),
+                func.coalesce(
+                    func.min(test_results.c.attempt).filter(failing)
+                    < func.max(test_results.c.attempt).filter(
+                        test_results.c.outcome == Outcome.PASSED
+                    ),
+                    False,
+                ).label("flaky"),
+            )
+            .join(
+                runs,
+                (runs.c.org_id == test_results.c.org_id)
+                & (runs.c.repo_id == test_results.c.repo_id)
+                & (runs.c.id == test_results.c.run_id),
+            )
+            .where(
+                test_results.c.org_id == org_id,
+                test_results.c.repo_id == repo_id,
+                runs.c.source == RunSource.CI_UPLOAD,
+                runs.c.received_at > start,
+                runs.c.received_at <= end,
+            )
+            .group_by(
+                runs.c.id,
+                runs.c.environment,
+                runs.c.received_at,
+                test_results.c.test_id,
+            )
+            .subquery()
+        )
+        found = await self._session.execute(
+            select(
+                per_test.c.bucket_start,
+                per_test.c.environment,
+                func.count(func.distinct(per_test.c.run_id)).label("runs"),
+                func.count().label("test_runs"),
+                func.count().filter(per_test.c.failed).label("failed_test_runs"),
+                func.count().filter(per_test.c.flaky).label("flaky_test_runs"),
+            )
+            .group_by(per_test.c.bucket_start, per_test.c.environment)
+            .order_by(per_test.c.bucket_start, per_test.c.environment)
+            .limit(limit)
+        )
+        return tuple(
+            TrendBucket(
+                bucket_start=row.bucket_start.replace(tzinfo=UTC),
+                environment=row.environment,
+                runs=row.runs,
+                test_runs=row.test_runs,
+                failed_test_runs=row.failed_test_runs,
+                flaky_test_runs=row.flaky_test_runs,
             )
             for row in found
         )

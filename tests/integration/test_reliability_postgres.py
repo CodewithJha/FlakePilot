@@ -1,10 +1,11 @@
 """Reliability analytics and prioritization over real `ti` tables.
 
-Seeds runs and results through `SqlTiStore`'s own write path (no SQL
-shortcuts) and exercises `repo_history`, `Reliability`, and `prioritize`
-against real rows: the cutoff excludes genuinely older runs, scope is
-(org, repo)-exact, the store bound holds, and the flakiest stored test comes
-out ranked first.
+Seeds runs and results through `SqlTiStore`'s own write path (one documented
+receipt-time update is the only SQL shortcut) and exercises `repo_history`,
+`failure_trend`, `Reliability`, and `prioritize` against real rows: the cutoff
+excludes genuinely older runs, scope is (org, repo)-exact, the store bound
+holds, the flakiest stored test comes out ranked first, and day/week buckets
+and the previous-window comparison count real attempts.
 """
 
 import asyncio
@@ -15,11 +16,16 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from flakepilot.interface.composition_root.database import create_engine, transaction
 from flakepilot.test_intelligence.application.prioritization import prioritize
-from flakepilot.test_intelligence.application.reliability import Reliability
+from flakepilot.test_intelligence.application.reliability import (
+    Direction,
+    Reliability,
+    WindowTotals,
+)
 from flakepilot.test_intelligence.application.store import (
     NewUpload,
     RunSummary,
@@ -205,6 +211,72 @@ def test_reliability_and_prioritization_rank_real_history(url: str) -> None:
     assert "Rank, not probability" in ranking.note
     assert ancient.histories == ()  # the cutoff excluded everything, honestly
     assert ids["green"]
+
+
+def test_failure_trend_buckets_and_compares_real_rows(url: str) -> None:
+    async def scenario(engine: AsyncEngine) -> Any:
+        org, repo = str(uuid.uuid4()), str(uuid.uuid4())
+        ids = await seed_planted(engine, org_id=org, repo_id=repo)
+        now = datetime.now(UTC)
+        async with transaction(engine) as session:
+            s = SqlTiStore(session)
+            day = await s.failure_trend(
+                org_id=org,
+                repo_id=repo,
+                start=now - timedelta(days=1),
+                end=now,
+                bucket="day",
+                limit=10,
+            )
+            other_repo = await s.failure_trend(
+                org_id=org,
+                repo_id=str(uuid.uuid4()),
+                start=now - timedelta(days=1),
+                end=now,
+                bucket="day",
+                limit=10,
+            )
+            zero = await s.failure_trend(
+                org_id=org,
+                repo_id=repo,
+                start=now - timedelta(days=1),
+                end=now,
+                bucket="day",
+                limit=0,
+            )
+        # The store stamps receipt with now(); placing a run in the previous
+        # window needs this one direct update (the always-failing test's run).
+        async with transaction(engine) as session:
+            await session.execute(
+                text(
+                    "UPDATE ti.runs SET received_at = received_at - interval '10 days' "
+                    "WHERE org_id = :org AND repo_id = :repo AND id IN "
+                    "(SELECT run_id FROM ti.test_results WHERE test_id = :test)"
+                ),
+                {"org": org, "repo": repo, "test": ids["failing"]},
+            )
+        report = await Reliability(unit_of_work(engine)).trend(
+            org_id=org, repo_id=repo, end=now, window=timedelta(days=7), bucket="week"
+        )
+        return now, day, (other_repo, zero), report
+
+    now, day, negatives, report = run(url, scenario)
+    (cell,) = day  # four runs in one transaction: one day, one environment
+    assert cell.bucket_start.tzinfo is UTC and cell.bucket_start <= now
+    assert (cell.bucket_start.hour, cell.bucket_start.minute) == (0, 0)
+    assert (cell.environment, cell.runs, cell.test_runs) == ("ci-linux", 4, 4)
+    assert (cell.failed_test_runs, cell.flaky_test_runs) == (3, 2)
+    assert negatives == ((), ())
+    assert report.current == WindowTotals(
+        runs=3, test_runs=3, failed_test_runs=2, flaky_test_runs=2
+    )
+    assert report.previous == WindowTotals(
+        runs=1, test_runs=1, failed_test_runs=1, flaky_test_runs=0
+    )
+    assert report.failure_direction is Direction.IMPROVED  # 2/3 against 1/1
+    assert report.flaky_direction is Direction.REGRESSED  # 2/3 against 0/1
+    assert not report.truncated
+    assert report.buckets[0].bucket_start.weekday() == 0  # ISO weeks start Monday
 
 
 @pytest.fixture
