@@ -363,3 +363,34 @@ def test_a_verified_write_standing_serves_the_view() -> None:
         app_with(store, iam, FakeVerifier(AccessVerification.WRITE))
     )
     assert status == 200
+
+
+def test_html_views_carry_the_browser_security_policy() -> None:
+    """The page response itself denies framing, script, and external resources."""
+    store = FakeRunStore(report("x"))
+    iam = FakeIam({SESSION: USER}, {(USER, ORG): [(REPO, Grant.VIEW)]})
+    status, headers, _ = get_run(app_with(store, iam))
+    policy = dict(headers)
+    assert status == 200
+    assert policy["content-security-policy"] == (
+        "default-src 'none'; style-src 'unsafe-inline'; "
+        "frame-ancestors 'none'; base-uri 'none'"
+    )
+    assert policy["x-frame-options"] == "DENY"
+
+
+def test_every_response_carries_the_middleware_headers() -> None:
+    """nosniff and Referrer-Policy apply even to JSON errors, which carry no CSP.
+
+    The 404 here is a JSON response (the not-a-member path), proving the headers
+    come from the middleware, not from the HTML route.
+    """
+    store = FakeRunStore(report("x"))
+    iam = FakeIam({SESSION: ROGUE_USER}, {})
+    status, headers, _ = get_run(app_with(store, iam))
+    policy = dict(headers)
+    assert status == 404
+    assert policy["x-content-type-options"] == "nosniff"
+    assert policy["referrer-policy"] == "no-referrer"
+    assert "content-security-policy" not in policy
+    assert "x-frame-options" not in policy  # frame denial belongs to HTML only

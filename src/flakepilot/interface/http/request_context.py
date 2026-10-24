@@ -96,7 +96,14 @@ class RequestContextMiddleware:
             if message["type"] == "http.response.start":
                 started = True
                 status = message["status"]
-                MutableHeaders(scope=message)[REQUEST_ID_HEADER] = request_id
+                headers = MutableHeaders(scope=message)
+                headers[REQUEST_ID_HEADER] = request_id
+                # Browser-side hardening for every response: never sniff bodies
+                # away from their declared type, never leak a referrer. The two
+                # server-rendered HTML pages additionally carry their policy in
+                # the response itself (runs.py).
+                headers["X-Content-Type-Options"] = "nosniff"
+                headers["Referrer-Policy"] = "no-referrer"
             await send(message)
 
         try:

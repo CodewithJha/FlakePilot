@@ -1,5 +1,6 @@
 import base64
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -325,3 +326,21 @@ def test_installation_credentials_are_both_required_and_the_key_stays_out() -> N
         )
     assert "FLAKEPILOT_GITHUB_APP_PRIVATE_KEY" in str(rejected.value)
     assert material not in str(rejected.value)
+
+
+def test_every_settings_variable_is_documented_in_env_example() -> None:
+    """Each FLAKEPILOT_* name Settings reads must appear in .env.example.
+
+    Regressed in the release-readiness audit: the code-host access verifier's
+    FLAKEPILOT_GITHUB_APP_ID and FLAKEPILOT_GITHUB_APP_PRIVATE_KEY were parsed
+    and validated by Settings but missing from the documented example, so a
+    deployment following it could not configure verification at all.
+    """
+    repo_root = Path(__file__).resolve().parents[3]
+    example = (repo_root / ".env.example").read_text(encoding="utf-8")
+    documented = set(re.findall(r"^FLAKEPILOT_[A-Za-z0-9_]+", example, re.MULTILINE))
+    settings_source = (
+        repo_root / "src/flakepilot/interface/composition_root/settings.py"
+    ).read_text(encoding="utf-8")
+    read = set(re.findall(r"FLAKEPILOT_[A-Za-z0-9_]+", settings_source))
+    assert read <= documented, sorted(read - documented)

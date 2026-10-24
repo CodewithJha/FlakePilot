@@ -16,7 +16,10 @@ not found, so a cross-org request learns nothing, and viewing needs
 
 Every user-controlled string — test names, classnames, attempt outcomes, run
 IDs, SHAs, evidence values — is HTML-escaped, including the values inside the
-classification evidence.
+classification evidence. Escaping is the first line of defense; these
+responses also carry a strict browser-side policy (they reference no
+external resource and are never framed), and the middleware adds
+`nosniff`/`Referrer-Policy` to every response.
 """
 
 import html
@@ -25,6 +28,18 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
+
+# The pages' own policy: no external resource may load, no script may run
+# (default-src 'none' denies script-src and every other fallback too), the
+# only styles are the two inline <style> blocks, and the pages are never
+# framed (frame-ancestors 'none', plus X-Frame-Options for older browsers).
+HTML_SECURITY_HEADERS = {
+    "Content-Security-Policy": (
+        "default-src 'none'; style-src 'unsafe-inline'; "
+        "frame-ancestors 'none'; base-uri 'none'"
+    ),
+    "X-Frame-Options": "DENY",
+}
 
 from flakepilot.identity.application.authorization import OrgAccess
 from flakepilot.interface.composition_root.reporting import (
@@ -207,7 +222,7 @@ async def run_view(
     report = await request.app.state.run_views.classified(
         access=access, org_id=str(org_id), run_id=run_id
     )
-    return HTMLResponse(_page(report), status_code=200)
+    return HTMLResponse(_page(report), status_code=200, headers=HTML_SECURITY_HEADERS)
 
 
 router.add_api_route(
@@ -237,7 +252,9 @@ async def runs_index(
     report = await request.app.state.run_views.runs_index(
         access=access, org_id=str(org_id), repo_id=repo_id, limit=limit
     )
-    return HTMLResponse(_index_page(report), status_code=200)
+    return HTMLResponse(
+        _index_page(report), status_code=200, headers=HTML_SECURITY_HEADERS
+    )
 
 
 router.add_api_route(
