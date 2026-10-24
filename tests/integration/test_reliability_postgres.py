@@ -9,6 +9,7 @@ and the previous-window comparison count real attempts.
 """
 
 import asyncio
+import json
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -19,6 +20,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from flakepilot.interface.composition_root import Secret, Settings, analytics
 from flakepilot.interface.composition_root.database import create_engine, transaction
 from flakepilot.test_intelligence.application.prioritization import prioritize
 from flakepilot.test_intelligence.application.reliability import (
@@ -277,6 +279,45 @@ def test_failure_trend_buckets_and_compares_real_rows(url: str) -> None:
     assert report.flaky_direction is Direction.REGRESSED  # 2/3 against 0/1
     assert not report.truncated
     assert report.buckets[0].bucket_start.weekday() == 0  # ISO weeks start Monday
+
+
+def test_operator_analytics_commands_read_real_rows(
+    url: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    org, repo = str(uuid.uuid4()), str(uuid.uuid4())
+
+    async def seed(engine: AsyncEngine) -> None:
+        await seed_planted(engine, org_id=org, repo_id=repo)
+
+    run(url, seed)
+    settings = Settings(Secret(url))
+    pair = ["--org-id", org, "--repo-id", repo]
+    assert analytics.run_reliability_trend(settings, [*pair, "--days", "2"]) == 0
+    trend = json.loads(capsys.readouterr().out)
+    assert trend["current"] == {
+        "runs": 4,
+        "test_runs": 4,
+        "failed_test_runs": 3,
+        "flaky_test_runs": 2,
+    }
+    assert trend["failure_direction"] == "no_data"  # nothing in the window before
+    cutoff = (datetime.now(UTC) - timedelta(days=1)).isoformat()
+    args = [*pair, "--train-cutoff", cutoff, "--horizon-days", "1"]
+    assert analytics.run_evaluate_prioritization(settings, args) == 0
+    evaluation = json.loads(capsys.readouterr().out)
+    # All four runs land after the cutoff: no identity has a past, so nothing
+    # is measured and nothing is invented.
+    assert (
+        evaluation["dataset"]["train_rows"] == evaluation["dataset"]["test_rows"] == 0
+    )
+    assert evaluation["candidate"] == {
+        "name": "tabpfn",
+        "status": "blocked",
+        "reason": "no_test_examples",
+        "precision_at_k": None,
+        "roc_auc": None,
+        "brier": None,
+    }
 
 
 @pytest.fixture

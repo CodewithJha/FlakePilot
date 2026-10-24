@@ -6,7 +6,8 @@ revoke | show-access --help` administer members, bindings and grants (operator t
 and the code-host access verifier;
 `... worker` runs the leased job worker;
 `... issue-ci-upload-token --help` issues a CI token; `... ci-run-report --help`
-renders a stored run."""
+renders a stored run; `... provider-status | reliability-trend |
+evaluate-prioritization --help` are read-only analytics (JSON)."""
 
 import asyncio
 import os
@@ -19,7 +20,8 @@ from flakepilot.interface.composition_root import Settings, SettingsError, creat
 _USAGE = (
     "Usage: python -m flakepilot.interface.composition_root "
     "[bootstrap-org | register-repo | add-member | grant | revoke | show-access | "
-    "list-runs | verify-github-app | issue-ci-upload-token | ci-run-report | worker]"
+    "list-runs | verify-github-app | issue-ci-upload-token | ci-run-report | "
+    "provider-status | reliability-trend | evaluate-prioritization | worker]"
 )
 
 
@@ -65,15 +67,32 @@ def main() -> None:
         from flakepilot.interface.composition_root.operator import run_ci_run_report
 
         sys.exit(run_ci_run_report(settings, args[1:]))
+    if args[:1] and args[0] in (
+        "provider-status",
+        "reliability-trend",
+        "evaluate-prioritization",
+    ):
+        from flakepilot.interface.composition_root import analytics
+
+        command = {
+            "provider-status": analytics.run_provider_status,
+            "reliability-trend": analytics.run_reliability_trend,
+            "evaluate-prioritization": analytics.run_evaluate_prioritization,
+        }[args[0]]
+        sys.exit(command(settings, args[1:]))
     if args == ["worker"]:
         from flakepilot.interface.composition_root.worker import run_worker
 
         sys.exit(asyncio.run(run_worker(settings)))
     if args:
         sys.exit(_USAGE)
+    try:
+        app = create_app(settings)
+    except SettingsError as exc:
+        sys.exit(f"Invalid configuration: {exc}")
     # uvicorn's own logging and access log are off: the app logs JSON lines without query strings.
     uvicorn.run(
-        create_app(settings),
+        app,
         host=settings.host,
         port=settings.port,
         log_config=None,
