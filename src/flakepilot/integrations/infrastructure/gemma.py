@@ -50,6 +50,10 @@ _KEY = re.compile(r"[\x21-\x7e]{1,200}")
 _FENCE = re.compile(r"\A```(?:json)?[ \t]*\n(.*?)\n?```\Z", re.DOTALL)
 
 
+def model_ok(model_id: str) -> bool:
+    return _MODEL_ID.fullmatch(model_id) is not None
+
+
 def model_code(model_id: str) -> str:
     """`gemma-4-26b-a4b-it` -> `gemma_4_26b_a4b_it`: the short-code form the
     AiResponse contract records as provenance."""

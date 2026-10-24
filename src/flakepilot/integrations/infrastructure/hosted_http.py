@@ -19,7 +19,7 @@ import random
 import ssl
 import urllib.error
 import urllib.request
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 
@@ -109,6 +109,29 @@ def https_transport(
         raise HostedError("provider_unreachable") from None
     except (OSError, http.client.HTTPException):
         raise HostedError("provider_unreachable") from None
+
+
+CALL_MAX_BYTES = 4 * 1024 * 1024
+
+
+def call(
+    method: str,
+    url: str,
+    headers: Mapping[str, str],
+    body: bytes,
+    timeout_seconds: float,
+) -> tuple[int, bytes]:
+    """`https_transport` for callers that hold no urllib types (the TabPFN
+    predictor). https only; every failure is an `OSError` carrying a reason code."""
+    if urlsplit(url).scheme != "https":
+        raise OSError("not_https")
+    request = urllib.request.Request(
+        url, data=body, headers=dict(headers), method=method
+    )
+    try:
+        return https_transport(request, timeout_seconds, CALL_MAX_BYTES)
+    except HostedError as error:
+        raise OSError(error.reason) from None
 
 
 def retryable(status: int, body: bytes) -> bool:

@@ -476,3 +476,104 @@ def test_auth0_domain_must_be_a_bare_host_name(domain: str) -> None:
                 "FLAKEPILOT_AUTH0_AUDIENCE": "https://api.flakepilot.example",
             }
         )
+
+
+PROVIDERS = {
+    "FLAKEPILOT_GEMINI_API_KEY": "gem-secret-AAAA1111",
+    "FLAKEPILOT_GEMINI_MODEL": "gemma-4-31b-it",
+    "FLAKEPILOT_SERPAPI_API_KEY": "serp-secret-BBBB2222",
+    "FLAKEPILOT_BROWSERBASE_API_KEY": "bb-secret-CCCC3333",
+    "FLAKEPILOT_BROWSER_ALLOWLIST": " docs.python.org, github.com ,",
+    "FLAKEPILOT_ELEVENLABS_API_KEY": "xi-secret-DDDD4444",
+    "FLAKEPILOT_ELEVENLABS_VOICE_ID": "JBFqnCBsd6RMkjVDRZzb",
+    "FLAKEPILOT_TABPFN_API_KEY": "pfn-secret-EEEE5555",
+}
+PROVIDER_SECRETS = [v for k, v in PROVIDERS.items() if k.endswith("_API_KEY")]
+
+
+def test_hosted_providers_are_off_when_unset() -> None:
+    settings = Settings.from_environ({"FLAKEPILOT_DATABASE_URL": DSN})
+    assert settings.gemini_api_key is None and settings.gemini_model is None
+    assert settings.serpapi_api_key is None and settings.tabpfn_api_key is None
+    assert settings.browserbase_api_key is None and settings.browser_allowlist == ()
+    assert settings.elevenlabs_api_key is None and settings.elevenlabs_voice_id is None
+
+
+def test_hosted_provider_settings_are_read_and_keys_stay_secret() -> None:
+    settings = Settings.from_environ({"FLAKEPILOT_DATABASE_URL": DSN, **PROVIDERS})
+    assert settings.gemini_model == "gemma-4-31b-it"
+    assert settings.browser_allowlist == ("docs.python.org", "github.com")
+    assert settings.elevenlabs_voice_id == "JBFqnCBsd6RMkjVDRZzb"
+    assert settings.elevenlabs_model == "eleven_flash_v2_5"
+    assert settings.serpapi_api_key is not None
+    assert settings.serpapi_api_key.reveal() == "serp-secret-BBBB2222"
+    for text in (repr(settings), str(settings)):
+        assert not any(secret in text for secret in PROVIDER_SECRETS)
+
+
+@pytest.mark.parametrize(
+    "half",
+    [
+        "FLAKEPILOT_GEMINI_API_KEY",
+        "FLAKEPILOT_GEMINI_MODEL",
+        "FLAKEPILOT_BROWSERBASE_API_KEY",
+        "FLAKEPILOT_BROWSER_ALLOWLIST",
+        "FLAKEPILOT_ELEVENLABS_API_KEY",
+        "FLAKEPILOT_ELEVENLABS_VOICE_ID",
+    ],
+)
+def test_a_half_configured_provider_refuses_startup(half: str) -> None:
+    with pytest.raises(SettingsError, match="must be set together") as error:
+        Settings.from_environ({"FLAKEPILOT_DATABASE_URL": DSN, half: PROVIDERS[half]})
+    assert PROVIDERS[half] not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("FLAKEPILOT_GEMINI_MODEL", "gemini-4-argon"),
+        ("FLAKEPILOT_BROWSER_ALLOWLIST", "127.0.0.1"),
+        ("FLAKEPILOT_BROWSER_ALLOWLIST", "localhost"),
+        ("FLAKEPILOT_BROWSER_ALLOWLIST", "metadata.internal"),
+        ("FLAKEPILOT_BROWSER_ALLOWLIST", "Docs.Python.org"),
+        ("FLAKEPILOT_BROWSER_ALLOWLIST", "https://docs.python.org"),
+        ("FLAKEPILOT_BROWSER_ALLOWLIST", ","),
+        ("FLAKEPILOT_ELEVENLABS_VOICE_ID", "../../voices"),
+        ("FLAKEPILOT_ELEVENLABS_MODEL", "eleven_v9"),
+        ("FLAKEPILOT_SERPAPI_API_KEY", "two words"),
+        ("FLAKEPILOT_TABPFN_API_KEY", "x" * 201),
+    ],
+)
+def test_unusable_provider_values_are_refused_without_echo(
+    name: str, value: str
+) -> None:
+    with pytest.raises(SettingsError) as error:
+        Settings.from_environ(
+            {"FLAKEPILOT_DATABASE_URL": DSN, **PROVIDERS, name: value}
+        )
+    assert name in str(error.value) or "must be set together" in str(error.value)
+    assert value not in str(error.value) or value == ","
+    assert not any(secret in str(error.value) for secret in PROVIDER_SECRETS)
+
+
+def test_an_elevenlabs_model_alone_configures_nothing() -> None:
+    with pytest.raises(SettingsError, match="configures nothing"):
+        Settings.from_environ(
+            {
+                "FLAKEPILOT_DATABASE_URL": DSN,
+                "FLAKEPILOT_ELEVENLABS_MODEL": "eleven_multilingual_v2",
+            }
+        )
+
+
+def test_the_local_endpoint_and_gemini_are_mutually_exclusive() -> None:
+    with pytest.raises(SettingsError, match="set at most one"):
+        Settings.from_environ(
+            {
+                "FLAKEPILOT_DATABASE_URL": DSN,
+                "FLAKEPILOT_AI_ENDPOINT": "http://127.0.0.1:8080/v1/chat/completions",
+                "FLAKEPILOT_AI_MODEL": "gemma",
+                "FLAKEPILOT_GEMINI_API_KEY": PROVIDERS["FLAKEPILOT_GEMINI_API_KEY"],
+                "FLAKEPILOT_GEMINI_MODEL": PROVIDERS["FLAKEPILOT_GEMINI_MODEL"],
+            }
+        )

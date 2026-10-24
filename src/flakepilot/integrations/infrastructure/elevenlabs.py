@@ -101,6 +101,10 @@ def _refusal(status: int, body: bytes) -> tuple[str, bool, bool]:
     return "provider_http_error", True, False
 
 
+def voice_ok(voice_id: str) -> bool:
+    return _VOICE_ID.fullmatch(voice_id) is not None
+
+
 def _is_mp3(audio: bytes) -> bool:
     return audio.startswith(b"ID3") or (
         len(audio) >= 2 and audio[0] == 0xFF and audio[1] & 0xE0 == 0xE0

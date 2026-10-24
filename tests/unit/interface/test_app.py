@@ -91,6 +91,8 @@ def test_only_expected_routes_are_registered() -> None:
         "/ingest/junit",
         "/orgs/{org_id}/runs/{run_id}",
         "/orgs/{org_id}/repos/{repo_id}/runs",
+        "/orgs/{org_id}/runs/{run_id}/investigation",
+        "/orgs/{org_id}/runs/{run_id}/investigation/brief",
         "/orgs/{org_id}/reproductions",
         "/orgs/{org_id}/reproductions/{execution_id}",
         "/orgs/{org_id}/reproductions/{execution_id}/artifacts/{kind}",
@@ -103,12 +105,20 @@ def test_only_expected_routes_are_registered() -> None:
     assert get(app, "/redoc")[0] == 404
 
 
+INVESTIGATION = (
+    "/orgs/11111111-2222-4333-8444-555555555555"
+    "/runs/cccccccc-dddd-4eee-8fff-000000000001/investigation"
+)
+
+
 @pytest.mark.parametrize(
     ("method", "path"),
     [
         ("GET", "/auth/github/login"),
         ("GET", "/auth/github/callback?code=c&state=s"),
         ("POST", "/auth/logout"),
+        ("POST", INVESTIGATION),
+        ("POST", f"{INVESTIGATION}/brief"),
     ],
 )
 def test_auth_endpoints_fail_closed_without_sign_in_configuration(

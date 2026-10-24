@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from flakepilot.diagnosis.application.assist import Assist
 from flakepilot.diagnosis.application.assist import UnitOfWork as DiagUnitOfWork
+from flakepilot.diagnosis.application.investigation import Investigation
 from flakepilot.diagnosis.application.store import DiagStore
 from flakepilot.diagnosis.infrastructure.store import SqlDiagStore
 from flakepilot.identity.application.iam import (
@@ -22,11 +23,9 @@ from flakepilot.identity.application.iam import (
 )
 from flakepilot.identity.application.verification import CodeHostAccessVerifier
 from flakepilot.identity.infrastructure.store import SqlIamStore
-from flakepilot.integrations.infrastructure.ai import NullAiAssist
 from flakepilot.integrations.infrastructure.artifact_store import LocalFsArtifactStore
 from flakepilot.integrations.infrastructure.github import GitHubIdentityProvider
 from flakepilot.integrations.infrastructure.junit import JUnitParser
-from flakepilot.integrations.infrastructure.model_endpoint import LocalEndpointAssist
 from flakepilot.interface.composition_root.database import (
     CONNECT_TIMEOUT,
     EngineFactory,
@@ -40,6 +39,8 @@ from flakepilot.interface.composition_root.database import (
 from flakepilot.interface.composition_root.error_reporting import (
     configure_error_reporting,
 )
+from flakepilot.interface.composition_root.investigations import Investigations
+from flakepilot.interface.composition_root.providers import hosted_providers, log_status
 from flakepilot.interface.composition_root.reproduction import Reproductions
 from flakepilot.interface.composition_root.run_views import (
     RunViews,
@@ -56,6 +57,7 @@ from flakepilot.interface.http import (
     errors,
     health,
     ingestion,
+    investigations,
     reproductions,
     runs,
 )
@@ -64,6 +66,8 @@ from flakepilot.interface.http.request_context import (
     request_id_var,
 )
 from flakepilot.test_intelligence.application.ingestion import Ingestion
+from flakepilot.test_intelligence.application.reliability import Reliability
+from flakepilot.test_intelligence.application.run_view import RunViewer
 from flakepilot.test_intelligence.application.store import TiStore
 from flakepilot.test_intelligence.application.store import (
     UnitOfWork as TiUnitOfWork,
@@ -174,6 +178,8 @@ def create_app(
     """
     configure_logging(settings.log_level)
     configure_error_reporting(settings)
+    providers = hosted_providers(settings)
+    log_status(providers)
     identity_provider = identity_provider_factory(settings)
     artifacts = (
         LocalFsArtifactStore(settings.artifact_dir)
@@ -196,35 +202,29 @@ def create_app(
             raise
         app.state.readiness_probe = ReadinessCheck(engine)
         app.state.iam = Iam(iam_unit_of_work(engine), identity_provider)
-        # Advisory assist (ADR-017): only an operator-configured local endpoint
-        # enables it; without one the use case keeps its fail-safe NullAiAssist
-        # posture, and the ADR-014 policy gate still applies either way.
-        if settings.ai_endpoint is not None:
-            api_key = (
-                settings.ai_api_key.reveal()
-                if settings.ai_api_key is not None
-                else None
-            )
-            app.state.assist = Assist(
-                diag_unit_of_work(engine),
-                LocalEndpointAssist(
-                    endpoint=settings.ai_endpoint,
-                    model=settings.ai_model or "unspecified",
-                    api_key=api_key,
-                ),
-            )
-        else:
-            app.state.assist = Assist(diag_unit_of_work(engine), NullAiAssist())
+        diag, ti = diag_unit_of_work(engine), ti_unit_of_work(engine)
+        # Advisory assist (ADR-017): NullAiAssist unless a model is configured;
+        # the ADR-014 org policy gate applies either way.
+        app.state.assist = Assist(diag, providers.assist)
         app.state.ingestion = (
-            Ingestion(ti_unit_of_work(engine), artifacts, JUnitParser())
-            if artifacts is not None
-            else None
+            Ingestion(ti, artifacts, JUnitParser()) if artifacts is not None else None
         )
         app.state.reproductions = Reproductions(engine, settings)
-        app.state.run_views = RunViews(
-            ti_unit_of_work(engine),
-            access_verifier(engine, settings),
+        verifier = access_verifier(engine, settings)
+        app.state.run_views = RunViews(ti, verifier, app.state.iam.login)
+        app.state.investigations = Investigations(
+            Investigation(
+                runs=RunViewer(ti),
+                assist=app.state.assist,
+                reliability=Reliability(ti),
+                unit_of_work=diag,
+                research=providers.research,
+                browser=providers.browser,
+            ),
+            ti,
+            verifier,
             app.state.iam.login,
+            providers.speech,
         )
         app.state.ready = True
         try:
@@ -256,4 +256,5 @@ def create_app(
     app.include_router(ingestion.router)
     app.include_router(reproductions.router)
     app.include_router(runs.router)
+    app.include_router(investigations.router)
     return app

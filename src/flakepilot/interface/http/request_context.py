@@ -34,6 +34,10 @@ PAYLOAD_TOO_LARGE = "payload_too_large"  # 413: request body over the limit
 UNSUPPORTED_MEDIA_TYPE = "unsupported_media_type"  # 415: content type or encoding
 INVALID_REPORT = "invalid_report"  # 422: report refused, with a `reason` code
 INGESTION_NOT_CONFIGURED = "ingestion_not_configured"  # 503: no artifact storage
+SPEECH_NOT_CONFIGURED = "speech_not_configured"  # 503: no speech provider
+SPEECH_UNAVAILABLE = (
+    "speech_unavailable"  # 503: speech provider refused, with a `reason`
+)
 
 REQUEST_ID_HEADER = "X-Request-ID"
 _VALID_REQUEST_ID = re.compile(r"[A-Za-z0-9._-]{1,64}")

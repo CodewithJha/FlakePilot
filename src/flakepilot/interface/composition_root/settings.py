@@ -9,6 +9,12 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from flakepilot.integrations.infrastructure.artifact_store import root_problem
+from flakepilot.integrations.infrastructure.browserbase import allowlist_ok
+from flakepilot.integrations.infrastructure.elevenlabs import (
+    MODELS as ELEVENLABS_MODELS,
+)
+from flakepilot.integrations.infrastructure.elevenlabs import voice_ok
+from flakepilot.integrations.infrastructure.gemma import model_ok as gemma_model_ok
 from flakepilot.integrations.infrastructure.installation import (
     app_id_ok,
     private_key_ok,
@@ -94,6 +100,18 @@ class Settings:
     # Auth0 agent-token issuer (goal 9): both set, or neither (verification off).
     auth0_domain: str | None = None
     auth0_audience: str | None = None
+    # Hosted providers (ADR-017), read by the API process and operator commands
+    # only. Each is off, with no network contact, unless its key is set; a pair
+    # with one half set refuses startup.
+    gemini_api_key: Secret | None = None
+    gemini_model: str | None = None
+    serpapi_api_key: Secret | None = None
+    browserbase_api_key: Secret | None = None
+    browser_allowlist: tuple[str, ...] = ()
+    elevenlabs_api_key: Secret | None = None
+    elevenlabs_voice_id: str | None = None
+    elevenlabs_model: str = "eleven_flash_v2_5"
+    tabpfn_api_key: Secret | None = None
 
     @classmethod
     def from_environ(cls, environ: Mapping[str, str]) -> "Settings":
@@ -155,6 +173,14 @@ class Settings:
 
         artifact_dir = environ.get("FLAKEPILOT_ARTIFACT_DIR") or None
         auth0_domain, auth0_audience = _auth0(environ)
+        gemini_api_key, gemini_model = _gemini(environ)
+        if gemini_api_key is not None and environ.get("FLAKEPILOT_AI_ENDPOINT"):
+            raise SettingsError(
+                "FLAKEPILOT_AI_ENDPOINT and FLAKEPILOT_GEMINI_API_KEY both configure "
+                "the advisory model; set at most one"
+            )
+        browserbase_api_key, browser_allowlist = _browserbase(environ)
+        elevenlabs_api_key, elevenlabs_voice_id, elevenlabs_model = _elevenlabs(environ)
         return cls(
             Secret(database_url),
             log_level=log_level,
@@ -192,6 +218,15 @@ class Settings:
             sentry_dsn=_sentry_dsn(environ),
             auth0_domain=auth0_domain,
             auth0_audience=auth0_audience,
+            gemini_api_key=gemini_api_key,
+            gemini_model=gemini_model,
+            serpapi_api_key=_provider_key(environ, "FLAKEPILOT_SERPAPI_API_KEY"),
+            browserbase_api_key=browserbase_api_key,
+            browser_allowlist=browser_allowlist,
+            elevenlabs_api_key=elevenlabs_api_key,
+            elevenlabs_voice_id=elevenlabs_voice_id,
+            elevenlabs_model=elevenlabs_model,
+            tabpfn_api_key=_provider_key(environ, "FLAKEPILOT_TABPFN_API_KEY"),
         )
 
 
@@ -340,6 +375,70 @@ def _auth0(environ: Mapping[str, str]) -> tuple[str | None, str | None]:
     if len(audience) > 200 or not audience.isprintable() or " " in audience:
         raise SettingsError("FLAKEPILOT_AUTH0_AUDIENCE must be an API identifier")
     return domain, audience
+
+
+def _provider_key(environ: Mapping[str, str], name: str) -> Secret | None:
+    key = environ.get(name) or None
+    if key is None:
+        return None
+    if not re.fullmatch(r"[\x21-\x7e]{1,200}", key):
+        raise SettingsError(f"{name} must be 1-200 printable characters, no spaces")
+    return Secret(key)
+
+
+def _together(environ: Mapping[str, str], *names: str) -> bool:
+    """True when all are set, False when none is; anything else is refused."""
+    present = [bool(environ.get(name)) for name in names]
+    if any(present) and not all(present):
+        raise SettingsError(f"{' and '.join(names)} must be set together")
+    return all(present)
+
+
+def _gemini(environ: Mapping[str, str]) -> tuple[Secret | None, str | None]:
+    names = ("FLAKEPILOT_GEMINI_API_KEY", "FLAKEPILOT_GEMINI_MODEL")
+    if not _together(environ, *names):
+        return None, None
+    model = environ[names[1]]
+    if not gemma_model_ok(model):
+        raise SettingsError(
+            "FLAKEPILOT_GEMINI_MODEL must be a Gemini API Gemma model name, "
+            "e.g. gemma-4-31b-it"
+        )
+    return _provider_key(environ, names[0]), model
+
+
+def _browserbase(environ: Mapping[str, str]) -> tuple[Secret | None, tuple[str, ...]]:
+    names = ("FLAKEPILOT_BROWSERBASE_API_KEY", "FLAKEPILOT_BROWSER_ALLOWLIST")
+    if not _together(environ, *names):
+        return None, ()
+    hosts = tuple(sorted({h.strip() for h in environ[names[1]].split(",")} - {""}))
+    if not allowlist_ok(hosts):
+        raise SettingsError(
+            "FLAKEPILOT_BROWSER_ALLOWLIST must be 1-50 comma-separated public "
+            "lowercase host names (no IPs, ports, schemes or internal suffixes)"
+        )
+    return _provider_key(environ, names[0]), hosts
+
+
+def _elevenlabs(
+    environ: Mapping[str, str],
+) -> tuple[Secret | None, str | None, str]:
+    names = ("FLAKEPILOT_ELEVENLABS_API_KEY", "FLAKEPILOT_ELEVENLABS_VOICE_ID")
+    model = environ.get("FLAKEPILOT_ELEVENLABS_MODEL") or "eleven_flash_v2_5"
+    if not _together(environ, *names):
+        if environ.get("FLAKEPILOT_ELEVENLABS_MODEL"):
+            raise SettingsError(
+                "FLAKEPILOT_ELEVENLABS_MODEL without FLAKEPILOT_ELEVENLABS_API_KEY "
+                "configures nothing"
+            )
+        return None, None, model
+    if not voice_ok(environ[names[1]]):
+        raise SettingsError("FLAKEPILOT_ELEVENLABS_VOICE_ID is not a voice ID")
+    if model not in ELEVENLABS_MODELS:
+        raise SettingsError(
+            f"FLAKEPILOT_ELEVENLABS_MODEL must be one of {sorted(ELEVENLABS_MODELS)}"
+        )
+    return _provider_key(environ, names[0]), environ[names[1]], model
 
 
 def _artifact_dir(value: str) -> Path:

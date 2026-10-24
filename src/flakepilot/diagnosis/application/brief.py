@@ -21,6 +21,7 @@ from flakepilot.diagnosis.application.investigation import (
 from flakepilot.integrations.application.ports import (
     SpeechAudio,
     SpeechProvider,
+    SpeechProviderError,
     SpeechRequest,
 )
 
@@ -129,6 +130,15 @@ def compose_brief(report: InvestigationReport, *, report_url: str) -> str:
     return brief
 
 
+class SpokenBriefUnavailable(Exception):
+    """The speech provider refused or could not be reached. `reason` is its
+    short code; provider text never appears."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
 async def speak_brief(
     report: InvestigationReport,
     *,
@@ -136,8 +146,10 @@ async def speak_brief(
     report_url: str,
     voice: str = "default",
 ) -> SpeechAudio:
-    """Explicitly requested audio for one report. Provider failures propagate
-    as `SpeechProviderError`; text-only operation needs none of this."""
-    return await speech.speak(
-        SpeechRequest(compose_brief(report, report_url=report_url), voice=voice)
-    )
+    """Explicitly requested audio for one report. Provider failures become
+    `SpokenBriefUnavailable`; text-only operation needs none of this."""
+    request = SpeechRequest(compose_brief(report, report_url=report_url), voice=voice)
+    try:
+        return await speech.speak(request)
+    except SpeechProviderError as error:
+        raise SpokenBriefUnavailable(error.reason) from None

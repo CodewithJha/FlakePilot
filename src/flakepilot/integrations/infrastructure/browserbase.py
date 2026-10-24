@@ -72,6 +72,14 @@ def urllib_transport(
             return error.code, b""  # a non-2xx body is never read
 
 
+def allowlist_ok(hosts: Iterable[str]) -> bool:
+    try:
+        BrowserAllowlist(frozenset(hosts))
+    except ValueError:
+        return False
+    return True
+
+
 def _utcnow() -> datetime:
     return datetime.now(UTC)
 

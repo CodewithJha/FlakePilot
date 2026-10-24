@@ -18,6 +18,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException
 
+from flakepilot.diagnosis.application.brief import SpokenBriefUnavailable
 from flakepilot.execution.application.reproduction import InvalidExecution
 from flakepilot.identity.application.authorization import (
     PermissionDenied,
@@ -39,6 +40,8 @@ from flakepilot.interface.http.request_context import (
     METHOD_NOT_ALLOWED,
     NOT_FOUND,
     PAYLOAD_TOO_LARGE,
+    SPEECH_NOT_CONFIGURED,
+    SPEECH_UNAVAILABLE,
     UNAUTHENTICATED,
     UNSUPPORTED_MEDIA_TYPE,
     VALIDATION_ERROR,
@@ -56,6 +59,10 @@ class CrossSiteRequest(Exception):
     """A cookie-authenticated unsafe request whose Origin/Referer is not ours (CSRF)."""
 
 
+class SpeechNotConfigured(Exception):
+    """No speech provider is configured; the brief stays text-only."""
+
+
 _HTTP_CODES = {404: NOT_FOUND, 405: METHOD_NOT_ALLOWED}
 _ACCESS_ERRORS: dict[type[Exception], tuple[int, str]] = {
     Unauthenticated: (401, UNAUTHENTICATED),
@@ -66,6 +73,7 @@ _ACCESS_ERRORS: dict[type[Exception], tuple[int, str]] = {
     AuthNotConfigured: (503, AUTH_NOT_CONFIGURED),
     AuthProviderUnavailable: (503, AUTH_PROVIDER_UNAVAILABLE),
     ingestion.IngestionNotConfigured: (503, INGESTION_NOT_CONFIGURED),
+    SpeechNotConfigured: (503, SPEECH_NOT_CONFIGURED),
 }
 _REASON = re.compile(r"[a-z][a-z0-9_]{0,39}")
 _UPLOAD_REJECTIONS = {
@@ -146,9 +154,20 @@ async def _invalid_execution(request: Request, exc: Exception) -> JSONResponse:
     return JSONResponse(body, 422)
 
 
+async def _speech_unavailable(request: Request, exc: Exception) -> JSONResponse:
+    """The provider's short code only; its text never reaches the client."""
+    assert isinstance(exc, SpokenBriefUnavailable)
+    body = error_body(SPEECH_UNAVAILABLE, "Service Unavailable", request_id_var.get())
+    body["error"]["reason"] = (
+        exc.reason if _REASON.fullmatch(exc.reason) else "unavailable"
+    )
+    return JSONResponse(body, 503)
+
+
 def register_error_handlers(app: FastAPI) -> None:
     app.add_exception_handler(HTTPException, _http_error)
     app.add_exception_handler(RequestValidationError, _validation_error)
+    app.add_exception_handler(SpokenBriefUnavailable, _speech_unavailable)
     app.add_exception_handler(ingestion.UploadRejected, _upload_rejected)
     app.add_exception_handler(InvalidExecution, _invalid_execution)
     for error in _ACCESS_ERRORS:

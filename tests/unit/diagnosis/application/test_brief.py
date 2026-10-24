@@ -8,6 +8,7 @@ import pytest
 from flakepilot.diagnosis.application.assist import AssistResult
 from flakepilot.diagnosis.application.brief import (
     MAX_BRIEF_BYTES,
+    SpokenBriefUnavailable,
     compose_brief,
     speak_brief,
 )
@@ -23,6 +24,7 @@ from flakepilot.integrations.application.ports import (
     AiCapabilities,
     ResearchSource,
     SpeechAudio,
+    SpeechProviderError,
     SpeechRequest,
 )
 from flakepilot.integrations.infrastructure.speech import RecordedSpeechProvider
@@ -227,3 +229,14 @@ def test_the_fixture_speaks_a_brief() -> None:
         speak_brief(_report(MIXED), speech=RecordedSpeechProvider(), report_url=LINK)
     )
     assert audio.media_type == "audio/wav"
+
+
+def test_a_speech_refusal_keeps_only_its_short_code() -> None:
+    class Refusing(SpyingSpeech):
+        async def speak(self, request: SpeechRequest) -> SpeechAudio:
+            raise SpeechProviderError("quota_exceeded")
+
+    with pytest.raises(SpokenBriefUnavailable) as caught:
+        asyncio.run(speak_brief(_report(MIXED), speech=Refusing(), report_url=LINK))
+    assert caught.value.reason == "quota_exceeded"
+    assert caught.value.__cause__ is None
