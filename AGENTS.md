@@ -67,7 +67,10 @@ hosted-provider bullets re-verified at `ae81fcf` (`reproduction.py` and
   ElevenLabs, TabPFN, Sentry) are built only when their keys are set, in the
   API process and operator commands; absent means no adapter and no contact.
   The worker builds none of them and `render.yaml` gives it none. Auth0 settings are parsed but nothing
-  verifies agent tokens. No provider is live-verified.
+  verifies agent tokens. Live verification (local, 2026-10-24: Gemma,
+  SerpApi, ElevenLabs, Sentry; not Browserbase or TabPFN) is recorded in
+  [SPONSOR-IMPLEMENTATION-MAP](docs/operations/SPONSOR-IMPLEMENTATION-MAP.md);
+  nothing is deployed.
 
 `LoopbackHostChannel` / `LoopbackHostClient` (127.0.0.1, mTLS, fingerprint
 pinning, `ReferenceHost` only) and `AesGcmSealer` are tested boundary code.
