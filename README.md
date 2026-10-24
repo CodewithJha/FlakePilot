@@ -16,7 +16,7 @@ Evidence-based investigation and verification of recurring test failures. See [P
 - **Classification has no JSON API.** Each test's verdict — deterministic rule set `ti-classification/1`, with the evidence it was computed from — is rendered in the two session run views and in the operator CLI's `ci-run-report`, but there is no HTTP endpoint returning classifications as data.
 - **Parsing is synchronous.** Reports are parsed inside the upload request. A separate worker process runs durable jobs and delivers outbox rows to the audit log. No retention or stage job is registered. See [DURABLE-JOBS](docs/operations/DURABLE-JOBS.md).
 - **No quotas or rate limits.** AI spend is not checked either (ADR-014).
-- **AI assist is off unless an org admin enables it**, and no route or operator command sets that policy yet, so in the shipped app it stays off. It runs only inside the investigation route below, through a model the operator configured (a local endpoint or hosted Gemma); with none configured the process wires `NullAiAssist` and assist answers `unavailable`. See ADR-014.
+- **AI assist is off unless an org admin enables it**, through the operator command `set-ai-policy` (no HTTP route). It runs only inside the investigation route below, through a model the operator configured (a local endpoint or hosted Gemma); with none configured the process wires `NullAiAssist` and assist answers `unavailable`. See ADR-014.
 - **Hosted providers are opt-in; four are live-verified locally, none deployed.** Gemma (Gemini API), SerpApi, Browserbase, ElevenLabs and TabPFN adapters are wired only when their keys are set (see [Hosted providers](#hosted-providers-adr-017)); no key exists in this repository. The Gemma, SerpApi, ElevenLabs and Sentry adapters were run against the real services from a developer machine on 2026-10-24; Browserbase and TabPFN have not been ([SPONSOR-IMPLEMENTATION-MAP](docs/operations/SPONSOR-IMPLEMENTATION-MAP.md#live-verification-record-2026-10-24)).
 - **Artifacts are not encrypted at rest, and never cleaned up.** Raw reports are plain files under `FLAKEPILOT_ARTIFACT_DIR`, and there is no retention job.
 - **Browser reproduction fails closed.** The default execution mode starts no container and runs no repository code. Evaluation mode is an explicit opt-in, builds a `docker` or `podman` argument list, and is not a microVM and not a production sandbox. No container was run in CI. See [EXECUTION](docs/operations/EXECUTION.md).
@@ -298,7 +298,12 @@ uv run python -m flakepilot.interface.composition_root add-member --org-id $ORG_
 uv run python -m flakepilot.interface.composition_root grant --org-id $ORG_ID --member-github-id 67890 --repo-id $REPO_ID --grant repo.view
 uv run python -m flakepilot.interface.composition_root revoke --org-id $ORG_ID --member-github-id 67890 --repo-id $REPO_ID --grant repo.view
 uv run python -m flakepilot.interface.composition_root show-access --org-id $ORG_ID --member-github-id 67890 [--repo-id $REPO_ID]
+uv run python -m flakepilot.interface.composition_root set-ai-policy --org-id $ORG_ID --admin-github-id 12345 --level evidence_only [--retain-raw]
 ```
+
+`set-ai-policy` acts for the named org admin (anyone else is refused) through
+the same `Assist.set_policy` use case as the product, audited as
+`diag.ai_policy.updated`; `--level disabled` turns assist off again.
 
 Repositories must be registered in the org before a member can be granted
 access; `show-access` renders the standing per repo through the same domain

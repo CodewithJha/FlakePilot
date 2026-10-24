@@ -6,6 +6,14 @@ from typing import Protocol
 from flakepilot.diagnosis.domain.output import DataPolicy, DiagnosisOutcome
 from flakepilot.shared_kernel.events import Event
 
+__all__ = [  # DataPolicy is re-exported: it is the level an AiPolicy is set to
+    "IN_FLIGHT",
+    "AiPolicy",
+    "AiRequestRecord",
+    "DataPolicy",
+    "DiagStore",
+]
+
 # The `validation_reason` of a request recorded before its provider call. A row
 # left with it means the call was attempted and no answer was ever recorded.
 IN_FLIGHT = "awaiting_provider"

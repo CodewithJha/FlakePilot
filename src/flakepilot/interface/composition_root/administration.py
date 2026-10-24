@@ -23,6 +23,10 @@ Subcommands of `python -m flakepilot.interface.composition_root`:
   standing shown is the deployment's read standing. The operator channel does not
   consult REPO's `CodeHostAccessVerifier` (ADR-015 deviation 2, owner decision
   pending), so it is NOT evidence that the member holds code-host access (D2).
+- `set-ai-policy --org-id <uuid> --admin-github-id <id> --level <level> [--retain-raw]`:
+  set the org's AI policy through DIA's `Assist.set_policy` on behalf of one org admin
+  (the only role it accepts), audited as `diag.ai_policy.updated` with that admin as
+  actor. `disabled` turns assist off again.
 
 Trust in one sentence: these mutations carry the operator's authority, are audited as
 `operator_cli` events in their own context outboxes, and bridge the gap until
@@ -39,6 +43,8 @@ import uuid
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime
 
+from flakepilot.diagnosis.application.assist import Assist
+from flakepilot.diagnosis.application.store import AiPolicy, DataPolicy
 from flakepilot.identity.application.administration import (
     GRANTS,
     AccessOverview,
@@ -50,11 +56,19 @@ from flakepilot.identity.application.administration import (
     session_access_overview,
     validate_change_input,
 )
-from flakepilot.identity.application.authorization import ResourceNotFound
+from flakepilot.identity.application.authorization import (
+    PermissionDenied,
+    ResourceNotFound,
+)
 from flakepilot.identity.application.iam import Iam, SessionPrincipal
 from flakepilot.identity.infrastructure.store import SqlIamStore
+from flakepilot.integrations.infrastructure.ai import NullAiAssist
 from flakepilot.integrations.infrastructure.github import ISSUER as GITHUB_ISSUER
-from flakepilot.interface.composition_root import Settings, iam_unit_of_work
+from flakepilot.interface.composition_root import (
+    Settings,
+    diag_unit_of_work,
+    iam_unit_of_work,
+)
 from flakepilot.interface.composition_root.database import (
     create_engine,
     dispose_engine,
@@ -76,6 +90,7 @@ _DESCRIPTIONS = {
     "grant": "Record one explicit repo.* grant for an org member.",
     "revoke": "Delete one explicit repo.* grant.",
     "show-access": "Show a member's standing in the org through decide().",
+    "set-ai-policy": "Set the org's AI policy on behalf of one org admin.",
 }
 
 CommandRunner = Callable[[Settings, Sequence[str]], int]
@@ -98,6 +113,18 @@ def _parser(command: str) -> argparse.ArgumentParser:
         )
         parser.add_argument(
             "--repo-id", default=None, help="report one repo (a UUID) instead of all"
+        )
+        return parser
+    if command == "set-ai-policy":
+        parser.add_argument("--org-id", required=True, help="the org's UUID")
+        parser.add_argument(
+            "--admin-github-id", required=True, help="numeric GitHub ID of an org admin"
+        )
+        parser.add_argument(
+            "--level", required=True, choices=[level.value for level in DataPolicy]
+        )
+        parser.add_argument(
+            "--retain-raw", action="store_true", help="keep raw model output"
         )
         return parser
     if command == "register-repo":
@@ -339,12 +366,49 @@ def run_show_access(settings: Settings, argv: Sequence[str]) -> int:
     return 0
 
 
+async def _set_ai_policy(
+    settings: Settings, org_id: str, github_id: str, policy: AiPolicy
+) -> None:
+    engine = create_engine(settings.database_url.reveal())
+    try:
+        iam = Iam(iam_unit_of_work(engine), identity_provider=None)
+        user_id = await iam.find_user(issuer=GITHUB_ISSUER, subject=github_id)
+        if user_id is None:
+            raise ResourceNotFound
+        access = await iam.org_access(SessionPrincipal(user_id), org_id)
+        # Setting a policy contacts no model: the port is never called here.
+        await Assist(diag_unit_of_work(engine), NullAiAssist()).set_policy(
+            access, org_id=org_id, policy=policy, origin=_origin()
+        )
+    finally:
+        await dispose_engine(engine)
+
+
+def run_set_ai_policy(settings: Settings, argv: Sequence[str]) -> int:
+    args = _parser("set-ai-policy").parse_args(argv)
+    policy = AiPolicy(DataPolicy(args.level), args.retain_raw)
+    try:
+        asyncio.run(_set_ai_policy(settings, args.org_id, args.admin_github_id, policy))
+    except ResourceNotFound:
+        print("set-ai-policy: no such member in this org", file=sys.stderr)
+        return 1
+    except PermissionDenied:
+        print("set-ai-policy: the member is not an org admin", file=sys.stderr)
+        return 1
+    except Exception as exc:  # noqa: BLE001 - driver detail is never printed
+        _print_failure("set-ai-policy failed", type(exc).__name__)
+        return 1
+    print(f"ai policy {policy.level.value} retain_raw={str(policy.retain_raw).lower()}")
+    return 0
+
+
 _COMMANDS: dict[str, CommandRunner] = {
     "register-repo": run_register_repo,
     "add-member": run_add_member,
     "grant": _run_change_grant("grant"),
     "revoke": _run_change_grant("revoke"),
     "show-access": run_show_access,
+    "set-ai-policy": run_set_ai_policy,
 }
 
 

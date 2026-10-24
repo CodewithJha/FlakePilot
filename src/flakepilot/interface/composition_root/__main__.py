@@ -1,6 +1,7 @@
 """Entry point: `python -m flakepilot.interface.composition_root` runs the server;
 `... bootstrap-org --help` onboards an org; `... register-repo | add-member | grant |
-revoke | show-access --help` administer members, bindings and grants (operator trust);
+revoke | show-access | set-ai-policy --help` administer members, bindings, grants and
+the org AI policy (operator trust);
 `... list-runs --help` lists a repository's stored runs (read-only);
 `... verify-github-app --help` runs the read-only staging check of the GitHub App
 and the code-host access verifier;
@@ -20,7 +21,7 @@ from flakepilot.interface.composition_root import Settings, SettingsError, creat
 _USAGE = (
     "Usage: python -m flakepilot.interface.composition_root "
     "[bootstrap-org | register-repo | add-member | grant | revoke | show-access | "
-    "list-runs | verify-github-app | issue-ci-upload-token | ci-run-report | "
+    "set-ai-policy | list-runs | verify-github-app | issue-ci-upload-token | ci-run-report | "
     "provider-status | reliability-trend | evaluate-prioritization | worker]"
 )
 
@@ -41,6 +42,7 @@ def main() -> None:
         "grant",
         "revoke",
         "show-access",
+        "set-ai-policy",
     ):
         from flakepilot.interface.composition_root.administration import (
             run_administration,

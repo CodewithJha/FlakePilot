@@ -693,3 +693,58 @@ def test_show_access_reports_decisions_and_non_disclosure(url: str) -> None:
     assert nonmember_view.returncode == 1
     assert nonmember_view.stderr == "show-access: no such member in this org\n"
     assert nonmember_view.stdout == ""
+
+
+def test_set_ai_policy_needs_an_org_admin_and_is_audited(url: str) -> None:
+    async def scenario(engine: AsyncEngine) -> str:
+        org = await bootstrapped_org(engine, f"AI policy {suffix()}")
+        assert await add_member_now(engine, org) == "added"
+        return org
+
+    org_id = run(url, scenario)
+    member = _cli(
+        url,
+        "set-ai-policy",
+        "--org-id",
+        org_id,
+        "--admin-github-id",
+        MEMBER_ID,
+        "--level",
+        "evidence_only",
+    )
+    assert (member.returncode, member.stdout) == (1, "")
+    assert member.stderr == "set-ai-policy: the member is not an org admin\n"
+
+    enabled = _cli(
+        url,
+        "set-ai-policy",
+        "--org-id",
+        org_id,
+        "--admin-github-id",
+        ADMIN_ID,
+        "--level",
+        "evidence_only",
+    )
+    assert enabled.returncode == 0, enabled.stderr
+    assert enabled.stdout == "ai policy evidence_only retain_raw=false\n"
+
+    async def stored(engine: AsyncEngine) -> tuple[list[Any], list[Any]]:
+        policy = await sql(
+            engine,
+            "SELECT level, retain_raw FROM diag.ai_policies WHERE org_id = :org",
+            org=org_id,
+        )
+        return policy, await outbox_rows(
+            engine, "org_id = :org", table="diag", org=org_id
+        )
+
+    policy, events = run(url, stored)
+    assert [tuple(row) for row in policy] == [("evidence_only", False)]
+    [event] = events
+    assert (event.name, event.before, event.after, event.channel) == (
+        "diag.ai_policy.updated",
+        "disabled",
+        "evidence_only",
+        "cli",
+    )
+    assert event.actor_type == "user"
