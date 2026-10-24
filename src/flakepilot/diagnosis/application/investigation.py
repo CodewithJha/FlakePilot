@@ -2,8 +2,9 @@
 
 Goal 2 (agent-shaped orchestration) without a second workflow authority: the
 work is a typed, local stage pipeline in DIA's application layer — collect,
-research (optional), hypothesize (optional, policy-gated), prioritize, then
-one provenance record. Stages have budgets; a stage that cannot run is
+research (optional), browse (optional: the research sources on the operator's
+allowlist, captured as hashed evidence; page text never reaches the model),
+hypothesize (optional, policy-gated), prioritize, then one provenance record. Stages have budgets; a stage that cannot run is
 recorded as skipped, never silently dropped. No stage can mutate grants,
 execute code, or replace a deterministic verdict: they read TI's public
 application API, and the assist stage runs entirely through its own policy
@@ -48,6 +49,13 @@ from flakepilot.identity.application.authorization import (
     ResourceNotFound,
     authorize,
 )
+from flakepilot.integrations.application.browser import (
+    MAX_TARGETS,
+    BrowserCaptureRequest,
+    BrowserEvidence,
+    BrowserEvidenceError,
+    BrowserEvidenceProvider,
+)
 from flakepilot.integrations.application.ports import (
     ResearchProvider,
     ResearchProviderError,
@@ -83,6 +91,7 @@ MAX_QUERY_BYTES = 512
 class StageName(StrEnum):
     COLLECT = "collect"
     RESEARCH = "research"
+    BROWSE = "browse"
     HYPOTHESIZE = "hypothesize"
     PRIORITIZE = "prioritize"
 
@@ -143,6 +152,7 @@ class InvestigationReport:
     assist: AssistResult | None
     reliability: ReliabilityReport | None
     prioritization: Prioritization | None
+    pages: tuple[BrowserEvidence, ...] = ()
 
 
 class Investigation:
@@ -160,6 +170,7 @@ class Investigation:
         reliability: Reliability,
         unit_of_work: UnitOfWork,
         research: ResearchProvider | None = None,
+        browser: BrowserEvidenceProvider | None = None,
         budget: InvestigationBudget | None = None,
     ) -> None:
         self._runs = runs
@@ -167,6 +178,7 @@ class Investigation:
         self._reliability = reliability
         self._unit_of_work = unit_of_work
         self._research = research
+        self._browser = browser
         self._budget = budget or InvestigationBudget()
 
     async def investigate(
@@ -229,6 +241,9 @@ class Investigation:
         sources, record = await self._research_stage(run, origin)
         stages.append(record)
 
+        pages, record = await self._browse_stage(sources)
+        stages.append(record)
+
         assist_result, record = await self._hypothesize_stage(
             access,
             run,
@@ -254,6 +269,7 @@ class Investigation:
             stages=tuple(stages),
             sources=len(sources),
             links=assist_result.linked if assist_result else 0,
+            pages=len(pages),
         )
         return InvestigationReport(
             org_id=org_id,
@@ -266,6 +282,7 @@ class Investigation:
             assist=assist_result,
             reliability=reliability,
             prioritization=ranking,
+            pages=pages,
         )
 
     def _collect(self, run: ClassifiedRunReport) -> StageRecord:
@@ -334,6 +351,31 @@ class Investigation:
                 StageName.RESEARCH, StageStatus.FAILED, "stage_error"
             )
         return sources, StageRecord(StageName.RESEARCH, StageStatus.PRODUCED)
+
+    async def _browse_stage(
+        self, sources: tuple[ResearchSource, ...]
+    ) -> tuple[tuple[BrowserEvidence, ...], StageRecord]:
+        """The research sources, at most `MAX_TARGETS`, through the browser
+        provider; the provider refuses anything off the operator allowlist."""
+        if self._browser is None:
+            return (), StageRecord(
+                StageName.BROWSE, StageStatus.SKIPPED, "provider_absent"
+            )
+        targets = tuple(dict.fromkeys(source.url for source in sources))[:MAX_TARGETS]
+        if not targets:
+            return (), StageRecord(StageName.BROWSE, StageStatus.SKIPPED, "no_sources")
+        try:
+            capture = await self._browser.capture(BrowserCaptureRequest(targets))
+        except BrowserEvidenceError as error:
+            return (), StageRecord(StageName.BROWSE, StageStatus.SKIPPED, error.reason)
+        except Exception:
+            _logger.exception("browse stage failed")
+            return (), StageRecord(StageName.BROWSE, StageStatus.FAILED, "stage_error")
+        if not capture.evidence:
+            return (), StageRecord(
+                StageName.BROWSE, StageStatus.SKIPPED, "nothing_captured"
+            )
+        return capture.evidence, StageRecord(StageName.BROWSE, StageStatus.PRODUCED)
 
     async def _hypothesize_stage(
         self,
@@ -428,6 +470,7 @@ class Investigation:
         stages: tuple[StageRecord, ...],
         sources: int,
         links: int,
+        pages: int = 0,
     ) -> None:
         """One durable provenance record for the investigation (goal 15)."""
         produced = sum(1 for stage in stages if stage.status is StageStatus.PRODUCED)
@@ -438,6 +481,7 @@ class Investigation:
             "stages_skipped": skipped,
             "stages_failed": failed,
             "sources": sources,
+            "pages": pages,
             "linked": links,
         }
         if isinstance(access, AgentAccess):

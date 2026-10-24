@@ -226,6 +226,7 @@ def test_investigation_over_real_tables_records_provenance(url: str) -> None:
     assert [stage.name for stage in report.stages] == [
         StageName.COLLECT,
         StageName.RESEARCH,
+        StageName.BROWSE,
         StageName.HYPOTHESIZE,
         StageName.PRIORITIZE,
     ]
@@ -233,6 +234,9 @@ def test_investigation_over_real_tables_records_provenance(url: str) -> None:
     assert statuses[StageName.COLLECT].status is StageStatus.PRODUCED
     assert statuses[StageName.RESEARCH].status is StageStatus.SKIPPED
     assert statuses[StageName.RESEARCH].reason == "provider_absent"
+    assert statuses[StageName.BROWSE].status is StageStatus.SKIPPED
+    assert statuses[StageName.BROWSE].reason == "provider_absent"
+    assert report.pages == ()
     # Policy is on, but no model is wired: skip with the port's short code.
     assert statuses[StageName.HYPOTHESIZE].status is StageStatus.SKIPPED
     assert statuses[StageName.HYPOTHESIZE].reason == "no_provider"
