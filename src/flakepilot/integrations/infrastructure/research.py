@@ -2,10 +2,9 @@
 
 The fixture stands in for a live search API with canned, validated sources so
 ports, budgets, deduplication, and the untrusted-content framing are testable
-without credentials (ADR-017 decision 4; goal 8). A live SerpApi-style
-transport adapter enters only after owner-approved credentials, so its exact
-transmitted fields and data flow can be verified first — the port contract,
-not its promises, is what keeps results as data.
+without credentials (ADR-017 decision 4; goal 8). The live adapter is
+`serpapi.SerpApiResearch`; it is wired only with owner-approved credentials —
+the port contract, not its promises, is what keeps results as data.
 """
 
 import re

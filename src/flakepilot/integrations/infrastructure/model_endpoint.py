@@ -90,7 +90,7 @@ def urllib_transport(request: urllib.request.Request) -> tuple[int, bytes]:
         raise _Bad("provider_unreachable") from error
 
 
-def _compose(request: AiRequest) -> str:
+def frame_evidence(request: AiRequest) -> str:
     """The user message: fixed framing, then `name: text` lines. Every part enters
     through this single data channel; nothing is passed as a higher-trust layer."""
     lines = [f"{part.name}: {part.text}" for part in request.data_parts]
@@ -149,7 +149,7 @@ class LocalEndpointAssist:
                 "model": self._model,
                 "messages": [
                     {"role": "system", "content": request.instructions},
-                    {"role": "user", "content": _compose(request)},
+                    {"role": "user", "content": frame_evidence(request)},
                 ],
                 "max_tokens": _MAX_TOKENS,
                 "temperature": 0,
