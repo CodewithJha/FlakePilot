@@ -212,6 +212,9 @@ Settings come from environment variables only (see [`.env.example`](.env.example
 | `FLAKEPILOT_EXECUTION_MEMORY_MB` | no | `512` | Container memory limit, 64–2048 |
 | `FLAKEPILOT_EXECUTION_PIDS` | no | `64` | Container process limit, 8–256 |
 | `FLAKEPILOT_GITHUB_CONTENTS_TOKEN` | no | — | Optional bearer for GitHub contents reads. Empty: revisions stay unverified. Never logged |
+| `FLAKEPILOT_AI_ENDPOINT` | no | — | Operator-run local inference server URL (http(s), ≤500 chars) for advisory assist (ADR-017). Empty: no model contact at all. Never logged |
+| `FLAKEPILOT_AI_MODEL` | with `..._AI_ENDPOINT` | — | Model identifier (≤80 chars) recorded on every response. Required when the endpoint is set; refused (configures nothing) without it |
+| `FLAKEPILOT_AI_API_KEY` | no | — | Optional API key for the endpoint. Never logged. Unset also fine for keyless local servers |
 
 ### GitHub App sign-in
 
@@ -220,6 +223,10 @@ Settings come from environment variables only (see [`.env.example`](.env.example
 3. Set `FLAKEPILOT_PUBLIC_ORIGIN`, `FLAKEPILOT_GITHUB_CLIENT_ID` and `FLAKEPILOT_GITHUB_CLIENT_SECRET`.
 
 Without a client ID and secret, sign-in is off and the auth endpoints answer 503 `auth_not_configured`; a public origin on its own changes nothing. If the client ID or secret is set but any of the three is missing, **startup fails** (fail closed). Sign-in only authenticates; access comes from FlakePilot's own org membership and grants (ADR-011).
+
+### Advisory AI endpoint (ADR-017)
+
+Optional, operator-run, local. Set `FLAKEPILOT_AI_ENDPOINT` and `FLAKEPILOT_AI_MODEL` (plus `FLAKEPILOT_AI_API_KEY` if the server expects one) to point assist at your own inference server; unset keeps the shipped `NullAiAssist` posture — no model contact, assist answers `unavailable`, every other capability unchanged. The endpoint is contacted only when an org admin has enabled assist policy, and model output is advisory data: it never changes the deterministic `ti-classification/1` verdict or grants anything. Model identity is recorded on every response; keys and endpoint are never logged.
 
 ### Session-user run views
 
