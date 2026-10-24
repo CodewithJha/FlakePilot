@@ -63,6 +63,31 @@ whether such an offering actually satisfies the Firecracker preconditions is
 page only (a) fixes the droplet's ceiling and (b) records the honest
 alternative below.
 
+## Re-check, 2026-10-24 (public sources only, NOT VERIFIED on infrastructure)
+
+The conclusions above still hold. Two facts were added from public sources:
+
+- **Nested virtualization on droplets is unsupported, not absent.**
+  DigitalOcean publishes no support statement for nested virtualization; its
+  live-migration documentation says nested VMs must be restarted after a live
+  migration (as quoted by a third-party provider comparison dated
+  2026-10-15). Community reports show `/dev/kvm` present on some droplets.
+  An unsupported capability that a routine host migration can interrupt is not
+  a basis for `per_run_microvm` evidence, so the droplet ceiling stays
+  `dedicated_host_container`.
+- **DigitalOcean MicroVMs (public preview, announced/updated 2026-10-09)** are
+  a *managed* Firecracker-based product: one microVM per session, created from
+  a container image, reached over an authenticated HTTPS endpoint, optionally
+  inside a VPC. That is a new candidate for a later per-run isolation stage,
+  and it is **unassessed**: the host is operated by the vendor, so this
+  repository's host contract (host-owned runtime inventory, host ledger, HMAC
+  frames, host-enforced limits, default-deny egress) does not map onto it as
+  written, its egress controls and limit enforcement are unknown, and preview
+  products carry no stability commitment. Using it would need its own
+  assessment and threat model, the same named-reviewer evidence chain, and an
+  ADR — never a configuration change. Until then nothing about it changes the
+  fail-closed inventory.
+
 ## Recommendation for the goal
 
 Instead of force-fitting DigitalOcean into the isolation role, the phase

@@ -33,11 +33,47 @@ validated, normalized environment value:
 
 | Layer | What the domain changes | What it does not change |
 |---|---|---|
-| DNS | `flakepilot.<yourname>.tech` (or similar) gets an A/AAAA/CNAME record pointing at the hosting entry point ([RENDER-DEPLOYMENT-ARCHITECTURE](RENDER-DEPLOYMENT-ARCHITECTURE.md)) | No record is created by this repository; TTLs and the registrar's NS setup are owner-managed |
+| DNS | The chosen host gets a CNAME (subdomain) or ALIAS/ANAME/A record (apex) pointing at the hosting entry point — exact records under "DNS records for Render" below; **no AAAA** record (Render serves IPv4) | No record is created by this repository; TTLs and the registrar's NS setup are owner-managed |
 | TLS | The public origin is `https://`, so secure cookies stay on and the `__Host-` prefix is valid | No certificate material lives in the code or repo; terminators issue/manage certs |
 | Sign-in | The GitHub App's callback URL becomes `https://<domain>/auth/github/callback` — registered **exactly**, scheme/host/path (GitHub compares the redirect URI for exactness) | Tokens stay server-side (`contents:read`, one repository); the domain grants nothing |
 | CSRF | The `Origin` users' browsers send now matches the configured origin | The comparison logic, and its fail-closed behavior on mismatch, are untouched |
 | Everything else | Nothing | Deterministic classification, authorization, outbox, execution posture are origin-blind |
+
+## Candidate availability (read-only RDAP, 2026-10-24)
+
+Checked through the public RDAP bootstrap `https://rdap.org/domain/<name>`,
+which redirects `.tech` to the registry's server `rdap.radix.host`. A 404 there
+means "no registration exists right now", not a reservation or a price; it can
+change at any moment until someone buys the name.
+
+| Name | RDAP answer | Meaning |
+|---|---|---|
+| `flakepilot.tech` | 404, "Domain flakepilot.tech is available for registration" (Radix) | Unregistered at check time |
+| `getflakepilot.tech` | 404 (Radix) | Unregistered at check time |
+| `flakepilot.dev` | 404 (`pubapi.registry.google`) | Unregistered at check time (not a `.TECH` name; listed as a fallback) |
+
+Price and renewal terms were **not** checked (registrar-specific; `.TECH`
+renewals are typically far above first-year promotional prices — read the
+renewal line before buying).
+
+## DNS records for Render (vendor documentation, NOT VERIFIED)
+
+Add the custom domain on the API service first (Settings → Custom Domains);
+Render then shows the target `<service>.onrender.com` and verifies the record.
+
+| Hostname | Record | Value |
+|---|---|---|
+| `app.flakepilot.tech` (recommended: a subdomain) | `CNAME` | `flakepilot-api.onrender.com` (the service's actual `onrender.com` host) |
+| `flakepilot.tech` (apex) | `ALIAS`/`ANAME` (or flattened CNAME) | `flakepilot-api.onrender.com` |
+| `flakepilot.tech` (apex, provider without ALIAS) | `A` | `216.24.57.1` (Render's load balancer) |
+| any | `AAAA` | **remove** — Render serves IPv4 only |
+
+Render issues and renews the TLS certificate once the record verifies. Adding
+an apex domain also adds a `www.` redirect (Render behavior) — the
+**configured origin must be the one users land on**, because the CSRF check
+compares the browser's `Origin` exactly. A subdomain avoids the apex/`www`
+ambiguity entirely, so `https://app.flakepilot.tech` is the recommended
+`FLAKEPILOT_PUBLIC_ORIGIN`. Hobby workspaces include two custom domains.
 
 ## Registration checklist (owner actions, in order)
 

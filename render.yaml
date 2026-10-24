@@ -1,0 +1,100 @@
+# Render Blueprint for the FlakePilot control plane (sponsor goal 10).
+# NOT DEPLOYED. Syncing this file creates paid resources (~USD 20/month at the
+# plans below); that is an owner decision (D-HOST-1..5). Runbook and rationale:
+# docs/operations/DEPLOYMENT-RUNBOOK.md.
+#
+# Execution stays closed on every service: ClosedSandbox, UnavailableIsolation,
+# no container runtime in the image, no repository code ever runs here.
+# Secrets are `sync: false`: Render prompts for them once at Blueprint creation;
+# an empty value means unset (the feature stays off, fail closed).
+
+services:
+  - type: web
+    name: flakepilot-api
+    runtime: docker
+    # D-HOST-3 (region/residency) is unanswered. Region is immutable after creation.
+    region: oregon
+    # Paid plan required: persistent disks and preDeployCommand are paid-only.
+    plan: 0.5c-512mb
+    # Deploy a commit only after its GitHub checks (ci.yml gates) pass.
+    autoDeployTrigger: checksPass
+    # Migrations are an explicit step, never startup work (ADR-005). Runs on
+    # separate compute before each deploy; a failure stops the deploy.
+    preDeployCommand: alembic upgrade head
+    # The artifact root must exist, be owned by the service user, and not be
+    # group/world-writable (settings validation refuses startup otherwise).
+    dockerCommand: sh -c 'mkdir -p -m 700 /var/data/artifacts && exec python -m flakepilot.interface.composition_root'
+    # Liveness, not readiness: Render restarts an instance after 60 s of failed
+    # checks, and a database outage must not restart the API. Deploys are still
+    # gated on the database: uvicorn binds the port only after the lifespan's
+    # bounded SELECT 1 succeeds.
+    healthCheckPath: /health/live
+    # A disk pins the service to one instance and disables zero-downtime deploys.
+    # Only the API writes artifacts (JUnit ingestion); see the runbook.
+    disk:
+      name: artifacts
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: FLAKEPILOT_DATABASE_URL
+        fromDatabase:
+          name: flakepilot-db
+          property: connectionString
+      - key: FLAKEPILOT_ARTIFACT_DIR
+        value: /var/data/artifacts
+      - key: FLAKEPILOT_LOG_LEVEL
+        value: INFO
+      - key: FLAKEPILOT_EXECUTION_MODE
+        value: closed
+      # https://<domain>, exactly as browsers send Origin. Empty: sign-in answers 503.
+      - key: FLAKEPILOT_PUBLIC_ORIGIN
+        sync: false
+      - key: FLAKEPILOT_GITHUB_CLIENT_ID
+        sync: false
+      - key: FLAKEPILOT_GITHUB_CLIENT_SECRET
+        sync: false
+      - key: FLAKEPILOT_GITHUB_APP_ID
+        sync: false
+      - key: FLAKEPILOT_GITHUB_APP_PRIVATE_KEY
+        sync: false
+      # Opt-in error reporting. Empty: nothing leaves the process.
+      - key: FLAKEPILOT_SENTRY_DSN
+        sync: false
+      # Auth0 agent-token verification (parsed, not yet routed). Both or neither.
+      - key: FLAKEPILOT_AUTH0_DOMAIN
+        sync: false
+      - key: FLAKEPILOT_AUTH0_AUDIENCE
+        sync: false
+
+  - type: worker
+    name: flakepilot-worker
+    runtime: docker
+    region: oregon
+    plan: 0.5c-512mb
+    autoDeployTrigger: checksPass
+    dockerCommand: python -m flakepilot.interface.composition_root worker
+    # SIGTERM sets the stop flag; the claimed batch finishes. Leases (30 s)
+    # recover anything a SIGKILL interrupts.
+    maxShutdownDelaySeconds: 60
+    # The worker holds the database URL and nothing else: no session or GitHub
+    # secrets, no artifact disk (closed execution writes no artifacts).
+    envVars:
+      - key: FLAKEPILOT_DATABASE_URL
+        fromDatabase:
+          name: flakepilot-db
+          property: connectionString
+      - key: FLAKEPILOT_LOG_LEVEL
+        value: INFO
+      - key: FLAKEPILOT_EXECUTION_MODE
+        value: closed
+
+databases:
+  - name: flakepilot-db
+    databaseName: flakepilot
+    user: flakepilot
+    region: oregon
+    plan: 0.1c-256mb
+    # CI tests against PostgreSQL 16. Immutable after creation.
+    postgresMajorVersion: "16"
+    # Private network only: no public connections.
+    ipAllowList: []
