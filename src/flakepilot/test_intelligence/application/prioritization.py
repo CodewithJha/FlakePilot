@@ -10,7 +10,7 @@ Design rules, per the goal:
 - **Transparent features only.** Every input is a count of stored outcomes:
   flaky runs, failed attempts, and recency of the last failure. Nothing else.
 - **No leakage.** The caller passes histories already cut at a cutoff; nothing
-  here reads or infers anything after it.
+  here reads or infers anything after it, and it never reads a clock.
 - **No invented confidence.** The output is a rank with its reason — counts
   and a coverage note — never a probability, weight, or precision claim. A
   probabilistic successor must record its evaluation on real stored history
@@ -26,10 +26,6 @@ import math
 from dataclasses import dataclass
 from datetime import datetime
 
-from flakepilot.test_intelligence.application.reliability import (
-    ReliabilityReport,
-    summarize,
-)
 from flakepilot.test_intelligence.application.store import IdentityHistory
 from flakepilot.test_intelligence.domain.results import Outcome
 
@@ -67,6 +63,17 @@ def _when(value: datetime | None) -> float:
     return value.timestamp()
 
 
+def _flaky_run(attempts: tuple[Outcome, ...]) -> bool:
+    """The rule set's mechanical flaky evidence, as the report counts it."""
+    seen_failure = False
+    for attempt in attempts:
+        if attempt in (Outcome.FAILED, Outcome.ERRORED):
+            seen_failure = True
+        elif seen_failure and attempt == Outcome.PASSED:
+            return True
+    return False
+
+
 def _last_failure(history: IdentityHistory) -> datetime | None:
     """The most recent cutoff-bounded run in which any attempt failed."""
     return max(
@@ -92,20 +99,26 @@ def prioritize(histories: tuple[IdentityHistory, ...]) -> Prioritization:
                 "prioritize and no model output may be invented from silence."
             ),
         )
-    report: ReliabilityReport = summarize(histories)
-    by_id = {h.test_id: h for h in histories}
     entries: list[Priority] = []
-    for row in report.histories:
-        history = by_id[row.test_id]
+    for history in histories:
+        if not history.observations:
+            continue  # an identity with no stored runs carries no statistics
         entries.append(
             Priority(
                 rank=0,
-                test_id=row.test_id,
-                classname=row.classname,
-                name=row.name,
-                flaky_runs=row.flaky_runs,
-                failed_attempts=row.failed_attempts,
-                attempts=row.attempts,
+                test_id=history.test_id,
+                classname=history.classname,
+                name=history.name,
+                flaky_runs=sum(
+                    1 for o in history.observations if _flaky_run(o.attempts)
+                ),
+                failed_attempts=sum(
+                    1
+                    for o in history.observations
+                    for attempt in o.attempts
+                    if attempt in (Outcome.FAILED, Outcome.ERRORED)
+                ),
+                attempts=sum(len(o.attempts) for o in history.observations),
                 last_failure_at=_last_failure(history),
                 last_run_at=max(
                     (o.received_at for o in history.observations if o.received_at),

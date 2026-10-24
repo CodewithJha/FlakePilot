@@ -19,6 +19,10 @@ from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import datetime
 
+from flakepilot.test_intelligence.application.prioritization import (
+    Prioritization,
+    prioritize,
+)
 from flakepilot.test_intelligence.application.store import IdentityHistory, TiStore
 from flakepilot.test_intelligence.domain.results import Outcome
 
@@ -126,3 +130,17 @@ class Reliability:
                 max_tests=self._max_tests,
             )
         return summarize(histories)
+
+    async def prioritized(
+        self, *, org_id: str, repo_id: str, cutoff: datetime
+    ) -> Prioritization:
+        """The report composed with the deterministic prioritization baseline —
+        one cutoff, one read, ranks from counts only."""
+        async with self._unit_of_work() as store:
+            histories = await store.repo_history(
+                org_id=org_id,
+                repo_id=repo_id,
+                cutoff=cutoff,
+                max_tests=self._max_tests,
+            )
+        return prioritize(histories)
