@@ -19,7 +19,8 @@ composition of normalized, integrity-governed rows, reassembled at read time:
 
 - Run reports and classifications compose from `ti.runs`, `ti.test_results`,
   and `ti.test_identities` through `RunViewer` (one unit of work, tenant
-  scoped by construction). [SPONSOR-IMPLEMENTATION-MAP](SPONSOR-INTEGRATION-MAP.md)
+  scoped by construction). The
+  [SPONSOR-IMPLEMENTATION-MAP](SPONSOR-IMPLEMENTATION-MAP.md)
   goals 2 and 6 add reliability statistics and prioritization over the same
   rows — the same data, one copy, one authorization path.
 - Investigation provenance is **event rows** (`diag.investigation.recorded`,
