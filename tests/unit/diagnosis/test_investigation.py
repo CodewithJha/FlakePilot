@@ -11,7 +11,7 @@ the workflow or put prose into a reason code.
 
 import asyncio
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 import pytest
@@ -42,7 +42,7 @@ from flakepilot.integrations.application.ports import (
     ResearchQuery,
 )
 from flakepilot.integrations.infrastructure.ai import FakeAiAssist, NullAiAssist
-from flakepilot.shared_kernel.events import Channel, Event, Origin
+from flakepilot.shared_kernel.events import ActorType, Channel, Event, Origin
 from flakepilot.test_intelligence.application.prioritization import prioritize
 from flakepilot.test_intelligence.application.reliability import (
     Reliability,
@@ -439,3 +439,23 @@ def test_every_stage_status_maps_from_the_assist_outcome() -> None:
     )
     report = _run(workflow, _access(Grant.INVESTIGATE))
     assert report.stages[2].status is StageStatus.PRODUCED
+
+
+def test_a_delegated_agent_run_attributes_the_delegator_with_the_agent_code() -> None:
+    """Goal 9 attribution: the actor is the human delegator; the agent code
+    rides in the payload, short and opaque — no agent identity of its own."""
+    from flakepilot.identity.application.agents import AgentAccess
+
+    workflow, uow, _ = _investigation()
+    agent = AgentAccess(
+        principal_id=ACTOR,  # the delegator's verified user ID
+        org_id=ORG,
+        grants=frozenset({(REPO, Grant.INVESTIGATE)}),
+        agent_id="helper",
+        repo_id=REPO,
+        expires_at=NOW + timedelta(hours=1),
+    )
+    _run(workflow, agent)
+    event = uow.store.events[-1]
+    assert event.actor.type is ActorType.USER and event.actor.id == ACTOR
+    assert event.payload["via_agent"] == "helper"

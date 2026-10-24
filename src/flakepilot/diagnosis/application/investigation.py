@@ -39,6 +39,7 @@ from flakepilot.diagnosis.application.assist import (
 )
 from flakepilot.diagnosis.application.store import DiagStore
 from flakepilot.diagnosis.domain.output import DiagnosisOutcome
+from flakepilot.identity.application.agents import AgentAccess
 from flakepilot.identity.application.authorization import (
     CodeHostAccess,
     Grant,
@@ -432,6 +433,17 @@ class Investigation:
         produced = sum(1 for stage in stages if stage.status is StageStatus.PRODUCED)
         skipped = sum(1 for stage in stages if stage.status is StageStatus.SKIPPED)
         failed = sum(1 for stage in stages if stage.status is StageStatus.FAILED)
+        payload: dict[str, str | int | bool] = {
+            "stages_produced": produced,
+            "stages_skipped": skipped,
+            "stages_failed": failed,
+            "sources": sources,
+            "linked": links,
+        }
+        if isinstance(access, AgentAccess):
+            # Delegated attribution (ADR-017 decision 6): the actor stays the
+            # human delegator; the agent code rides along, short and opaque.
+            payload["via_agent"] = access.agent_id
         event = Event(
             name="diag.investigation.recorded",
             actor=Actor(ActorType.USER, access.principal_id),
@@ -440,13 +452,7 @@ class Investigation:
             org_id=org_id,
             repo_id=repo_id,
             after=stopping.value,
-            payload={
-                "stages_produced": produced,
-                "stages_skipped": skipped,
-                "stages_failed": failed,
-                "sources": sources,
-                "linked": links,
-            },
+            payload=payload,
         )
         try:
             async with self._unit_of_work() as store:
