@@ -83,6 +83,12 @@ class Settings:
     github_contents_token: Secret | None = None
     # Both unset: execution does not call GitHub. One without the other is refused.
     github_installation: GitHubInstallation | None = None
+    # Advisory model endpoint (ADR-017): an operator-run local inference server.
+    # Unset: no model contact at all (NullAiAssist posture). Not a secret: it is
+    # the operator's own local URL, but never logged either way.
+    ai_endpoint: str | None = None
+    ai_model: str | None = None
+    ai_api_key: Secret | None = None
 
     @classmethod
     def from_environ(cls, environ: Mapping[str, str]) -> "Settings":
@@ -174,6 +180,9 @@ class Settings:
             execution_pids=_bounded(environ, "FLAKEPILOT_EXECUTION_PIDS", 64, 8, 256),
             github_contents_token=_contents_token(environ),
             github_installation=_installation(environ),
+            ai_endpoint=_ai_endpoint(environ),
+            ai_model=_ai_model(environ),
+            ai_api_key=_ai_api_key(environ),
         )
 
 
@@ -232,6 +241,47 @@ def _installation(environ: Mapping[str, str]) -> GitHubInstallation | None:
             "must both be set to an app id and an unencrypted RSA private key"
         )
     return GitHubInstallation(app_id, Secret(pem))
+
+
+def _ai_endpoint(environ: Mapping[str, str]) -> str | None:
+    endpoint = environ.get("FLAKEPILOT_AI_ENDPOINT") or None
+    if endpoint is None:
+        return None
+    if not endpoint.startswith(("http://", "https://")):
+        raise SettingsError("FLAKEPILOT_AI_ENDPOINT must be an http(s) URL")
+    if not 1 <= len(endpoint) <= 500:
+        raise SettingsError("FLAKEPILOT_AI_ENDPOINT must be a URL of 1-500 characters")
+    return endpoint
+
+
+def _ai_model(environ: Mapping[str, str]) -> str | None:
+    endpoint = environ.get("FLAKEPILOT_AI_ENDPOINT") or None
+    model = environ.get("FLAKEPILOT_AI_MODEL") or None
+    if model is None and endpoint is None:
+        return None
+    if endpoint is not None and model is None:
+        raise SettingsError(
+            "FLAKEPILOT_AI_MODEL must be set together with FLAKEPILOT_AI_ENDPOINT "
+            "(the model identity is recorded on every response)"
+        )
+    if model is not None and endpoint is None:
+        raise SettingsError(
+            "FLAKEPILOT_AI_MODEL without FLAKEPILOT_AI_ENDPOINT configures nothing"
+        )
+    if model is None:  # every None case is refused by the two checks above
+        return None
+    if len(model) > 80:
+        raise SettingsError("FLAKEPILOT_AI_MODEL must be a model identifier of <= 80")
+    return model
+
+
+def _ai_api_key(environ: Mapping[str, str]) -> Secret | None:
+    key = environ.get("FLAKEPILOT_AI_API_KEY") or None
+    if key is None:
+        return None
+    if len(key) > 500 or any(character.isspace() for character in key):
+        raise SettingsError("FLAKEPILOT_AI_API_KEY is not a key")
+    return Secret(key)
 
 
 def _artifact_dir(value: str) -> Path:

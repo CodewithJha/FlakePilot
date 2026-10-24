@@ -297,3 +297,33 @@ def test_migrations_upgrade_and_check_cleanly(database_url: str) -> None:
         "int_secrets",
         "ti.uploads",
     ]
+
+
+def test_the_configured_ai_endpoint_wires_the_advisory_port(database_url: str) -> None:
+    """ADR-017: an operator-configured local endpoint enables advisory assist."""
+    app = create_app(
+        Settings(
+            Secret(database_url),
+            ai_endpoint="http://127.0.0.1:11434/v1/chat/completions",
+            ai_model="gemma_3_4b_it",
+        )
+    )
+
+    async def scenario() -> str:
+        async with app.router.lifespan_context(app):
+            provider = app.state.assist._port.describe().provider
+        return str(provider)
+
+    assert asyncio.run(scenario()) == "local_endpoint"
+    assert app.state.ready is False
+
+
+def test_without_the_ai_endpoint_assist_stays_null(database_url: str) -> None:
+    app = create_app(Settings(Secret(database_url)))
+
+    async def scenario() -> str:
+        async with app.router.lifespan_context(app):
+            provider = app.state.assist._port.describe().provider
+        return str(provider)
+
+    assert asyncio.run(scenario()) == "none"

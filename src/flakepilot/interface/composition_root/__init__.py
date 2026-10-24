@@ -26,6 +26,7 @@ from flakepilot.integrations.infrastructure.ai import NullAiAssist
 from flakepilot.integrations.infrastructure.artifact_store import LocalFsArtifactStore
 from flakepilot.integrations.infrastructure.github import GitHubIdentityProvider
 from flakepilot.integrations.infrastructure.junit import JUnitParser
+from flakepilot.integrations.infrastructure.model_endpoint import LocalEndpointAssist
 from flakepilot.interface.composition_root.database import (
     CONNECT_TIMEOUT,
     EngineFactory,
@@ -191,7 +192,25 @@ def create_app(
             raise
         app.state.readiness_probe = ReadinessCheck(engine)
         app.state.iam = Iam(iam_unit_of_work(engine), identity_provider)
-        app.state.assist = Assist(diag_unit_of_work(engine), NullAiAssist())
+        # Advisory assist (ADR-017): only an operator-configured local endpoint
+        # enables it; without one the use case keeps its fail-safe NullAiAssist
+        # posture, and the ADR-014 policy gate still applies either way.
+        if settings.ai_endpoint is not None:
+            api_key = (
+                settings.ai_api_key.reveal()
+                if settings.ai_api_key is not None
+                else None
+            )
+            app.state.assist = Assist(
+                diag_unit_of_work(engine),
+                LocalEndpointAssist(
+                    endpoint=settings.ai_endpoint,
+                    model=settings.ai_model or "unspecified",
+                    api_key=api_key,
+                ),
+            )
+        else:
+            app.state.assist = Assist(diag_unit_of_work(engine), NullAiAssist())
         app.state.ingestion = (
             Ingestion(ti_unit_of_work(engine), artifacts, JUnitParser())
             if artifacts is not None

@@ -344,3 +344,62 @@ def test_every_settings_variable_is_documented_in_env_example() -> None:
     ).read_text(encoding="utf-8")
     read = set(re.findall(r"FLAKEPILOT_[A-Za-z0-9_]+", settings_source))
     assert read <= documented, sorted(read - documented)
+
+
+def test_ai_assist_config_is_read_and_together() -> None:
+    environ = {
+        "FLAKEPILOT_DATABASE_URL": DSN,
+        "FLAKEPILOT_AI_ENDPOINT": "http://127.0.0.1:11434/v1/chat/completions",
+        "FLAKEPILOT_AI_MODEL": "gemma_3_4b_it",
+    }
+    settings = Settings.from_environ(environ)
+    assert settings.ai_endpoint == environ["FLAKEPILOT_AI_ENDPOINT"]
+    assert settings.ai_model == "gemma_3_4b_it"
+    assert settings.ai_api_key is None
+
+
+def test_ai_endpoint_without_a_model_is_a_startup_error() -> None:
+    with pytest.raises(SettingsError) as error:
+        Settings.from_environ(
+            {
+                "FLAKEPILOT_DATABASE_URL": DSN,
+                "FLAKEPILOT_AI_ENDPOINT": "http://127.0.0.1:9/v1",
+            }
+        )
+    assert "FLAKEPILOT_AI_MODEL" in str(error.value)
+
+
+def test_ai_model_without_an_endpoint_is_a_startup_error() -> None:
+    with pytest.raises(SettingsError) as error:
+        Settings.from_environ(
+            {"FLAKEPILOT_DATABASE_URL": DSN, "FLAKEPILOT_AI_MODEL": "gemma_3_4b_it"}
+        )
+    assert "FLAKEPILOT_AI_ENDPOINT" in str(error.value)
+
+
+def test_ai_endpoint_must_be_http() -> None:
+    with pytest.raises(SettingsError):
+        Settings.from_environ(
+            {
+                "FLAKEPILOT_DATABASE_URL": DSN,
+                "FLAKEPILOT_AI_ENDPOINT": "ftp://127.0.0.1/x",
+                "FLAKEPILOT_AI_MODEL": "gemma_3_4b_it",
+            }
+        )
+
+
+def test_the_ai_api_key_never_appears_in_repr_or_str() -> None:
+    settings = Settings.from_environ(
+        {
+            "FLAKEPILOT_DATABASE_URL": DSN,
+            "FLAKEPILOT_AI_ENDPOINT": "http://127.0.0.1:11434/v1/chat/completions",
+            "FLAKEPILOT_AI_MODEL": "gemma_3_4b_it",
+            "FLAKEPILOT_AI_API_KEY": "local-secret-key-9",
+        }
+    )
+    for text in (repr(settings), str(settings)):
+        assert "local-secret-key-9" not in text
+    assert (
+        settings.ai_api_key is not None
+        and settings.ai_api_key.reveal() == "local-secret-key-9"
+    )
