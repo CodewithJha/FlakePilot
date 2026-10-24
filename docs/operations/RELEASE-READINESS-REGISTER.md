@@ -12,7 +12,7 @@ tests, or recorded operational evidence), `BLOCKED` (needs infrastructure,
 credentials, or an owner decision that does not exist). A documented plan is
 never a deployed service; a test with fakes is never a live integration.
 
-Verified against `b9d1295` (2026-10-24). Nothing here was provisioned;
+Verified against `2508bd4` (2026-10-24, closure). Nothing here was provisioned;
 no decision below was made by this repository's development process.
 
 ## Local-only claim: closable without any owner decision

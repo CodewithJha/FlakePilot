@@ -1,8 +1,11 @@
 # FlakePilot — local-only release candidate
 
 The release statement for what the evidence supports today: a **local-only
-release candidate**. It is verified against commit `b9d1295` (Sprint 10 push;
-CI run `40068505407` success). This document states the boundary, not more
+release candidate**. Its code evidence is taken from commit `2508bd4` (CI
+run `40069275296` success there), and every command and test total below was
+re-run at closure from a tree that differs from it only in this document;
+the closing commit changes only documentation. This document states the
+boundary, not more
 than the boundary: every claim in it is backed by an implemented code path,
 a test, or a command you can run on your machine. It replaces no existing
 artifact — the operational day-to-day stays in the
@@ -24,7 +27,7 @@ configuration the composition root produces: `_sandbox` returns
 ## How to install and run it
 
 Taken from the current [README](../../README.md); all commands were re-run
-for this document at `b9d1295`:
+for this document at closure (`2508bd4`):
 
 - Install: `uv sync --locked` (uv-managed CPython 3.12, see `.python-version`).
 - Schema: `uv run alembic upgrade head` — migrations are an explicit step and
@@ -57,9 +60,10 @@ UV_PROJECT_ENVIRONMENT=.venv-runtime uv sync --locked --no-dev
 uv run pip-licenses --python .venv-runtime/bin/python
 ```
 
-Verified at `b9d1295`: `pytest -q` → **742 passed, 109 skipped** (no test
+Verified at `2508bd4` (closure re-run): `pytest -q` → **742 passed, 109
+skipped** (no test
 database); with `FLAKEPILOT_TEST_DATABASE_URL` → **851 passed** (run twice);
-CI run `40068505407` success. Integration tests create and drop throwaway
+CI run `40069275296` success. Integration tests create and drop throwaway
 databases; the role needs `CREATEDB`. A green suite is not proof of
 security, isolation, or encryption — the standing rule in
 [AGENTS.md](../../AGENTS.md).
