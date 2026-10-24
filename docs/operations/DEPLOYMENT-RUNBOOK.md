@@ -110,9 +110,11 @@ claimed jobs are leased, so the effect is delayed work, never lost work.
 ## Environment variables
 
 "Parsed" means `Settings.from_environ` validates it (a bad value is a startup
-refusal naming the variable, never its value). "Placeholder" means no code reads
-it yet; the name is a proposal for the integrator, and the provider adapters
-already exist with injected credentials but are not wired into the composition root.
+refusal naming the variable, never its value). "Wired opt-in" means the API's
+composition root builds the adapter only when the variable is set; unset means
+no adapter and no contact. Every provider variable belongs to the API service
+only. After setting any, check the startup log line `hosted providers
+configured (none verified live): …` or run `provider-status` in the shell.
 
 | Variable | Service | Secret | Source / value | Status |
 |---|---|---|---|---|
@@ -127,11 +129,11 @@ already exist with injected credentials but are not wired into the composition r
 | `FLAKEPILOT_SENTRY_DSN` | API | yes | Sentry project DSN (`https://<key>@<host>/<project>`) | Parsed, wired (opt-in reporter) |
 | `FLAKEPILOT_AUTH0_DOMAIN` / `_AUDIENCE` | API | no | Auth0 tenant host / API identifier | Parsed; verifier exists, **no route uses it** |
 | `FLAKEPILOT_AI_ENDPOINT` / `_AI_MODEL` / `_AI_API_KEY` | API | key: yes | operator model endpoint | Parsed, wired (`LocalEndpointAssist`) |
-| `FLAKEPILOT_GEMMA_API_KEY` | API | yes | Google AI Studio key (Gemma via the Gemini API) | Placeholder |
-| `FLAKEPILOT_SERPAPI_API_KEY` | API | yes | SerpApi | Placeholder |
-| `FLAKEPILOT_BROWSERBASE_API_KEY` / `_PROJECT_ID` | API | key: yes | Browserbase | Placeholder |
-| `FLAKEPILOT_ELEVENLABS_API_KEY` / `_VOICE_ID` | API | key: yes | ElevenLabs | Placeholder |
-| `FLAKEPILOT_TABPFN_API_KEY` | API | yes | Prior Labs | Placeholder |
+| `FLAKEPILOT_GEMINI_API_KEY` / `_GEMINI_MODEL` | API | key: yes | Google AI Studio key + `gemma-4-31b-it` or `gemma-4-26b-a4b-it`; not with `FLAKEPILOT_AI_ENDPOINT` | Parsed, wired opt-in (hypothesize stage); live **NOT VERIFIED** |
+| `FLAKEPILOT_SERPAPI_API_KEY` | API | yes | SerpApi | Parsed, wired opt-in (research stage); live **NOT VERIFIED** |
+| `FLAKEPILOT_BROWSERBASE_API_KEY` / `FLAKEPILOT_BROWSER_ALLOWLIST` | API | key: yes | Browserbase key + comma-separated public host names | Parsed, wired opt-in (browse stage); live **NOT VERIFIED** |
+| `FLAKEPILOT_ELEVENLABS_API_KEY` / `_VOICE_ID` (`_MODEL`) | API | key: yes | ElevenLabs | Parsed, wired opt-in (spoken brief route); live **NOT VERIFIED** |
+| `FLAKEPILOT_TABPFN_API_KEY` | API (operator shell) | yes | Prior Labs | Parsed, used only by `evaluate-prioritization --with-tabpfn`; live **NOT VERIFIED** |
 
 Never set `FLAKEPILOT_ALLOW_INSECURE_COOKIES=true` on Render (TLS is served;
 `__Host-` + `Secure` stay on). Never give the worker GitHub, session, provider or

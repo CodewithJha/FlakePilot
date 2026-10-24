@@ -42,7 +42,9 @@ root before claiming a feature is wired.
 
 ## Fail-closed inventory (what production actually uses)
 
-Verified against `interface/composition_root/` at `145ebc93`:
+Verified against `interface/composition_root/` at `145ebc93`; the AI and
+hosted-provider bullets re-verified at `ae81fcf` (`reproduction.py` and
+`worker.py` unchanged since):
 
 - `_sandbox` returns `ClosedSandbox` — no container, no repository code, ever,
   in the default composition.
@@ -57,7 +59,15 @@ Verified against `interface/composition_root/` at `145ebc93`:
 - Retention (`integrations/application/retention.py`) accepts only
   `policy="disabled"` and selects nothing; audit and outbox keys are not
   artifact keys.
-- AI assists through `NullAiAssist` only; no HTTP route.
+- AI assists through `NullAiAssist` unless the operator sets
+  `FLAKEPILOT_AI_ENDPOINT` (local) or `FLAKEPILOT_GEMINI_API_KEY` (hosted
+  Gemma); the only route that reaches it is the session investigation
+  (`POST /orgs/{org}/runs/{run}/investigation`), behind the org AI policy.
+- Hosted providers (`composition_root/providers.py`: SerpApi, Browserbase,
+  ElevenLabs, TabPFN, Sentry) are built only when their keys are set, in the
+  API process and operator commands; absent means no adapter and no contact.
+  The worker builds none of them and `render.yaml` gives it none. Auth0 settings are parsed but nothing
+  verifies agent tokens. No provider is live-verified.
 
 `LoopbackHostChannel` / `LoopbackHostClient` (127.0.0.1, mTLS, fingerprint
 pinning, `ReferenceHost` only) and `AesGcmSealer` are tested boundary code.

@@ -14,7 +14,7 @@ so the default product makes no browser call.
 | Fixture: `RecordedBrowserEvidence` (canned pages, same allowlist and caps) | `integrations/infrastructure/browserbase.py` | Tested with mocks |
 | Live adapter: `BrowserbaseEvidence` over the Browserbase Fetch API | `integrations/infrastructure/browserbase.py` | Tested with mocks; **live NOT VERIFIED** (no key) |
 | Live check, skipped without a key | `tests/live/test_live_browser_speech.py` | Skipped (verifies nothing) |
-| Investigation stage | none | Not wired (see "Not built") |
+| Investigation `browse` stage, wired opt-in (`FLAKEPILOT_BROWSERBASE_API_KEY` + `FLAKEPILOT_BROWSER_ALLOWLIST`) | `diagnosis/application/investigation.py`, `interface/composition_root/providers.py` | Tested with mocks; the PostgreSQL investigation test covers the absent-provider skip |
 
 ## The rules the port enforces
 
@@ -78,14 +78,13 @@ markdown/JSON conversion is billed separately as "Fetch Extract".
   (BSD-3-Clause, raw CDP) or `playwright` (Apache-2.0, `connect_over_cdp`).
   Either needs licence-gate review and an owner decision; neither is requested
   now.
-- **An investigation `browse` stage.** Adding one changes the stage list and
-  the provenance counts that the integration suite asserts
-  (`tests/integration/test_investigation_postgres.py`). The intended shape is:
-  run after `research`, capture only research-source URLs the allowlist
-  permits, record `skipped/provider_absent` when unconfigured, add the
-  evidence count to the provenance payload, and frame excerpts as `page` data
-  parts within `max_evidence_parts`. This is left to an integrator who can
-  update and run that suite.
+- **Page text as model evidence.** The `browse` stage runs after `research`,
+  hands up to five source URLs to the provider (which refuses anything off the
+  allowlist), records `skipped` with a reason when unconfigured, sourceless or
+  empty, and counts pages in the provenance payload. Captured excerpts are
+  deliberately *not* framed as data parts for the model: page text is
+  attacker-controllable, and the model keeps seeing only the run's own
+  evidence. Reports carry each page's URL, SHA-256, size and time.
 
 ## What the owner must supply
 

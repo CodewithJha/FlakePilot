@@ -36,11 +36,10 @@ Tests: unit tests for composition, directions, bounds, truncation, and scope
 pass-through (`tests/unit/test_intelligence/application/test_reliability.py`);
 a PostgreSQL integration test over real `ti` rows
 (`tests/integration/test_reliability_postgres.py::test_failure_trend_buckets_and_compares_real_rows`)
-— written, **NOT VERIFIED** in this session because no PostgreSQL was
-available here; CI runs it.
+— passes on PostgreSQL 16 locally and in CI.
 
-Not wired: no HTTP route or operator command exposes trends yet (a
-composition-root change, outside this work).
+Wired as the `reliability-trend` operator command (JSON); there is no HTTP
+route for trends.
 
 ## Should Tiger Cloud host the primary database?
 

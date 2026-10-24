@@ -65,6 +65,24 @@ services:
         sync: false
       - key: FLAKEPILOT_AUTH0_AUDIENCE
         sync: false
+      # Hosted providers (README "Hosted providers"). Empty: off, no contact.
+      # Pairs are both-or-neither; a half-set pair refuses startup.
+      - key: FLAKEPILOT_GEMINI_API_KEY
+        sync: false
+      - key: FLAKEPILOT_GEMINI_MODEL
+        sync: false
+      - key: FLAKEPILOT_SERPAPI_API_KEY
+        sync: false
+      - key: FLAKEPILOT_BROWSERBASE_API_KEY
+        sync: false
+      - key: FLAKEPILOT_BROWSER_ALLOWLIST
+        sync: false
+      - key: FLAKEPILOT_ELEVENLABS_API_KEY
+        sync: false
+      - key: FLAKEPILOT_ELEVENLABS_VOICE_ID
+        sync: false
+      - key: FLAKEPILOT_TABPFN_API_KEY
+        sync: false
 
   - type: worker
     name: flakepilot-worker

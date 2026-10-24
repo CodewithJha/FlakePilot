@@ -16,10 +16,11 @@ Evidence-based investigation and verification of recurring test failures. See [P
 - **Classification has no JSON API.** Each test's verdict — deterministic rule set `ti-classification/1`, with the evidence it was computed from — is rendered in the two session run views and in the operator CLI's `ci-run-report`, but there is no HTTP endpoint returning classifications as data.
 - **Parsing is synchronous.** Reports are parsed inside the upload request. A separate worker process runs durable jobs and delivers outbox rows to the audit log. No retention or stage job is registered. See [DURABLE-JOBS](docs/operations/DURABLE-JOBS.md).
 - **No quotas or rate limits.** AI spend is not checked either (ADR-014).
-- **AI assist is off unless an org admin enables it.** The use case exists, the process wires only `NullAiAssist`, and there is no HTTP route. A missing provider answers `unavailable`. See ADR-014.
+- **AI assist is off unless an org admin enables it.** It runs only inside the investigation route below, through a model the operator configured (a local endpoint or hosted Gemma); with none configured the process wires `NullAiAssist` and assist answers `unavailable`. See ADR-014.
+- **Hosted providers are opt-in and none is live-verified.** Gemma (Gemini API), SerpApi, Browserbase, ElevenLabs and TabPFN adapters are wired only when their keys are set (see [Hosted providers](#hosted-providers-adr-017)); no key exists in this repository and no adapter has been run against the real service.
 - **Artifacts are not encrypted at rest, and never cleaned up.** Raw reports are plain files under `FLAKEPILOT_ARTIFACT_DIR`, and there is no retention job.
 - **Browser reproduction fails closed.** The default execution mode starts no container and runs no repository code. Evaluation mode is an explicit opt-in, builds a `docker` or `podman` argument list, and is not a microVM and not a production sandbox. No container was run in CI. See [EXECUTION](docs/operations/EXECUTION.md).
-- **No Docker deployment yet.**
+- **Nothing is deployed.** A `Dockerfile` and a Render Blueprint (`render.yaml`) exist; the image has not been built (no local Docker daemon) and the Blueprint has not been validated by Render. See [DEPLOYMENT-RUNBOOK](docs/operations/DEPLOYMENT-RUNBOOK.md).
 - **TLS and request limits are your job.** Run it only behind a TLS-terminating reverse proxy that also enforces request size and time limits.
 
 ## Architecture
@@ -215,6 +216,15 @@ Settings come from environment variables only (see [`.env.example`](.env.example
 | `FLAKEPILOT_AI_ENDPOINT` | no | — | Operator-run local inference server URL (http(s), ≤500 chars) for advisory assist (ADR-017). Empty: no model contact at all. Never logged |
 | `FLAKEPILOT_AI_MODEL` | with `..._AI_ENDPOINT` | — | Model identifier (≤80 chars) recorded on every response. Required when the endpoint is set; refused (configures nothing) without it |
 | `FLAKEPILOT_AI_API_KEY` | no | — | Optional API key for the endpoint. Never logged. Unset also fine for keyless local servers |
+| `FLAKEPILOT_GITHUB_APP_ID` / `FLAKEPILOT_GITHUB_APP_PRIVATE_KEY` | for session views | — | GitHub App id and unencrypted RSA key, together, for the code-host access verifier. Unset: session views and the investigation answer 404 (fail closed). Live minting **NOT VERIFIED** |
+| `FLAKEPILOT_SENTRY_DSN` | no | — | `https://<public key>@<host>/<project id>`. API process only. Unset: nothing is reported. Set: ERROR records become allow-listed events ([SENTRY-OBSERVABILITY-BOUNDARY](docs/operations/SENTRY-OBSERVABILITY-BOUNDARY.md)) |
+| `FLAKEPILOT_AUTH0_DOMAIN` / `FLAKEPILOT_AUTH0_AUDIENCE` | no | — | Auth0 tenant host and API identifier, together. Parsed only: no route verifies agent tokens yet |
+| `FLAKEPILOT_GEMINI_API_KEY` / `FLAKEPILOT_GEMINI_MODEL` | no | — | Hosted Gemma for assist, together; model `gemma-4-31b-it` or `gemma-4-26b-a4b-it`. Refused beside `FLAKEPILOT_AI_ENDPOINT` |
+| `FLAKEPILOT_SERPAPI_API_KEY` | no | — | SerpApi research stage. Sends the run's failing test names as the search query |
+| `FLAKEPILOT_BROWSERBASE_API_KEY` / `FLAKEPILOT_BROWSER_ALLOWLIST` | no | — | Browserbase browse stage, together; comma-separated exact public host names |
+| `FLAKEPILOT_ELEVENLABS_API_KEY` / `FLAKEPILOT_ELEVENLABS_VOICE_ID` | no | — | ElevenLabs spoken brief, together |
+| `FLAKEPILOT_ELEVENLABS_MODEL` | no | `eleven_flash_v2_5` | Or `eleven_multilingual_v2`; refused without the key |
+| `FLAKEPILOT_TABPFN_API_KEY` | no | — | TabPFN candidate for `evaluate-prioritization --with-tabpfn` only |
 
 ### GitHub App sign-in
 
@@ -227,6 +237,25 @@ Without a client ID and secret, sign-in is off and the auth endpoints answer 503
 ### Advisory AI endpoint (ADR-017)
 
 Optional, operator-run, local. Set `FLAKEPILOT_AI_ENDPOINT` and `FLAKEPILOT_AI_MODEL` (plus `FLAKEPILOT_AI_API_KEY` if the server expects one) to point assist at your own inference server; unset keeps the shipped `NullAiAssist` posture — no model contact, assist answers `unavailable`, every other capability unchanged. The endpoint is contacted only when an org admin has enabled assist policy, and model output is advisory data: it never changes the deterministic `ti-classification/1` verdict or grants anything. Model identity is recorded on every response; keys and endpoint are never logged.
+
+### Hosted providers (ADR-017)
+
+Every hosted provider is off, with no network contact, unless its settings are complete; a pair with one half set, and a value the adapter refuses, stop startup without echoing a key. They are read by the API process and the operator commands only — never give them to the worker. At startup the API logs one line with each provider's code (`hosted providers configured (none verified live): ai_assist=… research=…`); `provider-status` prints the same as JSON. "Configured" is not "working": no adapter has been run against the live service.
+
+| Provider | Variables | Used by | What leaves the process |
+|---|---|---|---|
+| Gemma via the Gemini API | `FLAKEPILOT_GEMINI_API_KEY`, `FLAKEPILOT_GEMINI_MODEL` | hypothesize stage, after the org enables AI policy | the stage instructions and the run's evidence parts (test classname, name, id, attempt outcomes). Owner decision first: Gemma on the Gemini API is free-tier only, and Google may use free-tier prompts |
+| SerpApi | `FLAKEPILOT_SERPAPI_API_KEY` | research stage | the failing tests' names as the search query |
+| Browserbase Fetch | `FLAKEPILOT_BROWSERBASE_API_KEY`, `FLAKEPILOT_BROWSER_ALLOWLIST` | browse stage | research-source URLs on the allowlist; pages come back as hashed evidence, their text never reaches the model |
+| ElevenLabs | `FLAKEPILOT_ELEVENLABS_API_KEY`, `FLAKEPILOT_ELEVENLABS_VOICE_ID` (`FLAKEPILOT_ELEVENLABS_MODEL`) | `POST …/investigation/brief` only | the counts-only brief text (no test names, logs or model text) |
+| TabPFN (Prior Labs) | `FLAKEPILOT_TABPFN_API_KEY` | `evaluate-prioritization --with-tabpfn` only | numeric feature rows and 0/1 labels |
+| Sentry | `FLAKEPILOT_SENTRY_DSN` | API error reporting | allow-listed event fields only |
+
+### Investigation (session users)
+
+`POST /orgs/{org_id}/runs/{run_id}/investigation` runs the bounded investigation of one stored run: collect, research, browse, hypothesize, prioritize, then one `diag.investigation.recorded` provenance row. It answers JSON with each stage's status and reason (an unconfigured provider is a `skipped` stage with reason `provider_absent`, never an error), the research sources (URL, title, time), captured page hashes, the assist's counts (hypothesis text stays in the diagnosis store), the history ranking, and the counts-only brief text. `POST /orgs/{org_id}/runs/{run_id}/investigation/brief` runs it again and answers the brief as audio (`Cache-Control: no-store`; the audio is not stored) — only when ElevenLabs is configured, else 503 `speech_not_configured`.
+
+Both are POSTs with the session cookie, so the CSRF same-origin rule applies. The chain is the run view's, with `repo.investigate` in place of `repo.view`: a run outside the caller's scope, an unverified code-host standing, and a member without any grant on the repo are the same 404 `not_found`; a member who can see the repo but lacks `repo.investigate` gets 403 `forbidden`. Refusals are recorded as provenance too. Nothing here executes code or changes a verdict.
 
 ### Session-user run views
 
@@ -286,6 +315,19 @@ discoverable without CI-side bookkeeping:
 uv run python -m flakepilot.interface.composition_root list-runs \
   --org-id $ORG_ID --repo-id $REPO_ID            # or --format json
 ```
+
+Read-only analytics, JSON on stdout (operator trust, like `list-runs`):
+
+```sh
+uv run python -m flakepilot.interface.composition_root provider-status
+uv run python -m flakepilot.interface.composition_root reliability-trend \
+  --org-id $ORG_ID --repo-id $REPO_ID --days 7 --bucket day
+uv run python -m flakepilot.interface.composition_root evaluate-prioritization \
+  --org-id $ORG_ID --repo-id $REPO_ID --train-cutoff 2026-10-01T00:00:00+00:00 \
+  --horizon-days 7 [--k 10] [--with-tabpfn]
+```
+
+`reliability-trend` compares failure and flaky rates per bucket and environment with the previous window (exact arithmetic, `incomplete` when a read hits its bound). `evaluate-prioritization` scores a candidate against the shipped prioritization baseline on a temporal split that never lets a feature see the label window; without `--with-tabpfn` (and its key) the candidate is reported `blocked`, never invented.
 
 `verify-github-app` is a read-only staging diagnostic for the GitHub App and
 the code-host access verifier (the Decision E runbook in
@@ -348,6 +390,8 @@ Errors are JSON `{"error": {"code", "message", "request_id"}}`; the request ID i
 | `unsupported_media_type` | Wrong content type or encoding |
 | `invalid_report` | Report refused, with a `reason` |
 | `ingestion_not_configured` | No artifact directory is configured |
+| `speech_not_configured` | No speech provider is configured for the spoken brief |
+| `speech_unavailable` | The speech provider refused or was unreachable, with a `reason` |
 
 API conventions: `src/flakepilot/interface/http/__init__.py`.
 

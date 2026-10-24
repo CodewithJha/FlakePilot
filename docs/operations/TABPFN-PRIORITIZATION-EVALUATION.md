@@ -78,7 +78,8 @@ storage URLs; only numeric CSV leaves the process; responses are size-capped;
 `random_state` is fixed at 0. The HTTPS transport is **injected** — outbound
 HTTP may live only in integration adapters (ADR-003, enforced by
 `tests/architecture/test_authentication.py`), so the module imports no HTTP
-client and cannot send anything until the composition root supplies one.
+client; the composition root supplies `hosted_http.call` (https only, no
+redirects, size-capped).
 Tested with a fake transport only (**tested with mocks**); never run against
 the live API.
 
@@ -101,10 +102,12 @@ and ROC-AUC and beats the base-rate Brier score, on each of several
 consecutive non-overlapping test windows — not on one lucky window. Even then
 it never replaces `ti-classification/1` verdicts and never gates anything.
 
-## Wiring needed to run it for real
+## Running it for real
 
-An operator command in the composition root that builds `Evaluation(uow)`,
-optionally constructs `TabPfnPredictor` from an owner-supplied key setting
-and an HTTPS transport bridged from `integrations/infrastructure`, and prints
-the `EvaluationReport`. No dependency is needed (the SDK `tabpfn-client`
-0.6.1, Apache-2.0, is not required).
+`evaluate-prioritization --org-id … --repo-id … --train-cutoff <ISO> --horizon-days N [--k K] [--with-tabpfn]`
+builds `Evaluation(uow)` and prints the `EvaluationReport` as JSON. The TabPFN
+candidate is constructed only from `FLAKEPILOT_TABPFN_API_KEY` with the
+`hosted_http.call` transport, and contacted only with `--with-tabpfn`;
+otherwise it is reported `blocked: not_configured`. The command's PostgreSQL
+test covers the blocked path only. No dependency is needed (the SDK
+`tabpfn-client` 0.6.1, Apache-2.0, is not required).
