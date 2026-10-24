@@ -47,7 +47,10 @@ so the demo uses the operator CLI paths that do not need them. Everything below
 is truthful about what it is and is not: the demo fixture is hand-written, no
 repository code is ever executed, and `FLAKEPILOT_EXECUTION_MODE` stays `closed`.
 
-One command runs the whole journey (`createdb flakepilot_demo` once beforehand):
+One command runs the whole journey (`createdb flakepilot_demo` once beforehand).
+It writes its HTML report, the discovery listing, the JSON report and the
+evidence narrative into `flakepilot-demo-output/` (overridable; see the script
+header):
 
 ```sh
 ops/demo/run-demo.sh     # or sh ops/demo/run-demo.sh
@@ -124,26 +127,54 @@ Step by step:
 
    Each `201` response carries the upload ID, run ID, and the summary counts.
 
-6. **See the stored run** (new in this MVP; read-only operator report):
+6. **Discover the stored runs** with `list-runs` (the shipped read-only discovery
+   command). The listing is newest first and bounded — the run IDs you can then
+   use with `ci-run-report` and the session run views come from this actual
+   output, never from memory:
 
    ```sh
+   uv run python -m flakepilot.interface.composition_root list-runs \
+       --org-id "$ORG_ID" --repo-id "$REPO_ID" --limit 2 --format json
+   ```
+
+   A repository with no stored runs prints `no stored runs for this (org,
+   repo) pair yet` instead of an error; a foreign org's listing is empty.
+
+7. **Render the selected run** — taking `RUN_ID` from the listing above — as a
+   read-only JSON report, then as a self-contained HTML report:
+
+   ```sh
+   uv run python -m flakepilot.interface.composition_root ci-run-report \
+       --org-id "$ORG_ID" --repo-id "$REPO_ID" --run-id "$RUN_ID" \
+       --format json
    uv run python -m flakepilot.interface.composition_root ci-run-report \
        --org-id "$ORG_ID" --repo-id "$REPO_ID" --run-id "$RUN_ID" \
        --format html --out demo-run.html && open demo-run.html
    ```
 
-   The report shows the run's summary counts, the upload metadata, each test's
-   attempt chain, and each test's **classification** — the deterministic,
-   versioned rule set `ti-classification/1` applied to the stored CI evidence
-   (no confidence scores, no model output). On the demo data: the flaky test
-   is classified `flaky` at the failing commit with the passing and failing
-   attempt counts as evidence; the failing test is classified
-   `deterministic_regression` **because a real earlier stored run passed it in
-   the same environment** (`baseline_sha` names that run's commit); a test
-   that only passed reports a truthful `inconclusive` /
+   The report shows the run's summary counts, the upload metadata, each
+   test's attempt chain, and each test's **classification** — the
+   deterministic, versioned rule set `ti-classification/1` applied to the
+   stored CI evidence (no confidence scores, no model output). On the demo
+   data: the flaky test is classified `flaky` at the failing commit with the
+   passing and failing attempt counts as evidence; the failing test is
+   classified `deterministic_regression` **because a real earlier stored run
+   passed it in the same environment** (`baseline_sha` names that run's
+   commit); a test that only passed reports a truthful `inconclusive` /
    `insufficient_history`. The commit SHA is what CI reported, the revision
    status stays `unchecked`, and the raw report body is stored as a plaintext
    file. `--format json` is available for scripts.
+
+8. **Explain the evidence.** The script (`ops/demo/run-demo.sh`, one command
+   for the whole journey) prints an evidence narrative after the reports,
+   saved to `flakepilot-demo-output/evidence-narrative.txt` together with the
+   discovery listing (`runs.json`) and the JSON report. It cites only what the
+   rule set recorded — stored run IDs from the actual `list-runs` output,
+   attempt chains (`failed` then `passed`, or `failed` then `failed`), the
+   environment, and the rule version — and states plainly what the demo is
+   not: the fixtures are hand-written synthetic data, no repository code ever
+   ran, baseline-before-current ordering is a demo upload choice and **not**
+   proof of Git ancestry, and every run's revision status stays `unchecked`.
 
 Known limits of this journey: there is no interactive UI beyond the session-user
 run view (a signed-in reader needs GitHub App credentials, which no demo

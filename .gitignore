@@ -24,3 +24,6 @@ artifacts/
 .idea/
 .vscode/
 .cursor/
+# Local demo outputs from ops/demo/run-demo.sh (never commit these).
+flakepilot-demo-report.html
+flakepilot-demo-output/

@@ -1,16 +1,31 @@
 #!/bin/sh
 # FlakePilot MVP demo: one complete shell run of the documented demo journey.
 #
-#   1. migrate the demo database, start the API and worker that already exist
-#   2. bootstrap an org with the operator CLI (the command the README documents)
-#   3. issue a CI upload token with the operator CLI (new in this MVP)
-#   4. POST two demo JUnit fixtures from ops/demo/ (clearly hand-written, no
+#   1. require an explicitly configured local PostgreSQL demo database
+#      (the README's `createdb flakepilot_demo` step; nothing here reconfigures it)
+#   2. migrate the demo database, start the API and worker that already exist
+#   3. bootstrap an org with the operator CLI (the command the README documents) and
+#      create the demo-scoped repository identity (checklist step 4 of the README
+#      journey; nothing is registered at a code host, see the echo there)
+#   4. issue a CI upload token with the operator CLI (scoped to that one pair)
+#   5. POST two demo JUnit fixtures from ops/demo/ (clearly hand-written, no
 #      repository code was ever executed to produce them): a passing baseline
 #      on an earlier commit, then the flaky/failing run. Both stay fixtures.
-#   5. render the stored run as a read-only HTML report with the operator CLI:
-#      attempt chains plus each test's classification from the deterministic
-#      rule set ti-classification/1 (flaky / deterministic_regression with the
-#      baseline evidence / a truthful inconclusive)
+#      Baseline-before-current is this demo's setup choice; it is NOT Git
+#      ancestry proof.
+#   6. discover the stored runs with `list-runs` (newest first, bounded page) and
+#      select the run to inspect from that actual output — never a guessed ID
+#   7. render the selected run as a read-only JSON report and a self-contained
+#      HTML report with the operator CLI: attempt chains plus each test's
+#      classification from the deterministic rule set ti-classification/1
+#      (flaky / deterministic_regression with the baseline evidence / a truthful
+#      inconclusive)
+#   8. print an evidence narrative citing the stored run IDs, attempt chains,
+#      baseline evidence, environment and rule version — written from the JSON
+#      report the rule set produced, never recomputed here
+#
+# Outputs (all under $DEMO_OUTPUT_DIR unless overridden): runs.json, the JSON
+# report, the evidence narrative, and the HTML report at $DEMO_REPORT.
 #
 # Prerequisites: PostgreSQL (already running) with a database created:
 #
@@ -25,20 +40,34 @@ set -eu
 
 : "${FLAKEPILOT_DATABASE_URL:?export FLAKEPILOT_DATABASE_URL first}"
 
+DEMO_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$DEMO_DIR/../.." && pwd)"
+BASELINE_FIXTURE="${DEMO_BASELINE_FIXTURE:-$DEMO_DIR/fixture-junit-baseline.xml}"
+CURRENT_FIXTURE="${DEMO_CURRENT_FIXTURE:-$DEMO_DIR/fixture-junit.xml}"
 API_LOG="${DEMO_API_LOG:-flakepilot-demo-api.log}"
 WORKER_LOG="${DEMO_WORKER_LOG:-flakepilot-demo-worker.log}"
 REPORT="${DEMO_REPORT:-flakepilot-demo-report.html}"
+OUTPUT_DIR="${DEMO_OUTPUT_DIR:-$REPO_ROOT/flakepilot-demo-output}"
 BASE="http://127.0.0.1:${FLAKEPILOT_PORT:-8000}"
 DEMO_SHA="000102030405060708090a0b0c0d0e0f10111213"
+
+# The fixtures are the demo's raw material: refuse to start without them
+# instead of failing later with a parser error mid-journey.
+for fixture in "$BASELINE_FIXTURE" "$CURRENT_FIXTURE"; do
+  if [ ! -r "$fixture" ]; then
+    echo "demo fixture not readable: $fixture" >&2
+    exit 1
+  fi
+done
 
 # Ingestion stores the raw report body as a plaintext file under this
 # directory (no retention job deletes them; encryption is not wired).
 DEMO_ARTIFACTS="${FLAKEPILOT_ARTIFACT_DIR:-${TMPDIR:-/tmp}/flakepilot-demo-artifacts}"
-mkdir -p "$DEMO_ARTIFACTS"
-chmod 700 "$DEMO_ARTIFACTS"
+mkdir -p "$DEMO_ARTIFACTS" "$OUTPUT_DIR"
+chmod 700 "$DEMO_ARTIFACTS" "$OUTPUT_DIR"
 export FLAKEPILOT_ARTIFACT_DIR="$DEMO_ARTIFACTS"
 
-cd "$(dirname "$0")/../.." || exit 1
+cd "$REPO_ROOT"
 
 stop() {
   [ -n "${WORKER_PID:-}" ] && kill "$WORKER_PID" 2>/dev/null
@@ -80,17 +109,17 @@ ORG_ID=$(uv run python -m flakepilot.interface.composition_root bootstrap-org \
 echo "org: $ORG_ID"
 
 REPO_ID=$(uv run python -c "import uuid; print(uuid.uuid4())")
-echo "repo: $REPO_ID (a demo-scoped identifier; no repository was registered at a code host)"
+echo "repo: $REPO_ID (a demo-scoped identifier tied to this token; no repository was registered at a code host, so register-repo would fabricate one and is deliberately not called)"
 
 echo "== issuing a CI upload token (shown once; only its SHA-256 is stored)"
 TOKEN=$(uv run python -m flakepilot.interface.composition_root issue-ci-upload-token \
   --org-id "$ORG_ID" --repo-id "$REPO_ID" 2>/dev/null | tail -n 1)
-echo "token prefix: ${TOKEN:0:12}..."
+echo "token prefix: $(printf '%s' "$TOKEN" | cut -c1-12)..."
 
 echo "== ingesting the demo JUnit fixtures (POST /ingest/junit, the API's existing path)"
 echo "   1/2: the passing baseline (hand-written fixture, earlier demo commit)"
 BASELINE_SHA="2424242424242424242424242424242424242424"
-RESPONSE=$(curl -fsS -X POST "$BASE/ingest/junit" \
+BASELINE_RESPONSE=$(curl -fsS -X POST "$BASE/ingest/junit" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/xml" \
   -H "X-FlakePilot-CI-Source: demo-fixture" \
@@ -102,11 +131,12 @@ RESPONSE=$(curl -fsS -X POST "$BASE/ingest/junit" \
   -H "X-FlakePilot-Environment: demo.local" \
   -H "X-FlakePilot-Started-At: 2026-10-23T12:00:00+00:00" \
   -H "X-FlakePilot-Finished-At: 2026-10-23T12:05:00+00:00" \
-  --data-binary @ops/demo/fixture-junit-baseline.xml)
-echo "ingest summary: $RESPONSE"
+  --data-binary "@$BASELINE_FIXTURE")
+echo "ingest summary: $BASELINE_RESPONSE"
+BASELINE_RUN_ID=$(printf '%s' "$BASELINE_RESPONSE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["run_id"])')
 
-echo "   2/2: the flaky/failing run (same tests, later demo commit)"
-RESPONSE=$(curl -fsS -X POST "$BASE/ingest/junit" \
+echo "   2/2: the flaky/failing run (same tests plus one retry, later demo commit)"
+CURRENT_RESPONSE=$(curl -fsS -X POST "$BASE/ingest/junit" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/xml" \
   -H "X-FlakePilot-CI-Source: demo-fixture" \
@@ -118,21 +148,50 @@ RESPONSE=$(curl -fsS -X POST "$BASE/ingest/junit" \
   -H "X-FlakePilot-Environment: demo.local" \
   -H "X-FlakePilot-Started-At: 2026-10-23T12:10:00+00:00" \
   -H "X-FlakePilot-Finished-At: 2026-10-23T12:15:00+00:00" \
-  --data-binary @ops/demo/fixture-junit.xml)
-RUN_ID=$(printf '%s' "$RESPONSE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["run_id"])')
+  --data-binary "@$CURRENT_FIXTURE")
+echo "ingest summary: $CURRENT_RESPONSE"
+RUN_ID=$(printf '%s' "$CURRENT_RESPONSE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["run_id"])')
 echo "run: $RUN_ID"
-echo "ingest summary: $RESPONSE"
 
 echo "== letting the worker deliver the outbox rows to the audit log"
 sleep 3
 
-echo "== rendering the stored run (read-only operator report)"
+echo "== discovering the stored runs (list-runs; newest first, bounded page)"
+RUNS_JSON="$OUTPUT_DIR/runs.json"
+uv run python -m flakepilot.interface.composition_root list-runs \
+  --org-id "$ORG_ID" --repo-id "$REPO_ID" --limit 2 --format json > "$RUNS_JSON"
+cat "$RUNS_JSON"
+
+echo "== checking the discovery against the ingest responses, then selecting the run"
+# `evidence.py select` re-derives the selection from the actual listing output:
+# the run to inspect is whatever this listing says it is, and the only accepted
+# identifiers are the run IDs the ingest responses and the listing both carry.
+python3 ops/demo/evidence.py select "$RUNS_JSON" "$RUN_ID" "$BASELINE_RUN_ID" \
+  "$DEMO_SHA" "$BASELINE_SHA"
+
+echo "== rendering the selected run: read-only JSON and HTML reports (operator CLI)"
+REPORT_JSON="$OUTPUT_DIR/run-report.json"
 uv run python -m flakepilot.interface.composition_root ci-run-report \
-  --org-id "$ORG_ID" --repo-id "$REPO_ID" --run-id "$RUN_ID" --out "$REPORT"
+  --org-id "$ORG_ID" --repo-id "$REPO_ID" --run-id "$RUN_ID" --format json > "$REPORT_JSON"
+uv run python -m flakepilot.interface.composition_root ci-run-report \
+  --org-id "$ORG_ID" --repo-id "$REPO_ID" --run-id "$RUN_ID" --format html --out "$REPORT"
+
+echo "== evidence narrative (cites the stored run IDs, chains, baseline and rule version)"
+NARRATIVE="$OUTPUT_DIR/evidence-narrative.txt"
+python3 ops/demo/evidence.py narrate "$REPORT_JSON" "$RUN_ID" "$BASELINE_RUN_ID" \
+  "$BASELINE_SHA" "$ORG_ID" "$REPO_ID" > "$NARRATIVE"
+cat "$NARRATIVE"
+
 echo
-echo "Demo complete. Open the report:"
-echo "  open $REPORT"
-echo "This demo never executed repository code: FLAKEPILOT_EXECUTION_MODE stayed"
+echo "Demo complete. Outputs:"
+echo "  HTML report (open it):  $REPORT"
+echo "  discovery listing:      $RUNS_JSON"
+echo "  JSON report:            $REPORT_JSON"
+echo "  evidence narrative:     $NARRATIVE"
+echo "All of it is demo data: hand-written fixtures, no repository code ever"
+echo "executed, every revision status left 'unchecked'. Baseline ordering here"
+echo "was an upload decision, not Git ancestry."
+echo "This run also never enabled untrusted-code execution: FLAKEPILOT_EXECUTION_MODE stayed"
 echo "at the default closed mode throughout, and reproduction runs stay"
 echo "fail-closed (POST /orgs/{org}/reproductions answers inconclusive without"
 echo "session sign-in, which needs GitHub App credentials this demo does not use)."
