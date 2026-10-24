@@ -1,0 +1,59 @@
+# Sponsor implementation map — capability, components, verification
+
+Companion to [ADR-017](../adr/ADR-017-sponsor-capability-phase.md) and the
+[frozen matrix](SPONSOR-INTEGRATION-MATRIX.md) (whose evidence-ladder
+vocabulary this map uses). One row per original sponsor goal: what the goal
+becomes in the product, what implements it, its dependency/tests/security
+profile, how it is verified, and its current status. Written at the start of
+the post-release sponsor-capability phase (baseline `395982a`, tag
+`local-only-release-candidate`); statuses change only with new evidence.
+
+Standing rules for every row: deterministic `ti-classification/1` stays the
+authoritative classifier; model and provider output is advisory data that
+never grants permissions, replaces verdicts, or executes anything; every
+external provider is optional — with all of them absent, the product remains
+the released local-only candidate; and no row may claim a status above
+**Tested with mocks** without either real PostgreSQL tables or a real
+provider interaction.
+
+## The map
+
+| # | Goal | Capability (as implemented/decided) | Components | Dependencies | Tests | Security risks & controls | Verification method | Status |
+|---|---|---|---|---|---|---|---|---|
+| 1 | **Gemma** | Advisory investigation hypotheses/summaries via the existing `AiAssistPort`+`Assist` policy gate; new local-endpoint adapter (operator runs the model server; weights are never committed or auto-downloaded) | `integrations/application/ports.py` (existing), new `integrations/infrastructure` local-endpoint adapter, `diagnosis/application/assist.py` policy | None new (stdlib transport pattern, ADR-003 style) | Unit: schema-shaped AI traffic, timeout→`unavailable`, HTTP 5xx→unavailable, oversized response→unavailable, malformed JSON→unavailable, no endpoint→no contact; assist policy unchanged (existing suite) | Prompt-injection via evidence → data-part framing + citation checker + bounded claims; output size caps; model text never in reasons/errors; secrets never sent (endpoint is trusted local) | Unit + `Assist` integration on real tables with a canned adapter; **live model run is owner-gated** | Tested with mocks (adapter); endpoint run externally blocked (owner runs the model server) |
+| 2 | **Mastra** | Bounded investigation workflow — typed stages (collect → classify → research → hypothesize → prioritize → report), explicit budgets and stopping conditions — orchestrated locally in DIA | `diagnosis/application/investigation.py` (new), composition-root `investigate` CLI | None new | Unit: stage order, budget exhaustion→stop, each provider's failure→stage skipped-fail-safe, deterministic verdict unchanged, provenance events appended | Extension point is the agent principal contract: workflow cannot mutate grants, cannot execute code, cannot bypass policy gates | Unit; end-to-end over real tables (integration) | Tested with mocks (workflow core); Mastra runtime itself: **not recommended** — meets the goal without a second authority (ADR-017 §1) |
+| 3 | **Browserbase** | Evidence-provider port for browser-derived diagnostics with explicit provenance; recorded-fixture provider for local truth; live browsing stays disabled | New `BrowserEvidenceProvider` port + fixture adapter; excluded from any execution path | None new | Unit: fixture provenance (source, captured_at), unavailable provider→explicit skip, untrusted-page-content-as-data | Live capture would fetch arbitrary web content: gated behind owner-approved credentials; content treated as data parts only | Port contract tests with fixtures | Fixture provider tested; live Browserbase: **Planned**, owner-gated |
+| 4 | **MongoDB Atlas** | Investigation documents remain composed values + audit provenance; Atlas evaluated **not-selected** pending a concrete advantage (see evaluation doc) | No new store; ADR-005 posture | None | n/a until justification exists | A second store would add cross-store authorization leakage risk — is the reason for not-selected | Documented evaluation with revisit conditions | **Not selected** (goal retained, honest evaluation recorded) |
+| 5 | **Temporal** | Investigation durability is the existing outbox/jobs (retries, leases, dead-letter); Temporal documented **not justified now** with conditions to revisit | `orchestration` outbox/jobs (existing) | None | Existing integration tests cover the guarantees | Two workflow authorities would race on idempotency — avoided by decision | Existing integration suite | **Not justified** (evaluation doc records conditions) |
+| 6 | **Tiger Data** | Historical reliability analytics: flakiness trends per test/environment, failure clusters, revision-window comparisons — over `ti.observations` in PostgreSQL | `test_intelligence/application/reliability.py` (new) + store query | None new | Unit (composition of stats) + integration test over real tables (cutoffs honored, empty history honest) | Read-only over scoped (org, repo) rows only; no cross-tenant rows | Unit + integration on real tables | **Integration-tested** (once merged with its integration test) |
+| 7 | **Sentry** | Observability is the repository's structured JSON logs + request IDs; a redaction/consent boundary documents what a remote sink would receive — no SDK until data flow is agreed | Logging path (existing), documentation of the would-be boundary | None | Existing log-shape tests; docs review for redaction | Remote telemetry exfiltration risk: only org/repo IDs/request IDs would ever ship; secrets/tokens/payload text never | Documentation + redaction unit check if a sink is ever added | **Planned** (SDK gated on owner consent + verified field list) |
+| 8 | **SerpApi** | Bounded research provider: query → sources with URL/timestamp/excerpt, budgeted and deduplicated; results are untrusted data parts; recorded-fixture provider locally | New `ResearchProvider` port + fixture adapter, budget/citation guards | None new | Unit: budgets enforced, deduplication, unavailable→skip, excerpts never instructions, citation shape | Retrieved content cannot authorize anything; query budget prevents unbounded spend when a live key exists later | Port contract tests with fixtures | Fixture provider tested; live SerpApi: **Planned**, owner-gated credential |
+| 9 | **Auth0 for AI Agents** | Agent principals: delegated, scoped, short-lived, audited; issuer-agnostic (Auth0 mapping documented; external issuer optional) | `identity/application/agents.py` (new), audit events | None | Unit: scope subset≤delegator, TTL expiry, grant/exec contact discipline-denied, attribution events, plans cannot self-grant | Agent must never become a standing service principal — enforced structurally (no store rows, no issuer trust) → enforced by contract tests instead | Unit + integration attribution on real tables | **Tested with mocks** locally (issuer-independent design); real Auth0 issue: **Planned**, owner-gated |
+| 10 | **Render** | Deployment architecture for API + worker split, migrations, health checks, secrets, shutdown — documented; no deploy | `RENDER-DEPLOYMENT-ARCHITECTURE.md`, config templates in docs | None | Docs-only; smoke checklist defined | Ephemeral FS vs artifact dir is an explicit operator responsibility — documented | Doc review + smoke checklist steps (owner-run when hosting is approved) | **Planned** (hosting is an owner decision; D-HOST-1..5 gate stands) |
+| 11 | **DigitalOcean** | Execution-isolation host assessment: threat model, host-side evidence requirements, and an alternative recommendation where a plain VM cannot meet the 10J evidence ladder | `DIGITALOCEAN-ISOLATION-ASSESSMENT.md`; `ops/isolation` tooling unchanged | None | Existing isolation-validation suite stays the only "evidence" producer | Any claimed isolation without reviewed evidence is forbidden — remains the invariant | 10J B1→B4 chain on real infrastructure only | **Planned, owner-gated** (no infrastructure; replacement documented) |
+| 12 | **TabPFN** | Evidence-backed prioritization: transparent deterministic scoring (recency, failure rate, frequency) as the baseline; probabilistic model optional and evaluation-gated | `test_intelligence/application/prioritization.py` (new) | None | Unit: cut-off leakage guard, zero-history honesty, ordering stability | No invented confidence: output is a rank + why, never a probability without evaluation | Unit + integration on real tables | **Integration-tested** (deterministic part); TabPFN itself: **not selected yet** — must beat the baseline on recorded evaluation first |
+| 13 | **Tinker** | Specialized classification via evaluated models stays optional; verdict authority stays `ti-classification/1`; Tinker unreachable/unsuitable this phase → documented, no fake adapter | Documentation within ADR-017 §5; future evaluation harness condition recorded | None | n/a | A trained-model verdict pipeline could bypass the rule set — structurally allowed only as an *additional, evaluated* view, never as authority | Documented conditions | **Not justified this phase** (goal retained; conditions recorded) |
+| 14 | **ElevenLabs** | Spoken investigation brief: deterministic text brief (verdict, evidence, cause hypothesis, uncertainty, next step) + TTS port; text-only default; audio provider = operator-configured, opt-in | Brief composer in blocks + `SpeechProvider` port + fixture adapter; CLI `investigate --audio-budget`? output text | None new | Unit: brief content deterministic on fixed evidence, no secrets in brief text, provider absent→text only | Briefs must summarize, not dump logs; no sensitive content leaves the process until a sink is configured and reviewed | Unit tests on brief content | Brief composer: **Tested with mocks**; live TTS: **Planned**, owner-gated |
+| 15 | **Entire** | Provenance trail: investigation lifecycle events (stage, inputs' IDs, rule/model versions, budgets, stopping condition) appended via the existing outbox/AUD relay, same transaction | `diagnosis/application/investigation.py` events + existing relay | None | Integration: events land in AUD exactly once, transactional with the outcome | Provenance must not carry credentials or untruted text (payload contract enforces IDs/enums only) | Integration on real tables | **Integration-tested** (event flow); external Entire attestations: **Planned**, evaluation recorded |
+| 16 | **`.TECH` domain** | Domain/DNS/TLS/callback strategy documented for a future host; no hostname baked into code (origin stays configurable) | `DOT-TECH-DOMAIN-STRATEGY.md` | None | Docs-only; local-dev-without-domain continues to work | Public origin misconfiguration → cookie prefix/CSRF behavior is already fail-closed (settings validation) | Doc review; live purchase is owner action | **Planned** (purchase/registration owner-gated) |
+
+## Honest gaps in this map
+
+- Rows whose "Status" includes "**Planned**, owner-gated" require exactly one
+  thing the owner has not been asked to do yet here: explicit authorization
+  plus (for the live-provider rows) credentials the owner would create. The
+  list of external actions lives at the bottom of this page's phase reports.
+- "Tested with mocks" status values here refer to provider adapters driven by
+  injected transports/fixture stores over real code paths (unit tests), and
+  the workflow/analytics pieces additionally carry PostgreSQL integration
+  tests where the row says so — matching the matrix's evidence ladder, no
+  status is inflated by this map.
+
+## Beyond this phase's local scope (each needs owner action)
+
+1. Run a real model server and authorize its endpoint configuration (goal 1).
+2. Supply live research/browser/speech provider credentials and sign their
+   data flow consent records (goals 3, 8, 14).
+3. Approve hosting (goal 10) and the hosting/domain decisions (16, D-HOST-1..5).
+4. Authorize real isolation-host infrastructure and name the security
+   reviewer (goal 11; D-RUNTIME-1/5).

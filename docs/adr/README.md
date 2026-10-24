@@ -22,6 +22,7 @@ The ADR index, plus the Stage 1.4 technology decision inventory. ADRs are number
 | [ADR-014](ADR-014-stage-5-ai-platform-and-deviations.md) | Stage 5 AI platform scope and deviations | Accepted |
 | [ADR-015](ADR-015-stage-6-grant-administration-and-deviations.md) | Stage 6 grant administration scope and deviations | Accepted |
 | [ADR-016](ADR-016-code-host-access-verification-scope-and-deviations.md) | Code-host access verification scope and deviations | Accepted |
+| [ADR-017](ADR-017-sponsor-capability-phase.md) | Investigation workflow, advisory intelligence, and provider ports (sponsor-capability phase) | Accepted |
 
 ## Stage 1.4 decision inventory (2026-10-20)
 
