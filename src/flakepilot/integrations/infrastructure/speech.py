@@ -2,8 +2,8 @@
 
 The fixture synthesizes a small, validity-shaped audio object — fixed WAV
 framing plus a content-bound payload — so the opt-in speech path (ADR-017;
-goal 14) is testable without credentials. A live ElevenLabs transport adapter
-enters only after owner-approved credentials and a verified field list; the
+goal 14) is testable without credentials. The live adapter is
+`elevenlabs.ElevenLabsSpeech`, wired only with owner-approved credentials; the
 text arriving here must already be a summarized brief without secrets, and
 this module treats it as exactly that: opaque bytes to frame.
 """
