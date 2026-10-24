@@ -23,7 +23,7 @@ from flakepilot.integrations.infrastructure.gemma import (
 )
 from flakepilot.integrations.infrastructure.hosted_http import HostedError
 
-KEY = ""
+KEY = "gemini-test-placeholder-not-a-credential"
 MODEL = "gemma-4-26b-a4b-it"
 HYPOTHESES = json.dumps(
     {
