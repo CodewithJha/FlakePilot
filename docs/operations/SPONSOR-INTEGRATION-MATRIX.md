@@ -23,6 +23,14 @@ dated. One status per goal, from this fixed ladder:
 Live-verified → Deployed-and-verified**, plus **Blocked** (external
 prerequisite missing) and **Not-justified** (wrong stage).
 
+**Dated addendum (2026-10-25, hosted-integration sprint):** the rows below
+stay frozen as the milestone baseline; current per-goal evidence and
+owner-directed deferrals (Browserbase and DigitalOcean deferred by the owner;
+Temporal Cloud blocked by billing; Entire and Mastra deployment
+`assessed_not_adopted`) live in
+[SPONSOR-IMPLEMENTATION-MAP](SPONSOR-IMPLEMENTATION-MAP.md), whose live
+verification record and status cells are the maintained source of truth.
+
 Standing posture (unchanged, enforced by ADR-008/ADR-013/ADR-014 and these
 statuses): production untrusted-code execution stays disabled
 (`ClosedSandbox`, `UnavailableIsolation`, `control_plane_reaper`,

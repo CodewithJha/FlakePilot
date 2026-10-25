@@ -139,6 +139,7 @@ configured (not checked at runtime): …` or run `provider-status` in the shell.
 | `FLAKEPILOT_BROWSERBASE_API_KEY` / `FLAKEPILOT_BROWSER_ALLOWLIST` | API | key: yes | Browserbase key + comma-separated public host names | Parsed, wired opt-in (browse stage); not set; live **NOT VERIFIED** |
 | `FLAKEPILOT_ELEVENLABS_API_KEY` / `_VOICE_ID` (`_MODEL`) | API | key: yes | ElevenLabs | Parsed, wired opt-in (spoken brief route); set; **VERIFIED** on the deployment 2026-10-25 |
 | `FLAKEPILOT_TABPFN_API_KEY` | API (operator shell) | yes | Prior Labs | Parsed, used only by `evaluate-prioritization --with-tabpfn`; not set on the deployment |
+| `FLAKEPILOT_ATLAS_URI` / `_DATABASE` | API (operator shell) | yes | MongoDB Atlas, together | Parsed, read only by `export-reports-atlas` (write-only copy; never read back). Declared in `render.yaml` 2026-10-25 so the command can run from the service's Render Shell against the deployed PostgreSQL; not set on the deployment, so Atlas is never contacted |
 
 Never set `FLAKEPILOT_ALLOW_INSECURE_COOKIES=true` on Render (TLS is served;
 `__Host-` + `Secure` stay on). Never give the worker GitHub, session, provider or

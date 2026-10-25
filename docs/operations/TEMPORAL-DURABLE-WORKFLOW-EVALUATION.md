@@ -70,6 +70,30 @@ Evidence (2026-10-25):
   `FLAKEPILOT_TEMPORAL_*` Cloud credentials exist and nothing ran against
   Cloud. Nothing is deployed.
 
+## Temporal Cloud access re-check (2026-10-25, sprint prompt)
+
+Re-checked against temporal.io the same day, at the owner's request to
+investigate a free/no-cost path without adding any payment method:
+
+- Self-serve signup asks for a credit card (the pricing FAQ's own
+  "Why is a credit card required?" entry confirms it is standard).
+- The promotional no-card paths are closed to this owner as of today: the
+  AWS Marketplace pay-as-you-go trial (3 months, USD 1,000 credits, no card)
+  required signup by a past deadline and an AWS account; the startup-credits
+  program (USD 2,400) is an application, not self-serve.
+- No card may be added and no cloud marketplace account may be used without
+  an explicit owner decision, per the sprint's cost policy.
+
+**Decision: stays blocked by billing/owner decision** (`blocked_by_billing`).
+The code path is Cloud-ready and needs no change: `Client.connect` already
+takes `FLAKEPILOT_TEMPORAL_ADDRESS`/`_NAMESPACE`/`_API_KEY` (api key turns TLS
+on), accepted for any host:port. For the owner's future run,
+`tests/live/test_live_temporal_cloud.py` (added 2026-10-25, **NOT VERIFIED** —
+never executed) exercises the real workflow and activity against a real Cloud
+namespace: one recorded investigation with a rejected duplicate, and a
+cancelled workflow that records nothing. Until then the outbox/jobs authority
+stays the production path, exactly as ADR-017 decision 1 approved.
+
 ## Earlier evaluation (2026-10-24, superseded as to the decision)
 
 ## What the goal asked

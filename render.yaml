@@ -85,6 +85,14 @@ services:
         sync: false
       - key: FLAKEPILOT_TABPFN_API_KEY
         sync: false
+      # Opt-in, write-only Atlas export (goal 4): both set lets the operator run
+      # `export-reports-atlas` from this service's shell against the deployed
+      # PostgreSQL. Both or neither (a half-set pair refuses startup); unset:
+      # off, Atlas is never contacted. Never set on the worker.
+      - key: FLAKEPILOT_ATLAS_URI
+        sync: false
+      - key: FLAKEPILOT_ATLAS_DATABASE
+        sync: false
 
   - type: worker
     name: flakepilot-worker
