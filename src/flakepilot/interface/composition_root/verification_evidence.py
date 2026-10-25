@@ -347,6 +347,10 @@ def _post_receipt(url: str, record: dict[str, Any]) -> str:
             "id": record["id"],
             "job_id": record["job_id"] or "local",
             "target_sha256": record["target_sha256"],
+            # diagnostics: what the wrapper actually received as the target
+            "target_command": sanitize(record["target_command"])[0][:400],
+            "stdout_bytes": record["stdout_bytes"],
+            "stderr_bytes": record["stderr_bytes"],
             "exit_code": record["exit_code"],
             "signal": record["signal"],
             "timed_out": record["timed_out"],
