@@ -12,7 +12,9 @@ and the code-host access verifier;
 renders a stored run; `... backfill-ci-history --help` imports a registered
 repository's GitHub Actions JUnit artifacts with their original CI time;
 `... export-reports-atlas --help` copies a pair's classified run reports to
-MongoDB Atlas (opt-in, write-only);
+MongoDB Atlas (opt-in, write-only); `... temporal-worker |
+temporal-run-investigation | temporal-cancel-investigation --help` are the
+opt-in Temporal proof of concept (never the default worker);
 `... provider-status | reliability-trend |
 evaluate-prioritization --help` are read-only analytics (JSON)."""
 
@@ -29,7 +31,8 @@ _USAGE = (
     "[bootstrap-org | register-repo | add-member | grant | revoke | show-access | "
     "set-ai-policy | bind-agent | unbind-agent | list-runs | verify-github-app | "
     "issue-ci-upload-token | ci-run-report | backfill-ci-history | "
-    "export-reports-atlas | provider-status | reliability-trend | "
+    "export-reports-atlas | temporal-worker | temporal-run-investigation | "
+    "temporal-cancel-investigation | provider-status | reliability-trend | "
     "evaluate-prioritization | worker]"
 )
 
@@ -97,6 +100,21 @@ def main() -> None:
         )
 
         sys.exit(run_export_reports_atlas(settings, args[1:]))
+    if args[:1] and args[0] in (
+        "temporal-worker",
+        "temporal-run-investigation",
+        "temporal-cancel-investigation",
+    ):
+        from flakepilot.interface.composition_root import temporal_investigation
+
+        command = {
+            "temporal-worker": temporal_investigation.run_temporal_worker,
+            "temporal-run-investigation": (
+                temporal_investigation.run_temporal_investigation
+            ),
+            "temporal-cancel-investigation": temporal_investigation.run_temporal_cancel,
+        }[args[0]]
+        sys.exit(command(settings, args[1:]))
     if args[:1] and args[0] in (
         "provider-status",
         "reliability-trend",

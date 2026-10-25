@@ -622,3 +622,52 @@ def test_a_half_or_weak_atlas_configuration_refuses_startup(
         Settings.from_environ({"FLAKEPILOT_DATABASE_URL": DSN, **environ})
     assert "atlas-pw" not in str(error.value)
 
+
+def test_temporal_is_opt_in_and_the_api_key_stays_secret() -> None:
+    assert (
+        Settings.from_environ({"FLAKEPILOT_DATABASE_URL": DSN}).temporal_address is None
+    )
+    settings = Settings.from_environ(
+        {
+            "FLAKEPILOT_DATABASE_URL": DSN,
+            "FLAKEPILOT_TEMPORAL_ADDRESS": "eu-west-1.aws.api.temporal.io:7233",
+            "FLAKEPILOT_TEMPORAL_NAMESPACE": "flakepilot.a1b2c",
+            "FLAKEPILOT_TEMPORAL_API_KEY": "temporal-key-DDDD4444",
+        }
+    )
+    assert settings.temporal_namespace == "flakepilot.a1b2c"
+    assert settings.temporal_api_key is not None
+    assert "temporal-key" not in repr(settings) + str(settings)
+
+
+@pytest.mark.parametrize(
+    ("environ", "message"),
+    [
+        ({"FLAKEPILOT_TEMPORAL_ADDRESS": "localhost:7233"}, "must be set together"),
+        ({"FLAKEPILOT_TEMPORAL_NAMESPACE": "default"}, "must be set together"),
+        (
+            {"FLAKEPILOT_TEMPORAL_API_KEY": "temporal-key-DDDD4444"},
+            "configures nothing",
+        ),
+        (
+            {
+                "FLAKEPILOT_TEMPORAL_ADDRESS": "http://localhost:7233",
+                "FLAKEPILOT_TEMPORAL_NAMESPACE": "default",
+            },
+            "host:port",
+        ),
+        (
+            {
+                "FLAKEPILOT_TEMPORAL_ADDRESS": "localhost:7233",
+                "FLAKEPILOT_TEMPORAL_NAMESPACE": "bad namespace",
+            },
+            "namespace",
+        ),
+    ],
+)
+def test_a_half_or_malformed_temporal_configuration_refuses_startup(
+    environ: dict[str, str], message: str
+) -> None:
+    with pytest.raises(SettingsError, match=message) as error:
+        Settings.from_environ({"FLAKEPILOT_DATABASE_URL": DSN, **environ})
+    assert "temporal-key" not in str(error.value)

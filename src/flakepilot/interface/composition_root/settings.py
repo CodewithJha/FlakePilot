@@ -119,6 +119,11 @@ class Settings:
     # Opt-in write-only report export (goal 4), read only by `export-reports-atlas`.
     atlas_uri: Secret | None = None
     atlas_database: str | None = None
+    # Opt-in Temporal POC (goal 5), read only by the `temporal-*` operator
+    # commands; the API process and the default worker never connect.
+    temporal_address: str | None = None
+    temporal_namespace: str | None = None
+    temporal_api_key: Secret | None = None
 
     @classmethod
     def from_environ(cls, environ: Mapping[str, str]) -> "Settings":
@@ -189,6 +194,7 @@ class Settings:
         browserbase_api_key, browser_allowlist = _browserbase(environ)
         elevenlabs_api_key, elevenlabs_voice_id, elevenlabs_model = _elevenlabs(environ)
         atlas_uri, atlas_database = _atlas(environ)
+        temporal_address, temporal_namespace, temporal_api_key = _temporal(environ)
         return cls(
             Secret(database_url),
             log_level=log_level,
@@ -237,6 +243,9 @@ class Settings:
             tabpfn_api_key=_provider_key(environ, "FLAKEPILOT_TABPFN_API_KEY"),
             atlas_uri=atlas_uri,
             atlas_database=atlas_database,
+            temporal_address=temporal_address,
+            temporal_namespace=temporal_namespace,
+            temporal_api_key=temporal_api_key,
         )
 
 
@@ -465,6 +474,45 @@ def _atlas(environ: Mapping[str, str]) -> tuple[Secret | None, str | None]:
             "FLAKEPILOT_ATLAS_DATABASE must be 1-63 letters, digits, _ or -"
         )
     return Secret(environ[names[0]]), environ[names[1]]
+
+
+_TEMPORAL_NAMESPACE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
+
+
+def temporal_address_ok(address: str) -> bool:
+    host, _, port = address.rpartition(":")
+    return (
+        bool(host)
+        and (
+            host in ("localhost", "127.0.0.1") or _HOSTNAME.fullmatch(host) is not None
+        )
+        and re.fullmatch(r"[0-9]{1,5}", port) is not None
+        and 1 <= int(port) <= 65535
+    )
+
+
+def temporal_namespace_ok(namespace: str) -> bool:
+    return _TEMPORAL_NAMESPACE.fullmatch(namespace) is not None
+
+
+def _temporal(
+    environ: Mapping[str, str],
+) -> tuple[str | None, str | None, Secret | None]:
+    names = ("FLAKEPILOT_TEMPORAL_ADDRESS", "FLAKEPILOT_TEMPORAL_NAMESPACE")
+    if not _together(environ, *names):
+        if environ.get("FLAKEPILOT_TEMPORAL_API_KEY"):
+            raise SettingsError(
+                "FLAKEPILOT_TEMPORAL_API_KEY without FLAKEPILOT_TEMPORAL_ADDRESS "
+                "configures nothing"
+            )
+        return None, None, None
+    address, namespace = environ[names[0]], environ[names[1]]
+    if not temporal_address_ok(address):
+        raise SettingsError("FLAKEPILOT_TEMPORAL_ADDRESS must be host:port")
+    if not temporal_namespace_ok(namespace):
+        raise SettingsError("FLAKEPILOT_TEMPORAL_NAMESPACE is not a namespace name")
+    api_key = _provider_key(environ, "FLAKEPILOT_TEMPORAL_API_KEY")
+    return address, namespace, api_key
 
 
 def _artifact_dir(value: str) -> Path:
