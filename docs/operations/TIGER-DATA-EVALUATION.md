@@ -130,3 +130,22 @@ its original day. On Tiger Cloud, migrations and `alembic check` were
 **VERIFIED** (PostgreSQL 18.6); the integration suite is **BLOCKED** (no
 `CREATE DATABASE`). Tiger Cloud hosting remains an **owner decision, not
 selected**; hypertables: **not justified**.
+
+## Independent re-verification (2026-10-25, later the same day)
+
+Run from the developer machine against the same owner service (`flakepilot`,
+`ngdaky3jfu`); the Tiger CLI was the only new tooling. The connection URL
+came from the owner's keyring into a gitignored `.env` and was never printed.
+
+| Check | Result |
+|---|---|
+| Connection facts (read-only) | PostgreSQL **18.6** + TimescaleDB **2.31.0**, TLS 1.3, `max_connections` 105, `tsdbadmin` not superuser, database `tsdb` — matches the earlier evidence |
+| Stale schema closed | The service sat at `iam_0003` (as documented above). `alembic upgrade head` applied the two additive pending migrations — `ti_0003` (the backfill-CI-source check constraint) and `ops_0001` (`ops.verification_runs`) — leaving `alembic current` = `ops_0001` and `alembic check` clean. Non-destructive; the service held no rows |
+| **Trend on real rows: PostgreSQL 18/TimescaleDB ≡ PostgreSQL 16** | A tagged, synthetic `(org, repo)` pair seeded **4 runs through `SqlTiStore`'s real write path** (`ensure_identities` → `claim_upload` → `create_run` → `add_results`, a receipt-time update placing runs on three consecutive days, one run flaky: FAILED→PASSED). `Reliability.trend` on the service returned **byte-identical** output (buckets, per-environment totals, `failure_direction`/`flaky_direction` = `improved`/`improved`, `truncated: false`) to the same seed computed on PostgreSQL 16 locally. The shipped operator CLI (`python -m flakepilot.interface.composition_root reliability-trend …`) then returned exit 0 with the same numbers on the service |
+| Reversibility | Every probe row deleted by `(org_id, repo_id)`; all five touched `ti` tables (`runs`, `uploads`, `test_results`, `test_identities`, `outbox`) verified back to zero for the probe pair |
+| Unchanged | The full integration suite on the service stays **blocked** (`tsdb_admin.allowed_databases`; no `CREATE DATABASE` — workaround options unchanged). Turf: hypertables/continuous aggregates stay **not justified**; Tiger Cloud hosting stays an owner decision, still not made. Production remains Render PostgreSQL |
+
+Conclusion: the last technical pre-decision check ("does the analytics SQL
+compute real trends correctly on the service, not just run?") is now settled
+with a positive, reproducible answer. What separates Tiger Cloud from being
+production's database is purely the owner's hosting decision.
