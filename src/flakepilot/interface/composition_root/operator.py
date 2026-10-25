@@ -72,6 +72,23 @@ from flakepilot.interface.composition_root.reporting import (
     classification_cell,
     fail_cascade,
 )
+from flakepilot.interface.http.ui import (
+    DESIGN_TOKENS_CSS,
+    PAGE_CSS,
+)
+
+# The operator report file is viewed offline (its own <style> block, no
+# network, no fonts payload): it shares the exact token set and page CSS with
+# the app's served pages, so the visual system has one source of truth. Only
+# the layout wrapper is report-specific. Font tokens fall back to system
+# faces here because the @font-face rules ride the served /ui.css.
+OFFLINE_REPORT_CSS = (
+    DESIGN_TOKENS_CSS
+    + PAGE_CSS
+    + ".report-body{max-width:60rem;margin:0 auto;padding:2rem 1rem}"
+    + ".summary td:last-child{font-weight:600}"
+    + "h2{margin-top:1.6rem}table{margin-bottom:1rem}"
+)
 from flakepilot.repository.infrastructure.store import SqlRepoDirectory
 from flakepilot.shared_kernel.events import Channel, Origin
 from flakepilot.test_intelligence.application.backfill import (
@@ -580,19 +597,9 @@ def _html_report(report: ClassifiedRunReport) -> str:
 <head>
 <meta charset="utf-8">
 <title>FlakePilot run report</title>
-<style>
-  body {{ font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 60rem; color: #1a1a2e; }}
-  h1 {{ font-size: 1.4rem; }} h2 {{ font-size: 1.1rem; margin-top: 2rem; }}
-  table {{ border-collapse: collapse; width: 100%; }}
-  th, td {{ border: 1px solid #d5d5dc; padding: 0.35rem 0.6rem; text-align: left; font-size: 0.9rem; }}
-  th {{ background: #f4f4f8; font-weight: 600; }}
-  td code {{ font-size: 0.8rem; word-break: break-all; }}
-  .summary td:last-child {{ font-weight: 600; }}
-  .note {{ color: #555; font-size: 0.8rem; }}
-  .muted {{ color: #777; }}
-</style>
+<style>{OFFLINE_REPORT_CSS}</style>
 </head>
-<body>
+<body class="report-body">
 <h1>FlakePilot run report (operator demo)</h1>
 <p class="muted">
 Run <code>{run.run_id}</code> &middot; org <code>{html.escape(run.org_id)}</code>
@@ -615,12 +622,12 @@ in this MVP.</p>
 </table>
 
 <h2>Upload</h2>
-<table>{metadata_rows}</table>
+<table class="data-table">{metadata_rows}</table>
 <p class="note">The raw report body is stored unparsed at the artifact key above
 (a plaintext file; encryption is not wired in this MVP).</p>
 
 <h2>Tests, attempts, and classification</h2>
-<table>
+<table class="data-table">
 <tr><th>Classname</th><th>Test name</th><th>Attempts (chronological)</th><th>Classification</th></tr>
 {case_rows}
 </table>

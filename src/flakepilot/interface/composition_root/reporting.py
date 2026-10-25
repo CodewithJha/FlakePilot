@@ -45,6 +45,10 @@ def classification_cell(entry: ClassifiedCase) -> str:
     if verdict is None:
         return html.escape("classification unavailable")
     head = html.escape(verdict.failure_class.value)
+    gc = f" v-{html.escape(verdict.failure_class.value)}"
     if verdict.reason:
         head += f' <span class="note">({html.escape(verdict.reason.value)})</span>'
-    return f'{head}<br><span class="note">{evidence_text(verdict)}</span>'
+    return (
+        f'<span class="verdict{gc}">{head}</span>'
+        f'<br><span class="note">{evidence_text(verdict)}</span>'
+    )

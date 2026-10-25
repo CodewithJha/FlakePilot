@@ -29,18 +29,6 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
-# The pages' own policy: no external resource may load, no script may run
-# (default-src 'none' denies script-src and every other fallback too), the
-# only styles are the two inline <style> blocks, and the pages are never
-# framed (frame-ancestors 'none', plus X-Frame-Options for older browsers).
-HTML_SECURITY_HEADERS = {
-    "Content-Security-Policy": (
-        "default-src 'none'; style-src 'unsafe-inline'; "
-        "frame-ancestors 'none'; base-uri 'none'"
-    ),
-    "X-Frame-Options": "DENY",
-}
-
 from flakepilot.identity.application.authorization import OrgAccess
 from flakepilot.interface.composition_root.reporting import (
     classification_cell,
@@ -51,6 +39,7 @@ from flakepilot.interface.composition_root.run_views import (
     RunIndexReport,
 )
 from flakepilot.interface.http.auth import org_access
+from flakepilot.interface.http.ui import HTML_SECURITY_HEADERS, kicker, page
 
 router = APIRouter(tags=["runs"])
 
@@ -68,11 +57,11 @@ parameter, never an authorization boundary: what is listed is what
 def _index_page(index: RunIndexReport) -> str:
     rows = "\n".join(
         "<tr>"
-        f'<td><a href="/orgs/{_e(index.org_id)}/runs/{_e(entry.run_id)}">{_e(entry.run_id[:8])}</a></td>'
+        f'<td><a href="/orgs/{_e(index.org_id)}/runs/{_e(entry.run_id)}"><code>{_e(entry.run_id[:8])}</code></a></td>'
         f"<td><code>{_e(entry.commit_sha[:12])}</code></td>"
         f"<td>{_e(entry.environment)}</td>"
         f"<td>{_e(entry.source)}</td>"
-        f"<td>{_e(entry.revision_status)}</td>"
+        f"<td><span class='ctx-chip'>{_e(entry.revision_status)}</span></td>"
         f"<td>{fail_cascade(entry.received_at)}</td>"
         f"<td>{entry.summary.passed}/{entry.summary.tests} passed"
         f" &middot; {entry.summary.failed} failed &middot;"
@@ -80,39 +69,33 @@ def _index_page(index: RunIndexReport) -> str:
         "</tr>"
         for entry in index.entries
     )
-    body = (
-        f"""<table>
+    body_blocks = (
+        f"""<div class="table-scroll">
+<table class="data-table">
+<thead>
 <tr><th>Run</th><th>Commit</th><th>Environment</th><th>Source</th><th>Revision</th><th>Received</th><th>Summary</th></tr>
+</thead>
+<tbody>
 {rows}
-</table>"""
+</tbody>
+</table>
+</div>"""
         if index.entries
-        else "<p>No stored runs for this repository yet. Runs appear here"
-        " when a CI upload with a token for this repository is ingested."
-        " There may be runs you cannot see; what you cannot see is not"
-        " listed.</p>"
+        else """<div class="sheet" role="note">
+<p><strong>No stored runs for this repository yet.</strong> Runs appear here
+when a CI upload with a token for this repository is ingested.
+There may be runs you cannot see; what you cannot see is not listed.</p>
+</div>"""
     )
-    return f"""<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>FlakePilot runs {_e(index.repo_id[:8])}</title>
-<style>
-  body {{ font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 60rem; color: #1a1a2e; }}
-  h1 {{ font-size: 1.3rem; }} h2 {{ font-size: 1.05rem; margin-top: 2rem; }}
-  table {{ border-collapse: collapse; width: 100%; }}
-  th, td {{ border: 1px solid #d5d5dc; padding: 0.35rem 0.6rem; text-align: left; font-size: 0.9rem; }}
-  th {{ background: #f4f4f8; font-weight: 600; }}
-  td code {{ font-size: 0.8rem; word-break: break-all; }}
-  .note {{ color: #555; font-size: 0.8rem; }}
-  .muted {{ color: #777; }}
-</style>
-</head>
-<body>
-<h1>FlakePilot runs</h1>
-<p class="muted">
-Repo <code>{_e(index.repo_id)}</code> &middot; org <code>{_e(index.org_id)}</code>
-&middot; showing at most {len(index.entries)} stored run(s), newest first
+    heading = "FlakePilot runs"
+    body = f"""
+<section>
+{kicker("one repository &middot; stored CI evidence")}
+<h1>{heading}</h1>
+<p class="context-line">
+<span class="ctx-chip">repo <code>{_e(index.repo_id)}</code></span>
+<span class="ctx-chip">org <code>{_e(index.org_id)}</code></span>
+<span>showing at most {len(index.entries)} stored run(s), newest first</span>
 </p>
 <p>This page lists the stored CI runs for one repository in your
 organization. Nothing is executed here and nothing is verified here: the
@@ -120,13 +103,33 @@ commit SHAs are what the uploads reported, and each run's revision status
 stays <code>unchecked</code> until a real revision check has happened. Per-test
 verdicts live on each run's own view; a link here opens only that run's
 read-only view.</p>
-{body}
-<p class="note">Classification verdicts per test come from the deterministic,
+{body_blocks}
+<p class="panel-note">Classification verdicts per test come from the deterministic,
 versioned rule set <code>ti-classification/1</code> on each run's view. This
 listing never claims code-host verification, revision ancestry, or execution.</p>
-</body>
-</html>
-"""
+</section>"""
+    footer = (
+        "<span>Listing = stored uploads. Not code-host verification.</span>"
+        "<span>Nothing on this page executes.</span>"
+    )
+    return page(
+        title=f"FlakePilot runs {_e(index.repo_id[:8])}",
+        body=body,
+        footer_notes=footer,
+    )
+
+
+def _summary_metrics(summary: Any) -> str:
+    return (
+        '<div class="metrics" role="list" aria-label="Run summary">'
+        f'<div class="metric" role="listitem"><b>{summary.tests}</b><span>Tests</span></div>'
+        f'<div class="metric" role="listitem"><b>{summary.attempts}</b><span>Attempts</span></div>'
+        f'<div class="metric m-pass" role="listitem"><b>{summary.passed}</b><span>Passed (final)</span></div>'
+        f'<div class="metric m-fail" role="listitem"><b>{summary.failed}</b><span>Failed (final)</span></div>'
+        f'<div class="metric m-fail" role="listitem"><b>{summary.errored}</b><span>Errored (final)</span></div>'
+        f'<div class="metric m-skip" role="listitem"><b>{summary.skipped}</b><span>Skipped</span></div>'
+        "</div>"
+    )
 
 
 def _page(report: ClassifiedRunReport) -> str:
@@ -135,82 +138,95 @@ def _page(report: ClassifiedRunReport) -> str:
     rows = "\n".join(
         "<tr>"
         f"<td>{_e(case.case.classname)}</td>"
-        f"<td>{_e(case.case.name)}</td>"
+        f"<td><code>{_e(case.case.name)}</code></td>"
         f"<td>{' &rarr; '.join(_e(attempt) for attempt in case.case.attempts)}</td>"
         f"<td>{classification_cell(case)}</td>"
         "</tr>"
         for case in report.cases
     )
-    return f"""<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>FlakePilot run {_e(run.run_id[:8])}</title>
-<style>
-  body {{ font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 60rem; color: #1a1a2e; }}
-  h1 {{ font-size: 1.3rem; }} h2 {{ font-size: 1.05rem; margin-top: 2rem; }}
-  table {{ border-collapse: collapse; width: 100%; }}
-  th, td {{ border: 1px solid #d5d5dc; padding: 0.35rem 0.6rem; text-align: left; font-size: 0.9rem; }}
-  th {{ background: #f4f4f8; font-weight: 600; }}
-  td code {{ font-size: 0.8rem; word-break: break-all; }}
-  .note {{ color: #555; font-size: 0.8rem; }}
-  .muted {{ color: #777; }}
-</style>
-</head>
-<body>
+    upload_rows = "\n".join(
+        f"<tr><th scope='row'>{label}</th><td>{fail_cascade(value)}</td></tr>"
+        for label, value in (
+            ("CI run ID", metadata.ci_run_id if metadata else None),
+            ("CI attempt", metadata.ci_attempt if metadata else None),
+            ("Job name", metadata.job_name if metadata else None),
+            ("Ref", metadata.ref if metadata else None),
+            (
+                "Environment",
+                metadata.environment if metadata else run.environment,
+            ),
+            ("Started at", metadata.started_at if metadata else None),
+            ("Finished at", metadata.finished_at if metadata else None),
+            ("Received", run.received_at),
+        )
+    )
+    body = f"""
+<section>
+{kicker("one CI run &middot; stored evidence, one rule set")}
 <h1>FlakePilot run view</h1>
-<p class="muted">
-Run <code>{_e(run.run_id)}</code> &middot; org <code>{_e(run.org_id)}</code>
-&middot; repo <code>{_e(run.repo_id)}</code>
-&middot; commit <code>{_e(run.commit_sha)}</code>
-&middot; environment <code>{_e(run.environment)}</code>
-&middot; source <code>{_e(run.source)}</code>
+<p class="context-line">
+<span class="ctx-chip">run <code>{_e(run.run_id)}</code></span>
+<span class="ctx-chip">org <code>{_e(run.org_id)}</code></span>
+<span class="ctx-chip">repo <code>{_e(run.repo_id)}</code></span>
+<span class="ctx-chip">commit <code>{_e(run.commit_sha)}</code></span>
+<span class="ctx-chip">env <code>{_e(run.environment)}</code></span>
+<span class="ctx-chip">source <code>{_e(run.source)}</code></span>
+<span class="ctx-chip">revision <code>{_e(run.revision_status)}</code></span>
+<span class="readonly-stamp">read-only &middot; nothing executed</span>
 </p>
 <p>This page is a read-only view of what one CI upload stored for your
 organization. Nothing is executed here. The commit SHA is what the upload
-reported; the revision status is <code>{_e(run.revision_status)}</code> — no
+reported; the revision status is <code>{_e(run.revision_status)}</code> &mdash; no
 code-host verification is available yet. The classification column is the
 deterministic, versioned rule set <code>ti-classification/1</code> applied to
-the stored evidence (no confidence scores, no model output);
+the stored evidence (<code>no confidence scores, no model output</code>);
 &ldquo;inconclusive&rdquo; is a real verdict where the stored evidence cannot
 support a stronger one.</p>
+</section>
 
+<section>
 <h2>Summary</h2>
-<table class="summary">
-<tr><th>Tests</th><td>{run.summary.tests}</td></tr>
-<tr><th>Attempts</th><td>{run.summary.attempts}</td></tr>
-<tr><th>Passed (final)</th><td>{run.summary.passed}</td></tr>
-<tr><th>Failed (final)</th><td>{run.summary.failed}</td></tr>
-<tr><th>Errored (final)</th><td>{run.summary.errored}</td></tr>
-<tr><th>Skipped</th><td>{run.summary.skipped}</td></tr>
-</table>
+{_summary_metrics(run.summary)}
+</section>
 
+<section>
 <h2>Upload</h2>
-<table>
-<tr><th>CI run ID</th><td>{fail_cascade(metadata.ci_run_id if metadata else None)}</td></tr>
-<tr><th>CI attempt</th><td>{fail_cascade(metadata.ci_attempt if metadata else None)}</td></tr>
-<tr><th>Job name</th><td>{fail_cascade(metadata.job_name if metadata else None)}</td></tr>
-<tr><th>Ref</th><td>{fail_cascade(metadata.ref if metadata else None)}</td></tr>
-<tr><th>Environment</th><td>{fail_cascade(metadata.environment if metadata else run.environment)}</td></tr>
-<tr><th>Started at</th><td>{fail_cascade(metadata.started_at if metadata else None)}</td></tr>
-<tr><th>Finished at</th><td>{fail_cascade(metadata.finished_at if metadata else None)}</td></tr>
-<tr><th>Received</th><td>{fail_cascade(run.received_at)}</td></tr>
+<div class="table-scroll">
+<table class="data-table upload-grid">
+<tbody>
+{upload_rows}
+</tbody>
 </table>
+</div>
+</section>
 
+<section>
 <h2>Tests, attempts, and classification</h2>
-<table>
+<div class="table-scroll">
+<table class="data-table">
+<thead>
 <tr><th>Classname</th><th>Test name</th><th>Attempts (chronological)</th><th>Classification</th></tr>
+</thead>
+<tbody>
 {rows}
+</tbody>
 </table>
-<p class="note">An attempt chain like &ldquo;failed &rarr; passed&rdquo; is a
+</div>
+<p class="panel-note">An attempt chain like &ldquo;failed &rarr; passed&rdquo; is a
 recurring failure within the CI run itself. Only CI-report evidence counts;
 FlakePilot's own runs are excluded and listed as <code>excluded_runs</code>.
 The stored report body is kept unparsed as a plaintext file; it is not
 downloaded from here.</p>
-</body>
-</html>
-"""
+</section>"""
+    footer = (
+        "<span>Verdicts = ti-classification/1 over stored evidence.</span>"
+        "<span>Read only. Not code-host verification.</span>"
+    )
+    return page(
+        title=f"FlakePilot run {_e(run.run_id[:8])}",
+        body=body,
+        footer_notes=footer,
+    )
 
 
 async def run_view(

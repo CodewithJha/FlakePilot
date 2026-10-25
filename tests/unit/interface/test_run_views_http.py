@@ -366,15 +366,21 @@ def test_a_verified_write_standing_serves_the_view() -> None:
 
 
 def test_html_views_carry_the_browser_security_policy() -> None:
-    """The page response itself denies framing, script, and external resources."""
+    """The page response itself denies framing, script, and third-party resources.
+
+    The redesign moved the shared stylesheet to a cached same-origin route and
+    embedded the OFL fonts as data; the policy allows exactly that plus the
+    data-URI favicon, while scripts, third-party origins, HTML-attribute base
+    URLs and framing stay fully denied.
+    """
     store = FakeRunStore(report("x"))
     iam = FakeIam({SESSION: USER}, {(USER, ORG): [(REPO, Grant.VIEW)]})
     status, headers, _ = get_run(app_with(store, iam))
     policy = dict(headers)
     assert status == 200
     assert policy["content-security-policy"] == (
-        "default-src 'none'; style-src 'unsafe-inline'; "
-        "frame-ancestors 'none'; base-uri 'none'"
+        "default-src 'none'; style-src 'unsafe-inline' 'self'; img-src data:; "
+        "font-src data:; frame-ancestors 'none'; base-uri 'none'"
     )
     assert policy["x-frame-options"] == "DENY"
 

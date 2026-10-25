@@ -225,7 +225,7 @@ def test_html_report_escapes_names_and_all_recorded_evidence() -> None:
     assert "operator demo" in rendered
     assert "revision status stays <code>unchecked</code>" in rendered
     assert "run&lt;b&gt;" in rendered  # evidence values are escaped too
-    assert "flaky<br><span" in rendered
+    assert "v-flaky" in rendered and "flaky</span><br>" in rendered
     assert "rule ti-classification/1" in rendered
     assert "target_sha " + "0" * 40 in rendered
 

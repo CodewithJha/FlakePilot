@@ -66,6 +66,7 @@ from flakepilot.interface.http import (
     landing,
     reproductions,
     runs,
+    ui,
 )
 from flakepilot.interface.http.request_context import (
     RequestContextMiddleware,
@@ -276,6 +277,7 @@ def create_app(
     errors.register_error_handlers(app)
     register_database_error_handler(app)
     app.include_router(health.router)
+    app.include_router(ui.router)
     app.include_router(landing.router)
     app.include_router(auth.router)
     app.include_router(ingestion.router)
