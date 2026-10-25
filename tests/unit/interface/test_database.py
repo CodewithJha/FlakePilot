@@ -4,9 +4,12 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
+import pytest
 from support import FAKE_DSN, FAKE_PASSWORD, FakeEngine
 
+from flakepilot.interface.composition_root import database
 from flakepilot.interface.composition_root.database import (
     POOL_SIZE,
     POOL_TIMEOUT,
@@ -72,3 +75,45 @@ def test_offline_migration_sql_needs_no_database_url() -> None:
     )
     assert result.returncode == 0, result.stderr
     assert "BEGIN;" in result.stdout and "COMMIT;" in result.stdout
+
+
+def _captured(monkeypatch: pytest.MonkeyPatch, dsn: str) -> tuple[Any, dict[str, Any]]:
+    seen: dict[str, Any] = {}
+
+    def fake(url: Any, **arguments: Any) -> str:
+        seen["url"], seen["arguments"] = url, arguments
+        return "engine"
+
+    monkeypatch.setattr(database, "create_async_engine", fake)
+    create_engine(dsn)
+    return seen["url"], seen["arguments"]["connect_args"]
+
+
+@pytest.mark.parametrize("mode", ["require", "verify-full", "disable"])
+def test_a_libpq_sslmode_becomes_the_asyncpg_ssl_argument(
+    monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    url, connect_args = _captured(
+        monkeypatch, f"{FAKE_DSN}?sslmode={mode}&application_name=fp"
+    )
+    assert "sslmode" not in url.query
+    assert url.query["application_name"] == "fp"
+    assert url.drivername == "postgresql+asyncpg"
+    assert connect_args["ssl"] == mode
+    assert connect_args["timeout"] == database.CONNECT_TIMEOUT
+
+
+def test_without_sslmode_no_ssl_argument_is_added(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, connect_args = _captured(monkeypatch, FAKE_DSN)
+    assert "ssl" not in connect_args
+
+
+def test_an_unknown_sslmode_is_refused_without_echoing_the_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(ValueError) as refused:
+        _captured(monkeypatch, f"{FAKE_DSN}?sslmode=sometimes")
+    assert FAKE_PASSWORD not in str(refused.value)
+    assert "sometimes" not in str(refused.value)

@@ -16,11 +16,12 @@ from typing import Any, cast
 from fastapi import FastAPI
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine
 from starlette.types import Message
 
 from flakepilot.integrations.application.ports import ArtifactRef, ArtifactStoreError
 from flakepilot.interface.composition_root import Secret, Settings
+from flakepilot.interface.composition_root.database import create_engine
 
 FAKE_PASSWORD = "Zx9-fake-pw-7Qk"
 FAKE_DSN = f"postgresql://flakepilot:{FAKE_PASSWORD}@db.invalid:5432/flakepilot"
@@ -95,9 +96,7 @@ def is_uuid(value: str) -> bool:
 
 async def admin_execute(url: str, statement: str) -> None:
     """Run one statement outside a transaction (e.g. CREATE DATABASE)."""
-    engine = create_async_engine(
-        make_url(url).set(drivername="postgresql+asyncpg"), isolation_level="AUTOCOMMIT"
-    )
+    engine = create_engine(url, isolation_level="AUTOCOMMIT")
     try:
         async with engine.connect() as connection:
             await connection.execute(text(statement))

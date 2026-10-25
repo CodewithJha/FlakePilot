@@ -45,6 +45,7 @@ COMMAND_TIMEOUT = (
 )
 READINESS_TIMEOUT = 2.0  # seconds for the whole readiness check, whatever the above say
 CLOSE_TIMEOUT = 5.0  # seconds to dispose gracefully before abandoning connections
+SSL_MODES = ("disable", "allow", "prefer", "require", "verify-ca", "verify-full")
 
 EngineFactory = Callable[[str], AsyncEngine]
 
@@ -52,9 +53,20 @@ _logger = logging.getLogger("flakepilot.database")
 
 
 def create_engine(dsn: str, **options: object) -> AsyncEngine:
-    """Create the engine without connecting. `options` override engine arguments (tests)."""
+    """Create the engine without connecting. `options` override engine arguments (tests).
+
+    A libpq `sslmode` in the URL (managed services such as Tiger Cloud hand out
+    `?sslmode=require`) becomes asyncpg's `ssl` argument with the same mode,
+    since asyncpg refuses `sslmode` itself. An unknown mode is refused."""
     url = make_url(dsn).set(drivername="postgresql+asyncpg")
-    connect_args = {
+    sslmode = url.query.get("sslmode")
+    connect_args: dict[str, object] = {}
+    if sslmode is not None:
+        if not isinstance(sslmode, str) or sslmode not in SSL_MODES:
+            raise ValueError("sslmode must be one of " + ", ".join(SSL_MODES))
+        url = url.difference_update_query(["sslmode"])
+        connect_args["ssl"] = sslmode
+    connect_args |= {
         "timeout": CONNECT_TIMEOUT,
         "command_timeout": COMMAND_TIMEOUT,
         "server_settings": {
