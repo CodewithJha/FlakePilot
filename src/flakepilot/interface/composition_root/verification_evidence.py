@@ -11,10 +11,17 @@ the command's exit code:
     python /tmp/does_not_exist.py (exit 2) ->  status "failed"
     sh -c '… last command exits 0'         ->  status "failed"
 
+Render additionally splits a one-off job's startCommand on spaces WITHOUT
+shell quote handling (verified 2026-10-25 with `--receipt-url` reporting the
+received target): double quotes arrive as literal characters, so
+`python -c "print('X')"` reaches the target as `python -c '"print('"'"'X'"'"')"'`
+— the whole program becomes a string-literal expression: silent, instant,
+exit 0. Never put quotes in a startCommand; pass code with `--b64-exec`
+(base64 carries no spaces or quotes) or use form positions that need none.
+
 So `status` must never be treated as evidence that a command succeeded, and the
 public API exposes no exit-code field and no machine-readable job logs. The
 reliable mechanism is the command reporting for itself:
-
 - `verify-run -- <argv…>` runs the target as a subprocess (via
   `subprocess.run`, no shell), records the real exit code, in-container UTC
   timestamps, the exact target command and SHA-256 hashes of its output, and
@@ -40,6 +47,7 @@ alembic autogenerate's comparison scope.
 
 import argparse
 import asyncio
+import base64
 import hashlib
 import json
 import os
@@ -277,7 +285,7 @@ async def _persist(settings: Settings, record: dict[str, Any]) -> str | None:
 
 
 def run_verify_run(settings: Settings, argv: Sequence[str]) -> int:
-    """`verify-run [--timeout S] [--receipt-url URL] -- <argv…>`."""
+    """`verify-run [--timeout S] [--receipt-url URL] [--b64-exec B64] -- <argv…>`."""
     parser = argparse.ArgumentParser(
         prog=PROG_RUN,
         description=(
@@ -290,7 +298,12 @@ def run_verify_run(settings: Settings, argv: Sequence[str]) -> int:
         epilog=(
             "One-off jobs do not mount the artifact disk, so run as "
             "`env -u FLAKEPILOT_ARTIFACT_DIR python -m "
-            "flakepilot.interface.composition_root verify-run -- <argv…>`"
+            "flakepilot.interface.composition_root verify-run -- <argv…>`. "
+            "Render splits one-off startCommands on spaces WITHOUT shell "
+            "quote handling (double quotes arrive as literal characters), "
+            "so for a Python snippet use --b64-exec instead of "
+            '`python -c "…"`: the quoted code becomes a string literal '
+            "that exits 0 silently."
         ),
     )
     parser.add_argument(
@@ -310,14 +323,35 @@ def run_verify_run(settings: Settings, argv: Sequence[str]) -> int:
         ),
     )
     parser.add_argument(
+        "--b64-exec",
+        default=None,
+        help=(
+            "Base64 of a Python program to run with this interpreter "
+            "(`python -c <decoded>`), built inside the wrapper so the "
+            "one-off startCommand needs NO quotes anywhere. Preferred over "
+            "a quoted `-c` argument: base64 carries no spaces or quotes."
+        ),
+    )
+    parser.add_argument(
         "target",
         nargs=argparse.REMAINDER,
         help="The target command as argv, after `--`.",
     )
     args = parser.parse_args(argv)
-    target = list(args.target)
-    if target and target[0] == "--":
-        target = target[1:]
+    if args.b64_exec:
+        try:
+            script = base64.b64decode(args.b64_exec, validate=True).decode()
+        except (ValueError, UnicodeDecodeError):
+            print(f"{PROG_RUN}: --b64-exec is not valid base64", file=sys.stderr)
+            return 2
+        # The wrapper spawns with an argv LIST (no shell), so embedding the
+        # script as one element is safe: quoting happens here, not in the
+        # job's startCommand, where Render would not honor it.
+        target = [sys.executable, "-c", script]
+    else:
+        target = list(args.target)
+        if target and target[0] == "--":
+            target = target[1:]
     if not target:
         print(f"{PROG_RUN}: no target command after --", file=sys.stderr)
         return 2

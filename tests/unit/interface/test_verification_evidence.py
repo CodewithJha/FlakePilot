@@ -8,6 +8,7 @@ and the fetch verdict is computed only from the record — never from a Render
 status field (which the record does not even carry).
 """
 
+import base64
 import json
 import signal
 import sys
@@ -173,3 +174,39 @@ def test_run_verify_run_requires_target_and_exits_with_target_code(
     assert payload["exit_code"] == 26
     assert payload["db_write"].startswith("failed:")
     assert code == 26
+
+
+def test_b64_exec_runs_whatever_quotes_would_mangle(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The Render-safe path: code travels as base64, quoting happens in argv.
+
+    Regression for the 2026-10-25 Render finding: a one-off startCommand's
+    double quotes arrive as literal characters, so
+    `python -c "print('X'); sysexit(7)"` ran as a string literal — silent,
+    instantaneous, exit 0. --b64-exec builds the code argument inside the
+    subprocess argv list instead, where quoting is honored.
+    """
+    from flakepilot.interface.composition_root.verification_evidence import (
+        run_verify_run,
+    )
+
+    settings = Settings(Secret("postgres://local/db"))
+    quoted = "print('B64EXEC_OK'); import sys; sys.exit(7)"
+    code = run_verify_run(
+        settings, ["--b64-exec", base64.b64encode(quoted.encode()).decode()]
+    )
+    out, _ = capsys.readouterr()
+    assert code == 7
+    assert "B64EXEC_OK" in out
+
+
+def test_b64_exec_rejects_invalid_base64(capsys: pytest.CaptureFixture[str]) -> None:
+    from flakepilot.interface.composition_root.verification_evidence import (
+        run_verify_run,
+    )
+
+    settings = Settings(Secret("postgres://local/db"))
+    assert run_verify_run(settings, ["--b64-exec", "not valid base64!!"]) == 2
+    _, err = capsys.readouterr()
+    assert "not valid base64" in err
