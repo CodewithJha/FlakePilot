@@ -33,12 +33,12 @@ async def _rows(engine: AsyncEngine, job_id: str) -> list[dict[str, object]]:
         result = await session.execute(
             text(
                 "SELECT job_id, exit_code, target_sha256, stdout_sha256, "
-                "stderr_sha256, stdout_bytes, timed_out, stdout_head "
+                "stderr_sha256, duration_ms, stdout_bytes, timed_out, stdout_head "
                 "FROM ops.verification_runs WHERE job_id = :job_id"
             ),
             {"job_id": job_id},
         )
-        return [dict(row.mappings()) for row in result]
+        return [dict(m) for m in result.mappings().all()]
 
 
 def test_verify_run_records_and_verify_fetch_checks(
@@ -73,6 +73,7 @@ def test_verify_run_records_and_verify_fetch_checks(
     row = rows[0]
     assert row["exit_code"] == 26
     assert row["timed_out"] is False
+    assert isinstance(row["duration_ms"], int) and row["duration_ms"] >= 0
     assert row["target_sha256"] == payload["target_sha256"]
     assert row["stdout_sha256"] == payload["stdout_sha256"]
     assert row["stdout_bytes"] == len(b"CAL26_DONE\n")

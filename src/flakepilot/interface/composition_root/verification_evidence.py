@@ -54,6 +54,7 @@ from typing import Any
 
 from sqlalchemy import text
 
+from flakepilot.integrations.infrastructure.hosted_http import call as hosted_https_call
 from flakepilot.interface.composition_root import Settings
 from flakepilot.interface.composition_root.database import (
     create_engine,
@@ -249,24 +250,25 @@ def evidence_line(record: dict[str, Any]) -> str:
 
 async def _persist(settings: Settings, record: dict[str, Any]) -> str | None:
     """Insert the record; return '' when stored, or the exception class name."""
+    params = {
+        **record,
+        "job_id": record["job_id"],
+        "service_id": record["service_id"],
+        "stdout_head": record["stdout_head"],
+        "stdout_tail": record["stdout_tail"],
+        "stderr_head": record["stderr_head"],
+        "stderr_tail": record["stderr_tail"],
+        "spawn_error": record["spawn_error"],
+        "signal": record["signal"],
+        "recorded_by": MECHANISM_VERSION,
+        # asyncpg is typed: timestamps bind as datetimes, not ISO strings
+        "started_at": datetime.fromisoformat(record["started_at"]),
+        "finished_at": datetime.fromisoformat(record["finished_at"]),
+    }
     engine = create_engine(settings.database_url.reveal())
     try:
         async with engine.begin() as connection:
-            await connection.execute(
-                text(_INSERT_SQL),
-                {
-                    **record,
-                    "job_id": record["job_id"],
-                    "service_id": record["service_id"],
-                    "stdout_head": record["stdout_head"],
-                    "stdout_tail": record["stdout_tail"],
-                    "stderr_head": record["stderr_head"],
-                    "stderr_tail": record["stderr_tail"],
-                    "spawn_error": record["spawn_error"],
-                    "signal": record["signal"],
-                    "recorded_by": MECHANISM_VERSION,
-                },
-            )
+            await connection.execute(text(_INSERT_SQL), params)
         return ""
     except Exception as exc:  # noqa: BLE001 - operator CLI: cause class only
         return type(exc).__name__
@@ -340,8 +342,6 @@ def run_verify_run(settings: Settings, argv: Sequence[str]) -> int:
 
 def _post_receipt(url: str, record: dict[str, Any]) -> str:
     """POST the compact evidence summary. Failures never affect the exit code."""
-    import urllib.request
-
     payload = json.dumps(
         {
             "id": record["id"],
@@ -360,17 +360,17 @@ def _post_receipt(url: str, record: dict[str, Any]) -> str:
         sort_keys=True,
         separators=(",", ":"),
     ).encode()
-    request = urllib.request.Request(
-        url,
-        data=payload,
-        method="POST",
-        headers={"Content-Type": "application/json", "User-Agent": MECHANISM_VERSION},
-    )
     try:
-        with urllib.request.urlopen(request, timeout=8) as response:
-            return f"{type(response).__name__}:{response.status}"
-    except Exception as exc:  # noqa: BLE001 - receipt is best-effort
-        return f"failed:{type(exc).__name__}"
+        status, _body = hosted_https_call(
+            "POST",
+            url,
+            {"Content-Type": "application/json", "User-Agent": MECHANISM_VERSION},
+            payload,
+            8.0,
+        )
+        return f"status:{status}"
+    except OSError as exc:
+        return f"failed:{exc.strerror or exc}"
 
 
 # --- read-back --------------------------------------------------------------
