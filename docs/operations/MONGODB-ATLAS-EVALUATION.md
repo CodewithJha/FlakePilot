@@ -1,10 +1,75 @@
 # MongoDB Atlas evaluation
 
 Companion to [ADR-017](../adr/ADR-017-sponsor-capability-phase.md) decision 9
-and sponsor goal 4 (MongoDB Atlas). Read-only evaluation; no Atlas account is
-created, nothing is provisioned, and the live posture is unchanged:
-PostgreSQL is the single system of record
-([ADR-005](../adr/ADR-005-system-of-record-database.md)).
+and sponsor goal 4 (MongoDB Atlas). PostgreSQL stays the single system of
+record ([ADR-005](../adr/ADR-005-system-of-record-database.md)).
+
+## Decision update (2026-10-25): implemented as an opt-in, write-only export
+
+The owner approved Atlas in a bounded role: an opt-in, **write-only export**
+of finished reports. Atlas is never read back for any decision, and
+PostgreSQL stays authoritative. The driver first failed the runtime licence
+gate (`dnspython`, a hard dependency of `pymongo`, reports `ISC`); the owner
+then added `ISC` to the `allow-only` list (2026-10-25), and `pymongo` 4.19.0
+was added. The Atlas Data API (HTTP) was retired by MongoDB, so the driver is
+the only path.
+
+What is implemented (commit `a9c4ff8`):
+
+- **What is exported.** Investigation reports are not persisted in
+  PostgreSQL (the route composes them per request), so the stored, finished
+  document is the classified run report. `ReportExport`
+  (`test_intelligence/application/report_export.py`) exports IDs, counts,
+  enum values, the commit SHA, the environment label, each test's attempt
+  outcomes and its `ti-classification/1` verdict with evidence. Test class
+  and method names, upload metadata (CI run ID, job, ref), artifact keys,
+  raw reports and logs are not exported; a unit test checks that.
+- **Key and idempotency.** `_id` is `org_id:repo_id:run_id:report_revision`,
+  where `report_revision` is the SHA-256 of the canonical exported JSON. The
+  write is `update_one(..., {"$setOnInsert": doc}, upsert=True)`, so a
+  re-export of an unchanged report writes nothing, and a verdict that changed
+  as history grew becomes a new revision. A concurrent duplicate insert
+  counts as unchanged.
+- **Trigger.** The operator command `export-reports-atlas --org-id --repo-id
+  [--limit 1-200]` (`composition_root/atlas_export.py`), not the outbox.
+- **Audit.** Every outcome is one TI outbox event: `ti.report.exported`
+  (`inserted` or `unchanged`) or `ti.report.export_failed` with a reason
+  code (`atlas_unreachable`, `atlas_timeout`, `atlas_unauthorized`,
+  `atlas_refused`, `atlas_misconfigured`, `atlas_error`). The first failure
+  stops the batch; driver messages are never kept.
+- **Connection.** `FLAKEPILOT_ATLAS_URI` and `FLAKEPILOT_ATLAS_DATABASE`
+  together or not at all (half set refuses startup). The URI must be
+  `mongodb+srv://` or `mongodb://`, and `tls=false`, `ssl=false`,
+  `tlsInsecure` and `tlsAllowInvalid*` are refused. The client is built with
+  `tls=True`, `serverSelectionTimeoutMS=10000`, `connectTimeoutMS=10000`,
+  `socketTimeoutMS=20000`, one fixed collection (`run_reports`). Only the
+  operator command builds it; the API process and the worker never import
+  the driver (a unit test checks the loaded modules).
+
+Evidence (2026-10-25):
+
+- **VERIFIED:** unit tests over a hand-written fake collection and an
+  in-memory sink (`tests/unit/integrations/infrastructure/test_atlas.py`,
+  `tests/unit/test_intelligence/application/test_report_export.py`), and a
+  real-PostgreSQL test that backfills six runs and exports them twice
+  (6 inserted, then 6 unchanged, 12 audit events, no test names in any
+  document).
+- **VERIFIED, live:** `tests/live/test_live_atlas.py` against the owner's
+  cluster from the owner's allow-listed IP: one synthetic report upserted
+  (inserted), upserted again (unchanged, one document), read back by key
+  (the test's check only), then that document deleted.
+- **VERIFIED, live end to end:** `export-reports-atlas` through the operator
+  CLI on a throwaway PostgreSQL 16 database holding one real backfilled run
+  (FlakePilot's own CI, 1397 tests): first run `inserted`, second run
+  `unchanged`; the document was found by key and then deleted (0 left for
+  that org). The same canonical document, rebuilt from the stored run,
+  contains none of the run's 1513 class and test names.
+
+The analysis below was written before this decision. Its risks (a second
+authorization boundary, retention) still bind the export: an Atlas document
+is a copy, scoped by the same pair, and is never a source of truth.
+
+## Earlier evaluation (2026-10-24, superseded as to the decision)
 
 ## What the goal asked
 
@@ -69,5 +134,7 @@ composition of normalized, integrity-governed rows, reassembled at read time:
    field list explicit — the same review the research/speech/live-provider
    providers require before any external system ever receives content.
 
-None hold today. Status: **not selected**; the goal is retained and this
-evaluation is the recorded reason it stays that way.
+Condition 3 (owner-approved spend and credentials) now holds; see the
+decision update at the top. Status: **implemented as an opt-in, write-only
+export**, mock-tested, real-PG-tested, live-verified (adapter and the
+operator command); not deployed.

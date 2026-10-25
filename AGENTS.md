@@ -43,8 +43,9 @@ root before claiming a feature is wired.
 ## Fail-closed inventory (what production actually uses)
 
 Verified against `interface/composition_root/` at `145ebc93`; the AI and
-hosted-provider bullets re-verified at `ae81fcf` (`reproduction.py` and
-`worker.py` unchanged since):
+hosted-provider bullets re-verified at `ae81fcf`, and the agent-route, Atlas
+and Temporal bullets at `4c1bf81` (`reproduction.py` and `worker.py`
+unchanged since):
 
 - `_sandbox` returns `ClosedSandbox` — no container, no repository code, ever,
   in the default composition.
@@ -61,17 +62,33 @@ hosted-provider bullets re-verified at `ae81fcf` (`reproduction.py` and
   artifact keys.
 - AI assists through `NullAiAssist` unless the operator sets
   `FLAKEPILOT_AI_ENDPOINT` (local) or `FLAKEPILOT_GEMINI_API_KEY` (hosted
-  Gemma); the only route that reaches it is the session investigation
-  (`POST /orgs/{org}/runs/{run}/investigation`), behind the org AI policy.
+  Gemma); it is reached only through the investigation workflow, behind the
+  org AI policy: the session route (`POST /orgs/{org}/runs/{run}/investigation`),
+  the agent route below, and the opt-in `temporal-worker`.
 - Hosted providers (`composition_root/providers.py`: SerpApi, Browserbase,
   ElevenLabs, TabPFN, Sentry) are built only when their keys are set, in the
   API process and operator commands; absent means no adapter and no contact.
-  The worker builds none of them and `render.yaml` gives it none. Auth0 settings are parsed but nothing
- verifies agent tokens. Live verification (local, 2026-10-24: Gemma,
- SerpApi, ElevenLabs, Sentry; 2026-10-25: TabPFN on synthetic rows and the
- unwired Auth0 verifier; not Browserbase) is recorded in
+  The worker builds none of them and `render.yaml` gives it none. Live
+  verification (local, 2026-10-24: Gemma, SerpApi, ElevenLabs, Sentry;
+  2026-10-25: TabPFN on synthetic rows, the Auth0 agent route, one Gemma
+  hypothesis through a real investigation; not Browserbase) is recorded in
   [SPONSOR-IMPLEMENTATION-MAP](docs/operations/SPONSOR-IMPLEMENTATION-MAP.md);
   nothing is deployed.
+- The Auth0 agent route (`POST /agent/orgs/{org}/runs/{run}/investigation`)
+  is mounted only when `FLAKEPILOT_AUTH0_DOMAIN`/`_AUDIENCE` are set; unset,
+  the path is an unknown route. A token is never authority: an org admin's
+  binding (`bind-agent`) is, re-derived per request from that admin's live
+  grants and verified code-host standing (stand-in only in tests; the GitHub
+  App verifier on this path is not live-verified).
+- MongoDB Atlas is an opt-in, write-only copy: only the `export-reports-atlas`
+  operator command builds the client (`FLAKEPILOT_ATLAS_URI`/`_DATABASE`); the
+  API process and the worker never import the driver, and nothing reads Atlas
+  back. PostgreSQL stays the system of record.
+- Temporal is an opt-in proof of concept: only the `temporal-*` operator
+  commands import it or connect (`FLAKEPILOT_TEMPORAL_*`); the default worker
+  and the API process never do. FlakePilot's advisory lock and existing
+  `diag.investigation.recorded` row stay authoritative. Verified against a
+  real local Temporal dev server only; Temporal Cloud is BLOCKED.
 
 `LoopbackHostChannel` / `LoopbackHostClient` (127.0.0.1, mTLS, fingerprint
 pinning, `ReferenceHost` only) and `AesGcmSealer` are tested boundary code.
@@ -99,7 +116,13 @@ them to the worker or the composition root.
   approval outside this repository. Never delete audit or outbox rows as
   artifact retention.
 - GitHub authorization stays server-side; tokens get `contents:read` on one
-  repository. Live minting is NOT VERIFIED — say so, do not claim it.
+  repository. The single exception is the operator-only
+  `backfill-ci-history`, whose token is `actions:read` (instead, not in
+  addition) on the one repository registered for the pair. No token carries
+  both, and none carries a write permission. Minting was live-checked on
+  2026-10-25 (one commit confirmation, the backfill's run/artifact listings
+  and one artifact download); the session-view verifier and
+  verify-github-app were not run live — say so, do not claim them.
 - A green test suite is not proof of security, isolation, or encryption.
 
 ## Development workflow and Git conventions

@@ -1,9 +1,43 @@
 # Tiger Data (Tiger Cloud) evaluation
 
 Companion to [ADR-017](../adr/ADR-017-sponsor-capability-phase.md) decision 5
-and sponsor goal 6 (Tiger Data). Nothing is provisioned, no account exists,
-and no connection to Tiger Cloud has been made. PostgreSQL stays the single
-system of record ([ADR-005](../adr/ADR-005-system-of-record-database.md)).
+and sponsor goal 6 (Tiger Data). PostgreSQL stays the single system of record
+([ADR-005](../adr/ADR-005-system-of-record-database.md)). The owner created
+one empty Tiger Cloud service for FlakePilot; the evidence from it is below.
+Nothing is deployed there.
+
+## Evidence on a real Tiger Cloud service (2026-10-25)
+
+Run from the developer machine against the owner's new, empty service. The
+URL came only from the environment and was never printed or logged.
+
+| Check | Result |
+|---|---|
+| Server | PostgreSQL **18.6** with TimescaleDB 2.31.0. CI and local tests use 16.x, so the major version differs |
+| TLS | On (`pg_stat_ssl.ssl = true`) |
+| URL shape | The service URL carries `?sslmode=require`. asyncpg refuses `sslmode` itself, so `create_engine` now moves a libpq `sslmode` into asyncpg's `ssl` argument with the same mode (commit `280c3bb`; unknown modes are refused). **VERIFIED** 2026-10-25: the unmodified service URL connected through `create_engine` with `pg_stat_ssl.ssl = true`. libpq's `require` encrypts without verifying the server certificate; `sslmode=verify-full` is accepted too |
+| Role | `tsdbadmin`: not a superuser (`rolcreatedb` and `rolcreaterole` are true). `CREATE DATABASE` for any name but `tsdb` is refused (`tsdb_admin: database … is not an allowed database name`, hint `tsdb_admin.allowed_databases`) |
+| `tsdb_admin.allowed_databases` | Value `tsdb`; `pg_settings.context` is **`superuser`**. `SET` by `tsdbadmin` answers `permission denied to set parameter`, and `has_parameter_privilege` is false for both `SET` and `ALTER SYSTEM`. The owner's admin role therefore cannot allow another database; only Tiger (support, or a superuser-level control we do not have) can |
+| `alembic upgrade head` | Passed, from empty to `iam_0003`, including `ti_0002`. All eight context schemas were created in database `tsdb` |
+| `alembic check` | `No new upgrade operations detected` |
+| `reliability-trend` | Ran through the operator CLI for an empty (org, repo) pair: `no_data`, `truncated: false`. This shows the `date_trunc`/`timezone` SQL runs there; it measures no trend |
+| Full integration suite | **BLOCKED**. All 135 integration tests error in setup, because each creates a throwaway database next to the URL, and the service refuses `CREATE DATABASE`. No test ran, and no test database was created |
+
+What the run left behind: database `tsdb` holds FlakePilot's schemas at
+`iam_0003` (25 tables, including `alembic_version`) and no rows. No other
+database exists (`postgres`, `tsadmin` and `tsdb` only). That `iam_0003` was
+applied from the then-uncommitted migrations; the committed chain now adds
+`ti_0003` (a check constraint reserving the backfill CI source), so `alembic
+upgrade head` there would add one constraint. It was not run, and no schema
+was dropped.
+
+**Full integration suite on Tiger: BLOCKED (2026-10-25, re-checked).** The
+suite creates a throwaway database per test or module, and the service
+allows only `tsdb`. `tsdb_admin.allowed_databases` is a superuser-context
+setting that the owner's `tsdbadmin` role cannot change (see the table).
+Unblocking needs either Tiger to allow extra database names on the service,
+or a harness mode that runs inside one database (a change to
+`tests/support.py`, not made).
 
 ## The key fact
 
@@ -57,10 +91,11 @@ Tiger Cloud.
 
 Recommendation: keep the database co-located with the application host
 (Render PostgreSQL) unless the owner wants Tiger Cloud's operational features
-or a hypertable trigger below fires. Before choosing Tiger Cloud, verify on a
-throwaway service (never the integration-test URL against real data): the
-PostgreSQL major version against CI's 16.x, TLS with asyncpg, the role
-privileges the migrations need, and connection limits for API + worker.
+or a hypertable trigger below fires. The 2026-10-25 run (above) settled three
+of the pre-checks: the major version is 18, not 16; TLS works with
+`ssl=require` but not with `sslmode`; and the migrations need no more than
+`tsdbadmin`. Still unchecked: connection limits for the API and the worker,
+and the full suite on PostgreSQL 18.
 
 ## What would justify hypertables or continuous aggregates
 
@@ -89,7 +124,9 @@ Revisit triggers, in order (each needs written evidence):
 5. **The owner selects Tiger Cloud** as the host (hypertables are only
    available with the extension).
 
-Status: trend analytics **tested with mocks**, with a PostgreSQL integration
-test written — it becomes **Integration-tested** only when CI passes it; Tiger
-Cloud hosting: **owner decision, not selected**; hypertables: **not
-justified**.
+Status: trend analytics unit-tested and real-PG-tested on PostgreSQL 16
+(locally and in CI). Trends now read CI time, so a backfilled run counts on
+its original day. On Tiger Cloud, migrations and `alembic check` were
+**VERIFIED** (PostgreSQL 18.6); the integration suite is **BLOCKED** (no
+`CREATE DATABASE`). Tiger Cloud hosting remains an **owner decision, not
+selected**; hypertables: **not justified**.

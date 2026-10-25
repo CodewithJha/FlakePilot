@@ -1,10 +1,72 @@
 # Mastra evaluation
 
 Companion to [ADR-017](../adr/ADR-017-sponsor-capability-phase.md) decision 1
-and sponsor goal 2 (Mastra). This is a read-only re-evaluation: nothing is
-installed or wired. The decision stands: **Mastra is not adopted.** The goal
-(agent-shaped, bounded investigation) is met by the Python workflow in
-`diagnosis/application/investigation.py`.
+and sponsor goal 2 (Mastra).
+
+## Decision (2026-10-25): adopted as an external client, not a workflow authority
+
+The owner asked for a real Mastra implementation that holds no authority.
+Mastra is adopted **only as an external client** of FlakePilot, in
+[`sidecars/mastra/`](../../sidecars/mastra/README.md). It is not adopted as a
+workflow engine inside the product. The 2026-10-24 objections below still
+hold for that second role, and this design avoids every one of them:
+
+- **No second workflow authority.** The sidecar's workflow (`obtain-token →
+  investigate → validate → summarize`) makes exactly one HTTP call to
+  FlakePilot per invocation and never retries. Retries, leases, provenance, and
+  every stage budget stay in the Python pipeline and the outbox/jobs.
+- **No second trust boundary on the evidence path.** The sidecar has no
+  database access and no FlakePilot credential. It holds one short-lived
+  Auth0 client-credentials token for its own M2M client. FlakePilot verifies
+  that token (`Auth0TokenVerifier`) and maps its subject to an admin-made
+  binding (`iam.agent_bindings`). It then re-derives the agent's grants from
+  the delegating admin's live grants and verified code-host standing, narrows
+  them by the token, and runs its own `authorize()` and AI-policy gates. See
+  `POST /agent/orgs/{org}/runs/{run}/investigation` in
+  [AUTH0-AGENT-ROUTE](AUTH0-AGENT-ROUTE.md).
+- **Bounded supply chain.** Node ≥ 22.18, a pinned `package-lock.json` (149
+  packages), and two direct dependencies: `@mastra/core` 1.79.0 and `zod`
+  4.6.7. Only the Apache-2.0 entry point `@mastra/core/workflows` is imported.
+  The package's `ee/` content (Mastra Enterprise License) is installed but
+  never imported, and a sidecar test enforces this. Every package in the tree
+  is permissive; the README lists the licences. Mastra's product telemetry
+  (PostHog) is disabled with `MASTRA_TELEMETRY_DISABLED=1`, and no `Mastra`
+  instance is constructed. Nothing in the Python package or its licence gate
+  changes.
+- **Advisory output.** The sidecar's report summarizes the JSON FlakePilot
+  returned. Verdicts are FlakePilot's deterministic rule set, model output
+  arrives as counts, and the report says `"authority": "flakepilot"`.
+
+### Evidence (2026-10-25)
+
+- **VERIFIED:** `npm ci && npm test` in `sidecars/mastra`: `tsc --noEmit`, then
+  8 `node:test` cases against a mocked Auth0 token endpoint and a mocked
+  FlakePilot, all passed. The cases cover the happy path with one token and
+  one investigation call, a FlakePilot refusal (401/403/404/503 each called
+  once, never retried), a token refusal before any FlakePilot call, a schema
+  violation, a timeout, invalid input, config refusals that never echo
+  values, and the `ee/` import guard.
+- **VERIFIED, local:** a live run (`tests/live/test_live_mastra.py`). The real
+  `create_app` was served by uvicorn on loopback against a throwaway
+  PostgreSQL 16 database, with hosted Gemma and SerpApi configured.
+  `node src/main.ts` obtained a real token from the development Auth0 tenant
+  and called the agent route once. The answer was HTTP 200, `complete`:
+  collect, research (5 SerpApi sources) and prioritize produced; browse
+  skipped (`provider_absent`); hypothesize failed with `invalid_hypothesis`.
+  The schema was validated and the report object built. Provenance:
+  `diag.investigation.recorded` has the delegating admin as actor and
+  `via_agent=mastra_sidecar`. Provider attempts: Gemini 1 (HTTP 200), SerpApi
+  1 (HTTP 200). This run is the implementing agent's record; it was not
+  repeated in the integration review. The `invalid_hypothesis` came from a
+  prompt that did not state the output shape; commit `fd71d89` fixed the
+  prompt, and one live investigation after the fix produced a hypothesis
+  (1 evidence-linked claim; see SPONSOR-IMPLEMENTATION-MAP row 1). The Mastra
+  path itself has not been re-run since the fix.
+- **Stand-in, not evidence:** the delegator's code-host standing in the live
+  run came from a `verified_read` stand-in, because the seeded repository is
+  not a real GitHub repository. Code-host verification by the GitHub App is
+  **NOT VERIFIED** on this path.
+- Nothing is deployed. No sidecar process runs in `render.yaml`.
 
 ## What Mastra is (verified 2026-10-24)
 
@@ -80,6 +142,8 @@ Any one of these, with written evidence, reopens the evaluation:
 
 ## Status
 
-Goal 2: **Integration-tested** (Python workflow core, unchanged by this
-evaluation). Mastra runtime: **not adopted**. Nothing was implemented for
-Mastra, because nothing justified it.
+Goal 2: **Integration-tested** (Python workflow core, unchanged). Mastra as
+a workflow authority inside the product: **not adopted** (the 2026-10-24
+analysis above). Mastra as an external, authority-free client:
+**implemented** in `sidecars/mastra/`, **mock-tested**, and **live-verified
+locally** on 2026-10-25 through the Auth0 agent route. It is not deployed.

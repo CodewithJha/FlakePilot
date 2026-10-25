@@ -17,7 +17,7 @@ Evidence-based investigation and verification of recurring test failures. See [P
 - **Parsing is synchronous.** Reports are parsed inside the upload request. A separate worker process runs durable jobs and delivers outbox rows to the audit log. No retention or stage job is registered. See [DURABLE-JOBS](docs/operations/DURABLE-JOBS.md).
 - **No quotas or rate limits.** AI spend is not checked either (ADR-014).
 - **AI assist is off unless an org admin enables it**, through the operator command `set-ai-policy` (no HTTP route). It runs only inside the investigation route below, through a model the operator configured (a local endpoint or hosted Gemma); with none configured the process wires `NullAiAssist` and assist answers `unavailable`. See ADR-014.
-- **Hosted providers are opt-in; five are live-verified locally, none deployed.** Gemma (Gemini API), SerpApi, Browserbase, ElevenLabs and TabPFN adapters are wired only when their keys are set (see [Hosted providers](#hosted-providers-adr-017)); no key exists in this repository. The Gemma, SerpApi, ElevenLabs and Sentry adapters were run against the real services from a developer machine on 2026-10-24, and TabPFN (synthetic rows only; no evaluation on real history) on 2026-10-25; Browserbase has not been. The Auth0 token verifier was checked against a development tenant on 2026-10-25, but no route uses it ([SPONSOR-IMPLEMENTATION-MAP](docs/operations/SPONSOR-IMPLEMENTATION-MAP.md#live-verification-record-2026-10-24)).
+- **Hosted providers are opt-in; five are live-verified locally, none deployed.** Gemma (Gemini API), SerpApi, Browserbase, ElevenLabs and TabPFN adapters are wired only when their keys are set (see [Hosted providers](#hosted-providers-adr-017)); no key exists in this repository. The Gemma, SerpApi, ElevenLabs and Sentry adapters were run against the real services from a developer machine on 2026-10-24, and TabPFN (synthetic rows only; no evaluation on real history) on 2026-10-25; Browserbase has not been. On 2026-10-25 a real Auth0 token went through the opt-in agent investigation route (in-process; the code-host standing was a stand-in), one real investigation produced a Gemma hypothesis, the MongoDB Atlas export ran live (adapter round trip, and `export-reports-atlas` on one real backfilled run, both cleaned up), `backfill-ci-history` imported FlakePilot's own CI run, and the Temporal proof of concept ran against a real local Temporal dev server, not Temporal Cloud ([SPONSOR-IMPLEMENTATION-MAP](docs/operations/SPONSOR-IMPLEMENTATION-MAP.md#live-verification-record-2026-10-24)).
 - **Artifacts are not encrypted at rest, and never cleaned up.** Raw reports are plain files under `FLAKEPILOT_ARTIFACT_DIR`, and there is no retention job.
 - **Browser reproduction fails closed.** The default execution mode starts no container and runs no repository code. Evaluation mode is an explicit opt-in, builds a `docker` or `podman` argument list, and is not a microVM and not a production sandbox. No container was run in CI. See [EXECUTION](docs/operations/EXECUTION.md).
 - **Nothing is deployed.** A `Dockerfile` and a Render Blueprint (`render.yaml`) exist; the image has not been built (no local Docker daemon) and the Blueprint has not been validated by Render. See [DEPLOYMENT-RUNBOOK](docs/operations/DEPLOYMENT-RUNBOOK.md).
@@ -216,15 +216,18 @@ Settings come from environment variables only (see [`.env.example`](.env.example
 | `FLAKEPILOT_AI_ENDPOINT` | no | — | Operator-run local inference server URL (http(s), ≤500 chars) for advisory assist (ADR-017). Empty: no model contact at all. Never logged |
 | `FLAKEPILOT_AI_MODEL` | with `..._AI_ENDPOINT` | — | Model identifier (≤80 chars) recorded on every response. Required when the endpoint is set; refused (configures nothing) without it |
 | `FLAKEPILOT_AI_API_KEY` | no | — | Optional API key for the endpoint. Never logged. Unset also fine for keyless local servers |
-| `FLAKEPILOT_GITHUB_APP_ID` / `FLAKEPILOT_GITHUB_APP_PRIVATE_KEY` | for session views | — | GitHub App id and unencrypted RSA key, together, for the code-host access verifier. Unset: session views and the investigation answer 404 (fail closed). Live minting **NOT VERIFIED** |
+| `FLAKEPILOT_GITHUB_APP_ID` / `FLAKEPILOT_GITHUB_APP_PRIVATE_KEY` | for session views | — | GitHub App id and unencrypted RSA key, together, for the code-host access verifier. Unset: session views and the investigation answer 404 (fail closed). Installation-token minting was live-checked on 2026-10-25: contents:read through one commit confirmation, and actions:read through `backfill-ci-history`'s run and artifact listings. The session-view verifier was not run live |
 | `FLAKEPILOT_SENTRY_DSN` | no | — | `https://<public key>@<host>/<project id>`. API process only. Unset: nothing is reported. Set: ERROR records become allow-listed events ([SENTRY-OBSERVABILITY-BOUNDARY](docs/operations/SENTRY-OBSERVABILITY-BOUNDARY.md)) |
-| `FLAKEPILOT_AUTH0_DOMAIN` / `FLAKEPILOT_AUTH0_AUDIENCE` | no | — | Auth0 tenant host and API identifier, together. Parsed only: no route verifies agent tokens yet |
+| `FLAKEPILOT_AUTH0_DOMAIN` / `FLAKEPILOT_AUTH0_AUDIENCE` | no | — | Auth0 tenant host and API identifier, together. Set: `POST /agent/orgs/{org_id}/runs/{run_id}/investigation` exists for agents an org admin bound with `bind-agent` ([AUTH0-AGENT-ROUTE](docs/operations/AUTH0-AGENT-ROUTE.md)). Unset: that route does not exist |
 | `FLAKEPILOT_GEMINI_API_KEY` / `FLAKEPILOT_GEMINI_MODEL` | no | — | Hosted Gemma for assist, together; model `gemma-4-31b-it` or `gemma-4-26b-a4b-it`. Refused beside `FLAKEPILOT_AI_ENDPOINT` |
 | `FLAKEPILOT_SERPAPI_API_KEY` | no | — | SerpApi research stage. Sends the run's failing test names as the search query |
 | `FLAKEPILOT_BROWSERBASE_API_KEY` / `FLAKEPILOT_BROWSER_ALLOWLIST` | no | — | Browserbase browse stage, together; comma-separated exact public host names |
 | `FLAKEPILOT_ELEVENLABS_API_KEY` / `FLAKEPILOT_ELEVENLABS_VOICE_ID` | no | — | ElevenLabs spoken brief, together |
 | `FLAKEPILOT_ELEVENLABS_MODEL` | no | `eleven_flash_v2_5` | Or `eleven_multilingual_v2`; refused without the key |
 | `FLAKEPILOT_TABPFN_API_KEY` | no | — | TabPFN candidate for `evaluate-prioritization --with-tabpfn` only |
+| `FLAKEPILOT_ATLAS_URI` / `FLAKEPILOT_ATLAS_DATABASE` | no | — | MongoDB Atlas, together, read only by `export-reports-atlas` (a write-only copy; PostgreSQL stays the system of record and Atlas is never read back). The URI must keep TLS on; `tls=false` and `tlsInsecure`-style options are refused. One without the other refuses startup |
+| `FLAKEPILOT_TEMPORAL_ADDRESS` / `FLAKEPILOT_TEMPORAL_NAMESPACE` | no | — | Temporal `host:port` and namespace, together, read only by the `temporal-*` proof-of-concept commands. The API process and the default worker never connect |
+| `FLAKEPILOT_TEMPORAL_API_KEY` | no | — | Temporal Cloud API key; turns TLS on. Refused without the address |
 
 ### GitHub App sign-in
 
@@ -250,6 +253,8 @@ Every hosted provider is off, with no network contact, unless its settings are c
 | ElevenLabs | `FLAKEPILOT_ELEVENLABS_API_KEY`, `FLAKEPILOT_ELEVENLABS_VOICE_ID` (`FLAKEPILOT_ELEVENLABS_MODEL`) | `POST …/investigation/brief` only | the counts-only brief text (no test names, logs or model text) |
 | TabPFN (Prior Labs) | `FLAKEPILOT_TABPFN_API_KEY` | `evaluate-prioritization --with-tabpfn` only | numeric feature rows and 0/1 labels |
 | Sentry | `FLAKEPILOT_SENTRY_DSN` | API error reporting | allow-listed event fields only |
+| MongoDB Atlas | `FLAKEPILOT_ATLAS_URI`, `FLAKEPILOT_ATLAS_DATABASE` | `export-reports-atlas` only | classified run reports: IDs, counts, enum values, commit SHA, environment, attempt outcomes and verdicts with evidence; never test names, upload metadata or artifact keys |
+| Temporal | `FLAKEPILOT_TEMPORAL_ADDRESS`, `FLAKEPILOT_TEMPORAL_NAMESPACE` (`FLAKEPILOT_TEMPORAL_API_KEY`) | `temporal-*` commands only | workflow input and result: the investigation key, org, run and member GitHub IDs, the stopping condition and a stage count |
 
 ### Investigation (session users)
 
@@ -305,6 +310,21 @@ uv run python -m flakepilot.interface.composition_root set-ai-policy --org-id $O
 the same `Assist.set_policy` use case as the product, audited as
 `diag.ai_policy.updated`; `--level disabled` turns assist off again.
 
+`bind-agent` and `unbind-agent` let an org admin delegate one bounded
+investigation scope to an Auth0 machine-to-machine client (goal 9; needs
+`FLAKEPILOT_AUTH0_*` for the route to exist). Only the token subject's SHA-256
+is stored, at most 8 hours, scopes within `repo.view`/`repo.investigate`,
+audited as `iam.agent.bound`/`iam.agent.unbound`. Details and every answer
+code: [AUTH0-AGENT-ROUTE](docs/operations/AUTH0-AGENT-ROUTE.md).
+
+```sh
+uv run python -m flakepilot.interface.composition_root bind-agent --org-id $ORG_ID \
+  --admin-github-id 12345 --repo-id $REPO_ID --auth0-subject '<client_id>@clients' \
+  --agent-name mastra_triage --scope repo.investigate --ttl-minutes 60
+uv run python -m flakepilot.interface.composition_root unbind-agent --org-id $ORG_ID \
+  --admin-github-id 12345 --auth0-subject '<client_id>@clients'
+```
+
 Repositories must be registered in the org before a member can be granted
 access; `show-access` renders the standing per repo through the same domain
 rules `decide()` uses. Membership and grant changes revoke the member's live
@@ -332,7 +352,43 @@ uv run python -m flakepilot.interface.composition_root evaluate-prioritization \
   --horizon-days 7 [--k 10] [--with-tabpfn]
 ```
 
-`reliability-trend` compares failure and flaky rates per bucket and environment with the previous window (exact arithmetic, `incomplete` when a read hits its bound). `evaluate-prioritization` scores a candidate against the shipped prioritization baseline on a temporal split that never lets a feature see the label window; without `--with-tabpfn` (and its key) the candidate is reported `blocked`, never invented.
+`reliability-trend` compares failure and flaky rates per bucket and environment with the previous window (exact arithmetic, `incomplete` when a read hits its bound). `evaluate-prioritization` scores a candidate against the shipped prioritization baseline on a temporal split that never lets a feature see the label window; without `--with-tabpfn` (and its key) the candidate is reported `blocked`, never invented. Both read a run's CI time: the original completion time for a backfilled run, receipt time otherwise.
+
+`backfill-ci-history` (operator trust, audited) imports the JUnit XML that a registered repository's GitHub Actions runs uploaded as artifacts. Each run keeps its original completion time (`ti.runs.ci_completed_at`) and explicit provenance (`ci_source` `github_actions_backfill`, the original run ID, attempt and URL), and `received_at` stays the import time. It needs `FLAKEPILOT_GITHUB_APP_ID`, `FLAKEPILOT_GITHUB_APP_PRIVATE_KEY` (the App must have actions:read) and `FLAKEPILOT_ARTIFACT_DIR`. The repository is the pair's registered binding, and the token is actions:read on that one repository. A re-import of the same (run, attempt, artifact) is a no-op. Bounds and archive safety are in [TABPFN-PRIORITIZATION-EVALUATION](docs/operations/TABPFN-PRIORITIZATION-EVALUATION.md#real-history-the-ci-backfill):
+
+```sh
+uv run python -m flakepilot.interface.composition_root backfill-ci-history \
+  --org-id $ORG_ID --repo-id $REPO_ID [--max-runs 50] [--workflow ci.yml] \
+  [--branch main] [--artifact-pattern 'junit-*']
+```
+
+FlakePilot's own CI uploads its pytest JUnit report as the `junit-gates`
+artifact on every run (failing runs included), so `--artifact-pattern
+'junit-*'` imports this repository's own history.
+
+`export-reports-atlas` (operator trust, opt-in) copies a pair's newest
+classified run reports (`--limit`, 1-200) to MongoDB Atlas with an
+upsert-only key (org, repo, run, SHA-256 of the document), so a re-export
+writes nothing. Each outcome is a `ti.report.exported` or
+`ti.report.export_failed` event with a reason code; the first failure stops
+the batch ([MONGODB-ATLAS-EVALUATION](docs/operations/MONGODB-ATLAS-EVALUATION.md)):
+
+```sh
+uv run python -m flakepilot.interface.composition_root export-reports-atlas \
+  --org-id $ORG_ID --repo-id $REPO_ID [--limit 50]
+```
+
+The Temporal proof of concept (opt-in, never the default worker) runs one
+investigation per workflow while FlakePilot's advisory lock and existing
+`diag.investigation.recorded` row stay authoritative
+([TEMPORAL-DURABLE-WORKFLOW-EVALUATION](docs/operations/TEMPORAL-DURABLE-WORKFLOW-EVALUATION.md)):
+
+```sh
+uv run python -m flakepilot.interface.composition_root temporal-worker
+uv run python -m flakepilot.interface.composition_root temporal-run-investigation \
+  --org-id $ORG_ID --run-id $RUN_ID --member-github-id 12345 [--key $UUID]
+uv run python -m flakepilot.interface.composition_root temporal-cancel-investigation --key $UUID
+```
 
 `verify-github-app` is a read-only staging diagnostic for the GitHub App and
 the code-host access verifier (the Decision E runbook in
@@ -409,7 +465,7 @@ The same commands run in CI ([`.github/workflows/ci.yml`](.github/workflows/ci.y
 ```sh
 uv lock --check
 uv sync --locked
-uv run pytest
+uv run pytest                      # CI adds --junitxml=reports/junit.xml and uploads it
 uv run ruff format --check
 uv run ruff check
 uv run mypy
@@ -421,6 +477,7 @@ uv run pip-licenses --python .venv-runtime/bin/python
 
 - `pip-licenses` checks installed Python packages only. Shipped container images need the separate licence review in [ADR-007](docs/adr/ADR-007-implementation-stack-and-licensing.md) item 5.
 - The dev-environment licence gate has one owner-approved exception (pathspec 1.1.1, MPL-2.0, dev-only via mypy), recorded in `pyproject.toml` next to `[tool.pip-licenses]`. The runtime-environment gate allows no exceptions.
+- Both gates read one `allow-only` list. On 2026-10-25 the owner added `ISC` (dnspython, required by pymongo) and `3-Clause BSD License` (protobuf's spelling of BSD-3-Clause, required by temporalio) to it. That is a change to the list, not an exception.
 - Tests marked `integration` need PostgreSQL and are skipped unless `FLAKEPILOT_TEST_DATABASE_URL` is set. When `CI` is set (GitHub Actions), a missing URL fails the run instead; CI provides a PostgreSQL service.
 - Integration tests create and drop a throwaway database for each test or module next to `FLAKEPILOT_TEST_DATABASE_URL`, so that role needs `CREATEDB`. **Never point it at a real database.**
 

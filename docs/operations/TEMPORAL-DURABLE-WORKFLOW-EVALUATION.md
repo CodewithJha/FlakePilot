@@ -1,11 +1,76 @@
 # Temporal durable workflow evaluation
 
 Companion to [ADR-017](../adr/ADR-017-sponsor-capability-phase.md) decision 1
-and sponsor goal 5 (Temporal). Read-only evaluation; nothing is installed,
-purchased, or wired. The live product posture is unchanged: the durable
-workflow authority is the repository's own outbox/jobs
+and sponsor goal 5 (Temporal). The durable workflow authority stays the
+repository's own outbox and jobs
 ([DURABLE-JOBS](DURABLE-JOBS.md), [ADR-006](../adr/ADR-006-durable-jobs-in-the-database.md),
 [ADR-012](../adr/ADR-012-event-envelope-and-outbox.md)).
+
+## Decision update (2026-10-25): implemented as an opt-in proof of concept
+
+The owner approved a bounded Temporal role that does not compete with the
+outbox/jobs authority: Temporal schedules, retries and cancels **one**
+investigation, while FlakePilot's lock and outbox stay authoritative. It is
+never wired into the default worker. The SDK first failed the runtime
+licence gate (`protobuf` reports `3-Clause BSD License`, not the gate's
+exact spelling); the owner added that alias to `allow-only` (2026-10-25) and
+`temporalio` 1.34.0 was added.
+
+What is implemented (commit `3872cd2`):
+
+- **Workflow** (`composition_root/temporal_workflow.py`, free of FlakePilot
+  imports). `InvestigationWorkflow` with workflow ID `investigation-{key}`
+  and reuse policy *reject duplicate*. It runs one activity with a
+  start-to-close timeout of 120 s and a heartbeat timeout of 30 s (2-30 s,
+  carried in the input). Retry: at most 3 attempts; only
+  `database_unavailable` and `investigation_in_progress` retry, and
+  `invalid_request`, `not_found`, `unauthorized` and `investigation_failed`
+  are final. Cancelling the workflow cancels the activity (delivered through
+  its heartbeat) and waits for it to stop.
+- **Activity** (`composition_root/temporal_investigation.py`). It takes a
+  session-level `pg_try_advisory_lock` on the key, on its own autocommit
+  connection that is invalidated when the activity ends, so a killed
+  worker's lock goes with its connection. A held lock is
+  `investigation_in_progress` (retryable). It then returns the recorded
+  outcome, without running anything, if `diag.outbox` has the
+  `diag.investigation.recorded` row whose correlation ID is the key.
+  Otherwise it runs the existing `Investigations.investigate` as an
+  explicitly named org member (IAM resolves the access, REPO's verifier the
+  code-host standing), with the key as the `Origin` correlation ID, and
+  heartbeats meanwhile. An advisory-model call made before a kill may be
+  repeated (at-least-once); its request row is recorded each time.
+- **Commands** (operator only): `temporal-worker`,
+  `temporal-run-investigation --org-id --run-id --member-github-id [--key]`,
+  `temporal-cancel-investigation --key`. `FLAKEPILOT_TEMPORAL_ADDRESS` and
+  `_NAMESPACE` go together; `_API_KEY` (Temporal Cloud) turns TLS on and is
+  refused without an address. The API process and the default `worker`
+  never import Temporal (a unit test checks the loaded modules). Temporal's
+  history holds IDs, enum codes and a stage count only.
+
+Evidence (2026-10-25):
+
+- **VERIFIED, CI:** `tests/integration/test_temporal_activity_postgres.py`
+  runs the activity through `temporalio.testing.ActivityEnvironment` on real
+  PostgreSQL around the real investigation of a seeded run: one key runs once
+  and a repeat replays the recorded outcome; a held lock is retryable and
+  every run releases its lock; failures map to the reason codes without
+  leaking text; a malformed request is final.
+- **VERIFIED, real Temporal server (local dev), not Temporal Cloud:**
+  `tests/live/test_live_temporal_local.py` with
+  `WorkflowEnvironment.start_local()` (Temporal CLI 1.9.1, Server 1.32.0,
+  downloaded at test time; CI skips it). One workflow recorded exactly one
+  investigation and a duplicate start was rejected. A cancelled workflow
+  failed as `cancelled`, recorded nothing, and left no advisory lock. A
+  worker process holding the activity (and the key's lock) was SIGKILLed;
+  a replacement worker ran attempt 2 and exactly one
+  `diag.investigation.recorded` row exists.
+- **Stand-in, not evidence:** the code-host standing in these tests comes
+  from a `verified_read` stand-in.
+- **BLOCKED:** Temporal Cloud. The trial requires a payment card, so no
+  `FLAKEPILOT_TEMPORAL_*` Cloud credentials exist and nothing ran against
+  Cloud. Nothing is deployed.
+
+## Earlier evaluation (2026-10-24, superseded as to the decision)
 
 ## What the goal asked
 
@@ -78,4 +143,8 @@ Any one of these, with written evidence, reopens the evaluation:
 4. Owner authorization of the vendor dependency per Decision 10's gate list —
    a precondition for any adoption in every branch.
 
-None hold today. Status: **not justified**; the outbox/jobs authority stays.
+Condition 4 (owner authorization of the vendor dependency) now holds; see the
+decision update at the top. The outbox/jobs authority stays regardless.
+Status: **implemented as an opt-in proof of concept**, real-PG-tested in CI,
+verified against a real local Temporal dev server; Temporal Cloud
+**BLOCKED** (no credentials); not deployed.

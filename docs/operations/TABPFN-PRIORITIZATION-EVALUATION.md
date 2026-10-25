@@ -6,15 +6,20 @@ and sponsor goal 12 (TabPFN). The deterministic baseline
 ships. This page records the evaluation harness, the hosted-API facts, and
 the honest result: **no evaluation has run on real data**. The hosted
 predictor was live-verified on synthetic rows only (2026-10-25); the
-evaluation is BLOCKED on stored multi-window history, which no environment
-here has.
+evaluation is BLOCKED on stored multi-window history. The
+`backfill-ci-history` importer (below) brings that history in with its
+original CI time, and since commit `4c1bf81` FlakePilot's own CI uploads its
+pytest JUnit report as the `junit-gates` artifact; the first such run was
+imported live on 2026-10-25. History before that commit cannot be recovered.
 Classification authority stays with `ti-classification/1`; prioritization
 only orders tests for attention.
 
 ## The harness (`test_intelligence/application/evaluation.py`)
 
 - **Target `fails_within_horizon`:** does a test identity have a failing or
-  errored attempt in a CI run received in `(cutoff, cutoff + horizon]`?
+  errored attempt in a CI run whose CI time is in `(cutoff, cutoff + horizon]`?
+  CI time is the code host's original completion time for a backfilled run,
+  receipt time for every other run (`TiStore.repo_history`).
 - **Features (`ti-eval-features/1`)**, from runs at or before the cutoff only:
   runs, attempts, failed attempts, failed runs, flaky runs, environment
   count, hours since last failure (missing if never failed), hours since last
@@ -90,13 +95,79 @@ predict on 5 returned a probability in [0, 1] per row, and an invalid key
 gave HTTP 401 → `provider_unauthorized`. That proves the plumbing, not
 prioritization quality.
 
+## Real history: the CI backfill
+
+Ingestion stamps a run with its receipt time, so a fresh deployment has one
+window of history at most. `backfill-ci-history` (operator only) imports the
+JUnit XML a repository's GitHub Actions runs uploaded as artifacts, keeping
+the original time:
+
+- **Provenance.** The upload has `ci_source` and `provenance`
+  `github_actions_backfill`, no CI token, the original run ID and attempt,
+  and `origin_run_url`; the run has `ci_completed_at` (the API's `updated_at`
+  on the completed run). `received_at` stays the import time. Migration
+  `ti_0002`; schema checks keep a CI upload tokened and a backfill tokenless.
+- **Time.** `repo_history` and `failure_trend` read CI time
+  (`coalesce(ci_completed_at, received_at)`), so the evaluation's windows,
+  history cutoffs, and day trends use the original time. Classification
+  evidence (`observations`) is unchanged and keeps receipt order.
+- **Scope.** The repository is the (org, repo) pair's registered binding,
+  never a flag. The GitHub App token is actions:read on that one repository.
+  At most 50 runs, 10 artifacts per run, and 100 artifacts per command.
+- **Archive safety** (`integrations/infrastructure/github_actions.py`). The
+  download follows exactly one redirect, only to an https GitHub storage
+  host, and sends no bearer there. Zips are read in memory only: at most
+  25 MiB compressed, 1000 entries, 10 MiB per XML and 50 MiB in total.
+  Encrypted entries and codecs other than stored or deflate are refused, and
+  any name that could traverse a path refuses the whole archive. JUnit
+  parsing stays with `JUnitParser`, with its limits; XML that is not JUnit is
+  ignored.
+- **Idempotency and audit.** The key is the upload key: (org, repo,
+  `github_actions_backfill`, run ID, attempt, artifact name). The same
+  archive again is a duplicate and writes nothing. Another archive under the
+  same key is refused (`idempotency_conflict`). Every outcome is one
+  `ti.backfill.imported`, `.duplicate` or `.rejected` event, with actor
+  `operator_cli`.
+
+Tests: unit (zip safety, redirect host, bearer never sent to storage,
+idempotency, provenance, refusals), real-PG integration
+(`tests/integration/test_backfill_postgres.py`: six runs a day apart; re-import
+no-op; tenant-exact binding; history cutoff, day trend and the evaluation's
+split on CI time; schema refuses an untokened CI upload).
+
+Live, 2026-10-25 (`tests/live/test_live_backfill.py`, the App installed only
+on `CodewithJha/FlakePilot` with actions, contents and metadata read):
+actions:read minting, the run listing (50 completed runs, 2026-10-21 to
+2026-10-25), and 50 artifact listings succeeded; **0 artifacts** exist, because
+FlakePilot's CI does not upload JUnit XML. Nothing was imported, and TabPFN was
+not called. The live run first exposed two minter defects, both fixed:
+GitHub answers token creation with 201, not 200, and installation tokens
+are now about 390 characters (the shape check allowed 255). The download
+and zip path has not run against real artifacts.
+
+Live, 2026-10-25, after FlakePilot's CI began uploading `junit-gates`
+(commit `4c1bf81`, CI run 40170825392): `backfill-ci-history --artifact-pattern
+'junit-*'` through the operator CLI against a throwaway PostgreSQL 16 database
+and the registered `CodewithJha/FlakePilot` pair read 10 completed runs and
+imported **1** artifact: 1397 tests, `ci_completed_at` 2026-10-25T06:57:52Z
+(the run's own completion time; `received_at` is the import a minute later),
+provenance `github_actions_backfill`, tokenless upload, origin URL kept, one
+`ti.backfill.imported` event. The download, redirect and zip path ran against
+a real artifact. `tests/live/test_live_backfill.py` then passed: 1 imported,
+and the re-import was 1 duplicate.
+
+The evaluation needs at least three windows of at least one day each, so it
+becomes possible after about three days of CI runs on `main` (artifacts
+expire after 90 days by default). Until then it is not run, and nothing is
+inferred from one run.
+
 ## Result
 
 | Model | Status | precision@k | ROC-AUC | Brier |
 |---|---|---|---|---|
-| `ti-prioritization-baseline` | **NOT RUN on real data** — no stored history reachable here | — | — | n/a (rank) |
+| `ti-prioritization-baseline` | **NOT RUN on real data**: one imported run (one day) so far; three windows need about three days of CI | — | — | n/a (rank) |
 | `base_rate` | **NOT RUN on real data** | n/a | n/a | — |
-| `tabpfn` | **BLOCKED** — no real dataset (the API answers; see above) | — | — | — |
+| `tabpfn` | **BLOCKED**: no real dataset (the API answers; see above) | — | — | — |
 
 Unit tests compute these metrics on hand-built fixtures only to verify the
 arithmetic; those values are not evaluation results.
@@ -116,5 +187,5 @@ builds `Evaluation(uow)` and prints the `EvaluationReport` as JSON. The TabPFN
 candidate is constructed only from `FLAKEPILOT_TABPFN_API_KEY` with the
 `hosted_http.call` transport, and contacted only with `--with-tabpfn`;
 otherwise it is reported `blocked: not_configured`. The command's PostgreSQL
-test covers the blocked path only. No dependency is needed (the SDK
+tests cover the blocked candidate path, including over backfilled history. No dependency is needed (the SDK
 `tabpfn-client` 0.6.1, Apache-2.0, is not required).
