@@ -241,6 +241,18 @@ checked). Execution stays closed: the worker logs
   `produced`, browse skipped `provider_absent`; assist `produced` with 2
   evidence-linked claims, 0 unverified, 0 contradicted (about 111 s).
 
+**Deployed revision `ef96883` (2026-10-25, later the same day) — cost
+controls and backlog visibility.** CI SUCCESS (run 40185346401); Render
+auto-deployed it (`autoDeployTrigger: checksPass`); pre-deploy migrations
+completed; the deployment answered `/health/live` 200, `/health/ready` 200,
+and the new classification route 401 without a session (fail closed, same as
+every session route; the ingest route stayed 401 without a token). The new
+`backlog-status` command runs only where `FLAKEPILOT_DATABASE_URL` exists
+(operator shell or Render shell); the API and worker behavior changes are
+limited to the two cost controls, both on by default (120 uploads/hour per
+token, 500 AI requests/day per org) and both overridable by environment
+variable without a deploy. Owner actions are unchanged.
+
 ## What this runbook does not claim
 
 - `docker build` was never run locally; the image is verified only by Render's

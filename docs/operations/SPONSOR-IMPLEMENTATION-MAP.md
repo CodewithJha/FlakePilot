@@ -162,3 +162,17 @@ connection string, client id or account id is recorded here.
   README table), including the Gemini free-tier decision.
 - Isolation infrastructure with a named reviewer (goal 11). Hosting and the
   domain (goals 10, 16) were decided and deployed on 2026-10-25.
+
+**Addendum 2026-10-25 (commit `ef96883`, deployed):** cost-control and
+visibility hardening within the approved scope — an ingest rate limit per CI
+token (429 `rate_limited`, every refusal an audited rejection row), a
+per-org daily cap on provider-bound AI requests (`ai_daily_cap`, decided
+before the intent row and any model contact), the `backlog-status` operator
+command (outbox pending/dead counts and job states, counts and ages only),
+and `GET /orgs/{org}/runs/{run}/classification` returning
+`ti-classification/1` verdicts as JSON behind the run view's authorization
+chain. No sponsor status in the table above changes: these close the
+reliability-review backlog items (quotas, backlog visibility, classification
+as data), not a sponsor goal. Execution stays closed; defaults are 120
+uploads/hour per token and 500 AI requests/day per org, overridable by
+environment variable.
