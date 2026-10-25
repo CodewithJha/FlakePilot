@@ -13,8 +13,8 @@ Data flow: only numeric feature rows and 0/1 training labels leave the
 process — no test names, identity IDs, org or repo IDs, or repository content.
 The bearer token goes only to the API origin, never to the signed storage
 URLs. Every failure becomes an unavailable `Prediction` with a short reason
-code; provider text is never echoed. Nothing here has run against the live
-API: no key exists in this repository (owner-gated).
+code; provider text is never echoed. Live-verified on synthetic rows only
+(`tests/live/test_live_tabpfn.py`); no key exists in this repository.
 """
 
 import asyncio

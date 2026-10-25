@@ -4,8 +4,10 @@ Companion to [ADR-017](../adr/ADR-017-sponsor-capability-phase.md) decision 5
 and sponsor goal 12 (TabPFN). The deterministic baseline
 (`test_intelligence/application/prioritization.py`) stays what the product
 ships. This page records the evaluation harness, the hosted-API facts, and
-the honest result: **no evaluation has run on real data; TabPFN is BLOCKED**
-(no API key, and no stored history was available in this environment).
+the honest result: **no evaluation has run on real data**. The hosted
+predictor was live-verified on synthetic rows only (2026-10-25); the
+evaluation is BLOCKED on stored multi-window history, which no environment
+here has.
 Classification authority stays with `ti-classification/1`; prioritization
 only orders tests for attention.
 
@@ -66,7 +68,8 @@ is noise — compare across several consecutive cutoffs.
   customer objects** (account toggle or written notice), while the
   [security page](https://docs.priorlabs.ai/api/security) says foundation
   models are never trained on customer data. Treat the terms as binding: opt
-  out before the first upload. The Acceptable Use Policy forbids personal
+  out before the first upload (the owner reports having opted out before the
+  2026-10-25 live check). The Acceptable Use Policy forbids personal
   data; the harness sends only numeric counts and 0/1 labels.
 
 ## The adapter (`test_intelligence/infrastructure/tabpfn.py`)
@@ -80,8 +83,12 @@ HTTP may live only in integration adapters (ADR-003, enforced by
 `tests/architecture/test_authentication.py`), so the module imports no HTTP
 client; the composition root supplies `hosted_http.call` (https only, no
 redirects, size-capped).
-Tested with a fake transport only (**tested with mocks**); never run against
-the live API.
+Tested with a fake transport (**tested with mocks**) and **live-verified**
+2026-10-25 from a developer machine (`tests/live/test_live_tabpfn.py`, key
+in `FLAKEPILOT_LIVE_TABPFN_API_KEY`): one fit on 20 synthetic rows and one
+predict on 5 returned a probability in [0, 1] per row, and an invalid key
+gave HTTP 401 → `provider_unauthorized`. That proves the plumbing, not
+prioritization quality.
 
 ## Result
 
@@ -89,7 +96,7 @@ the live API.
 |---|---|---|---|---|
 | `ti-prioritization-baseline` | **NOT RUN on real data** — no stored history reachable here | — | — | n/a (rank) |
 | `base_rate` | **NOT RUN on real data** | n/a | n/a | — |
-| `tabpfn` | **BLOCKED** — no Prior Labs key; no real dataset | — | — | — |
+| `tabpfn` | **BLOCKED** — no real dataset (the API answers; see above) | — | — | — |
 
 Unit tests compute these metrics on hand-built fixtures only to verify the
 arithmetic; those values are not evaluation results.
