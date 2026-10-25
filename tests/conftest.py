@@ -5,6 +5,14 @@ import pytest
 from support import throwaway_database
 
 
+def pytest_make_parametrize_id(val: object) -> str | None:
+    # CI uploads its own JUnit XML for the backfill, whose parser refuses names
+    # over 1000 characters; huge parameters keep a short, unique-enough id.
+    if isinstance(val, str | bytes) and len(val) > 80:
+        return f"{val[:40]!r}...len{len(val)}"
+    return None
+
+
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     integration = [item for item in items if item.get_closest_marker("integration")]
     if not integration or os.environ.get("FLAKEPILOT_TEST_DATABASE_URL"):

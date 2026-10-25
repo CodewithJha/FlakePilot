@@ -27,3 +27,5 @@ artifacts/
 # Local demo outputs from ops/demo/run-demo.sh (never commit these).
 flakepilot-demo-report.html
 flakepilot-demo-output/
+# pytest --junitxml output (CI uploads it as the junit-gates artifact).
+reports/
