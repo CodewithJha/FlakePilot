@@ -7,7 +7,9 @@ the org AI policy (operator trust);
 and the code-host access verifier;
 `... worker` runs the leased job worker;
 `... issue-ci-upload-token --help` issues a CI token; `... ci-run-report --help`
-renders a stored run; `... provider-status | reliability-trend |
+renders a stored run; `... backfill-ci-history --help` imports a registered
+repository's GitHub Actions JUnit artifacts with their original CI time;
+`... provider-status | reliability-trend |
 evaluate-prioritization --help` are read-only analytics (JSON)."""
 
 import asyncio
@@ -21,7 +23,8 @@ from flakepilot.interface.composition_root import Settings, SettingsError, creat
 _USAGE = (
     "Usage: python -m flakepilot.interface.composition_root "
     "[bootstrap-org | register-repo | add-member | grant | revoke | show-access | "
-    "set-ai-policy | list-runs | verify-github-app | issue-ci-upload-token | ci-run-report | "
+    "set-ai-policy | list-runs | verify-github-app | "
+    "issue-ci-upload-token | ci-run-report | backfill-ci-history | "
     "provider-status | reliability-trend | evaluate-prioritization | worker]"
 )
 
@@ -69,6 +72,12 @@ def main() -> None:
         from flakepilot.interface.composition_root.operator import run_ci_run_report
 
         sys.exit(run_ci_run_report(settings, args[1:]))
+    if args[:1] == ["backfill-ci-history"]:
+        from flakepilot.interface.composition_root.operator import (
+            run_backfill_ci_history,
+        )
+
+        sys.exit(run_backfill_ci_history(settings, args[1:]))
     if args[:1] and args[0] in (
         "provider-status",
         "reliability-trend",

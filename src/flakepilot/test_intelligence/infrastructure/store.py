@@ -41,6 +41,9 @@ from flakepilot.test_intelligence.infrastructure.tables import (
     uploads,
 )
 
+# A run's CI time: the original completion time of a backfilled run, else receipt.
+_CI_TIME = func.coalesce(runs.c.ci_completed_at, runs.c.received_at)
+
 
 def _metadata_columns(metadata: UploadMetadata | None) -> dict[str, object]:
     if metadata is None:
@@ -98,6 +101,8 @@ class SqlTiStore:
                 content_type=upload.content_type,
                 artifact_key=upload.artifact_key,
                 received_at=func.now(),
+                provenance=upload.provenance,
+                origin_run_url=upload.origin_run_url,
                 **_metadata_columns(upload.metadata),
             )
             .on_conflict_do_nothing(
@@ -211,9 +216,11 @@ class SqlTiStore:
         commit_sha: str,
         environment: str,
         summary: RunSummary,
+        ci_completed_at: datetime | None = None,
     ) -> None:
         await self._session.execute(
             runs.insert().values(
+                ci_completed_at=ci_completed_at,
                 id=run_id,
                 org_id=org_id,
                 repo_id=repo_id,
@@ -463,7 +470,7 @@ class SqlTiStore:
             select(
                 runs.c.id.label("run_id"),
                 runs.c.environment,
-                func.date_trunc(bucket, func.timezone("UTC", runs.c.received_at)).label(
+                func.date_trunc(bucket, func.timezone("UTC", _CI_TIME)).label(
                     "bucket_start"
                 ),
                 func.bool_or(failing).label("failed"),
@@ -485,13 +492,14 @@ class SqlTiStore:
                 test_results.c.org_id == org_id,
                 test_results.c.repo_id == repo_id,
                 runs.c.source == RunSource.CI_UPLOAD,
-                runs.c.received_at > start,
-                runs.c.received_at <= end,
+                _CI_TIME > start,
+                _CI_TIME <= end,
             )
             .group_by(
                 runs.c.id,
                 runs.c.environment,
                 runs.c.received_at,
+                runs.c.ci_completed_at,
                 test_results.c.test_id,
             )
             .subquery()
@@ -586,7 +594,7 @@ class SqlTiStore:
         active = await self._session.execute(
             select(
                 test_identities.c.id,
-                func.max(runs.c.received_at).label("latest"),
+                func.max(_CI_TIME).label("latest"),
             )
             .join(
                 test_results,
@@ -603,10 +611,10 @@ class SqlTiStore:
             .where(
                 test_identities.c.org_id == org_id,
                 test_identities.c.repo_id == repo_id,
-                runs.c.received_at <= cutoff,
+                _CI_TIME <= cutoff,
             )
             .group_by(test_identities.c.id)
-            .order_by(func.max(runs.c.received_at).desc(), test_identities.c.id)
+            .order_by(func.max(_CI_TIME).desc(), test_identities.c.id)
             .limit(max_tests)
         )
         chosen = {row.id: row.latest for row in active}
@@ -629,7 +637,7 @@ class SqlTiStore:
                 runs.c.id,
                 runs.c.commit_sha,
                 runs.c.environment,
-                runs.c.received_at,
+                _CI_TIME.label("received_at"),
                 runs.c.source,
                 test_results.c.outcome,
             )
@@ -643,10 +651,10 @@ class SqlTiStore:
                 test_results.c.org_id == org_id,
                 test_results.c.repo_id == repo_id,
                 test_results.c.test_id.in_(chosen),
-                runs.c.received_at <= cutoff,
+                _CI_TIME <= cutoff,
             )
             .order_by(
-                runs.c.received_at,
+                _CI_TIME,
                 runs.c.id,
                 test_results.c.attempt,
             )

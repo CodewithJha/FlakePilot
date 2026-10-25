@@ -4,12 +4,16 @@ The question a probabilistic model (TabPFN or similar) must answer better than
 the deterministic baseline before it could ever be selected:
 
     Target `fails_within_horizon`: does a test identity have a failing or
-    errored attempt in a run received in `(cutoff, cutoff + horizon]`?
+    errored attempt in a run whose CI time is in `(cutoff, cutoff + horizon]`?
+
+A run's CI time is the code host's original completion time for a backfilled
+run and receipt time otherwise (`TiStore.repo_history`); it arrives here as
+`Observation.received_at`.
 
 Rules, each enforced here and covered by tests:
 
 - **Features from the past only.** Every feature is computed from runs
-  received at or before the example's cutoff; label runs never feed features.
+  at or before the example's cutoff; label runs never feed features.
 - **Temporal split.** Training examples are cut at `train_cutoff` and labelled
   from `(train_cutoff, test_cutoff]`; test examples are cut at
   `test_cutoff = train_cutoff + horizon` and labelled from the horizon after.
@@ -373,7 +377,7 @@ async def evaluate(
 
 class Evaluation:
     """Read the pair's stored history through the test window's end, then
-    evaluate. One read; the split happens in memory, by receipt time."""
+    evaluate. One read; the split happens in memory, by CI time."""
 
     def __init__(self, unit_of_work: UnitOfWork, max_tests: int = 1000) -> None:
         self._unit_of_work = unit_of_work

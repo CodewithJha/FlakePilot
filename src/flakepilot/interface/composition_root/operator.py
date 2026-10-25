@@ -18,24 +18,46 @@ Subcommands of `python -m flakepilot.interface.composition_root`:
   `ti-classification/1`, including its target revision, reason and evidence.
   Nothing here runs code, artifacts stay plaintext files (see the
   artifact-store docstring), and revision verification stays unchecked.
+- `backfill-ci-history --org-id <uuid> --repo-id <uuid> [--max-runs N]
+  [--workflow FILE] [--branch NAME] [--artifact-pattern GLOB]`: import the
+  JUnit XML that the registered repository's GitHub Actions runs uploaded as
+  artifacts, with each run's original completion time (`Backfill`). The
+  repository is the pair's registered binding, never a flag; the GitHub App
+  token is actions:read on that one repository. Idempotent per (run, attempt,
+  artifact); every outcome is a `ti.backfill.*` event. Prints a JSON summary.
 
-Both run one short-lived engine like `bootstrap-org` and are audited through
+All run one short-lived engine like `bootstrap-org` and are audited through
 their use cases. Failures print the cause class and never a database detail
 or a secret.
 """
 
 import argparse
 import asyncio
+import fnmatch
 import html
 import json
+import re
 import sys
 import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 
+from sqlalchemy.ext.asyncio import AsyncEngine
+
 from flakepilot.identity.application.authorization import ResourceNotFound
 from flakepilot.identity.application.iam import Iam, InvalidTokenIssue
+from flakepilot.integrations.infrastructure.artifact_store import LocalFsArtifactStore
+from flakepilot.integrations.infrastructure.github_actions import (
+    CodeHostError,
+    GitHubActionsHistory,
+    ReportRejected,
+    RunArtifact,
+    WorkflowRun,
+    extract_reports,
+)
+from flakepilot.integrations.infrastructure.installation import InstallationMinter
+from flakepilot.integrations.infrastructure.junit import JUnitParser
 from flakepilot.interface.composition_root import (
     Settings,
     iam_unit_of_work,
@@ -44,17 +66,29 @@ from flakepilot.interface.composition_root import (
 from flakepilot.interface.composition_root.database import (
     create_engine,
     dispose_engine,
+    transaction,
 )
 from flakepilot.interface.composition_root.reporting import (
     classification_cell,
     fail_cascade,
 )
+from flakepilot.repository.infrastructure.store import SqlRepoDirectory
 from flakepilot.shared_kernel.events import Channel, Origin
+from flakepilot.test_intelligence.application.backfill import (
+    Backfill,
+    BackfillResult,
+    BackfillStatus,
+    HistoricalReport,
+)
 from flakepilot.test_intelligence.application.run_view import (
     ClassifiedRunReport,
     RunIndexReport,
     RunViewer,
 )
+
+MAX_BACKFILL_RUNS = 50
+MAX_ARTIFACTS_PER_RUN = 10
+MAX_BACKFILL_ARTIFACTS = 100
 
 
 def _uuid_ok(value: str) -> bool:
@@ -214,6 +248,203 @@ def _index_json(index: RunIndexReport) -> dict[str, Any]:
             }
             for entry in index.entries
         ],
+    }
+
+
+def _bounded_runs(value: str) -> int:
+    if not value.isdigit() or not 1 <= int(value) <= MAX_BACKFILL_RUNS:
+        raise argparse.ArgumentTypeError(
+            f"must be an integer from 1 to {MAX_BACKFILL_RUNS}"
+        )
+    return int(value)
+
+
+def _parse_backfill(argv: Sequence[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="backfill-ci-history",
+        description=(
+            "Import the registered repository's GitHub Actions JUnit artifacts "
+            "with their original CI completion time (operator trust, audited)."
+        ),
+    )
+    parser.add_argument("--org-id", required=True, help="org ID (a UUID)")
+    parser.add_argument("--repo-id", required=True, help="registered repo ID (a UUID)")
+    parser.add_argument(
+        "--max-runs",
+        type=_bounded_runs,
+        default=20,
+        help=f"newest completed runs to read (1-{MAX_BACKFILL_RUNS})",
+    )
+    parser.add_argument("--workflow", help="only this workflow file or ID")
+    parser.add_argument("--branch", help="only runs on this branch")
+    parser.add_argument(
+        "--artifact-pattern",
+        default="*",
+        help="artifact names to download (shell glob, case-sensitive)",
+    )
+    return parser.parse_args(argv)
+
+
+def run_backfill_ci_history(settings: Settings, argv: Sequence[str]) -> int:
+    args = _parse_backfill(argv)
+    for flag, value in (("--org-id", args.org_id), ("--repo-id", args.repo_id)):
+        if not _uuid_ok(value):
+            print(
+                f"backfill-ci-history: {flag} must be a canonical UUID", file=sys.stderr
+            )
+            return 1
+    creds = settings.github_installation
+    if creds is None or settings.artifact_dir is None:
+        print(
+            "backfill-ci-history: needs FLAKEPILOT_GITHUB_APP_ID, "
+            "FLAKEPILOT_GITHUB_APP_PRIVATE_KEY and FLAKEPILOT_ARTIFACT_DIR",
+            file=sys.stderr,
+        )
+        return 1
+    history = GitHubActionsHistory(
+        InstallationMinter(
+            app_id=creds.app_id,
+            private_key_pem=creds.private_key.reveal(),
+            scope="actions",
+        )
+    )
+
+    async def main() -> dict[str, Any]:
+        engine = create_engine(settings.database_url.reveal())
+        try:
+            assert settings.artifact_dir is not None
+            return await backfill_ci_history(
+                engine,
+                history=history,
+                backfill=Backfill(
+                    ti_unit_of_work(engine),
+                    LocalFsArtifactStore(settings.artifact_dir),
+                    JUnitParser(),
+                ),
+                org_id=args.org_id,
+                repo_id=args.repo_id,
+                max_runs=args.max_runs,
+                workflow=args.workflow,
+                branch=args.branch,
+                pattern=args.artifact_pattern,
+            )
+        finally:
+            await dispose_engine(engine)
+
+    try:
+        summary = asyncio.run(main())
+    except ResourceNotFound:
+        print(
+            "backfill-ci-history: no such registered repository in this org",
+            file=sys.stderr,
+        )
+        return 1
+    except CodeHostError as exc:
+        print(f"backfill-ci-history: GitHub refused: {exc.reason}", file=sys.stderr)
+        return 1
+    except Exception as exc:  # noqa: BLE001 - driver errors may carry connection details
+        _print_failure("backfill-ci-history failed", exc)
+        return 1
+    print(json.dumps(summary, indent=2))
+    return 0
+
+
+def _environment(artifact: str) -> str:
+    """A label for the artifact's job (one artifact per matrix leg is usual)."""
+    return "github-actions/" + re.sub(r"[^A-Za-z0-9._:+@-]", "-", artifact)[:85]
+
+
+def _historical(run: WorkflowRun, artifact: RunArtifact) -> HistoricalReport:
+    return HistoricalReport(
+        ci_run_id=str(run.id),
+        ci_attempt=run.attempt,
+        job_name=artifact.name,
+        commit_sha=run.head_sha,
+        ref=f"refs/heads/{run.head_branch}" if run.head_branch else "",
+        environment=_environment(artifact.name),
+        started_at=run.started_at,
+        completed_at=run.completed_at,
+        run_url=run.url,
+    )
+
+
+async def backfill_ci_history(
+    engine: AsyncEngine,
+    *,
+    history: GitHubActionsHistory,
+    backfill: Backfill,
+    org_id: str,
+    repo_id: str,
+    max_runs: int,
+    workflow: str | None,
+    branch: str | None,
+    pattern: str,
+) -> dict[str, Any]:
+    """Resolve the pair's binding, then import each matching artifact once.
+    Archive refusals (download, unsafe zip) are audited like parse refusals."""
+    async with transaction(engine) as session:
+        binding = await SqlRepoDirectory(session).get(repo_id)
+    if binding is None or binding.org_id != org_id:
+        raise ResourceNotFound
+    owner, name = binding.owner, binding.name
+    origin = Origin(Channel.CLI, str(uuid.uuid4()))
+    runs = await history.completed_runs(
+        owner=owner, name=name, limit=max_runs, workflow=workflow, branch=branch
+    )
+    rows: list[dict[str, Any]] = []
+    for run in runs:
+        if len(rows) >= MAX_BACKFILL_ARTIFACTS:
+            break
+        found = await history.artifacts(owner=owner, name=name, run_id=run.id)
+        matching = [a for a in found if fnmatch.fnmatchcase(a.name, pattern)]
+        room = MAX_BACKFILL_ARTIFACTS - len(rows)
+        for artifact in matching[: min(MAX_ARTIFACTS_PER_RUN, room)]:
+            report = _historical(run, artifact)
+            result: BackfillResult
+            try:
+                archive = await history.download(
+                    owner=owner, name=name, artifact=artifact
+                )
+                documents = await asyncio.to_thread(extract_reports, archive)
+            except (CodeHostError, ReportRejected) as exc:
+                result = await backfill.refuse(
+                    org_id=org_id,
+                    repo_id=repo_id,
+                    report=report,
+                    reason=exc.reason,
+                    origin=origin,
+                )
+            else:
+                result = await backfill.import_report(
+                    org_id=org_id,
+                    repo_id=repo_id,
+                    report=report,
+                    archive=archive,
+                    documents=documents,
+                    origin=origin,
+                )
+            rows.append(
+                {
+                    "ci_run_id": report.ci_run_id,
+                    "ci_attempt": report.ci_attempt,
+                    "artifact": artifact.name,
+                    "ci_completed_at": report.completed_at.isoformat(),
+                    "status": result.status.value,
+                    "reason": result.reason,
+                    "run_id": result.run_id,
+                    "tests": result.tests,
+                }
+            )
+    return {
+        "org_id": org_id,
+        "repo_id": repo_id,
+        "source": "github_actions_backfill",
+        "runs_read": len(runs),
+        "totals": {
+            status.value: sum(1 for row in rows if row["status"] == status.value)
+            for status in BackfillStatus
+        },
+        "artifacts": rows,
     }
 
 

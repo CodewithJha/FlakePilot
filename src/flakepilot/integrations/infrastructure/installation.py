@@ -1,8 +1,10 @@
 """Short-lived GitHub App installation tokens (ADR-009).
 
-A token is contents:read for one repository, created only when a caller asks
-for that owner and name. It is not logged. Missing or unusable credentials do
-not call the network. This is not a write token and it is not a user bearer.
+A token is one read permission for one repository, created only when a caller
+asks for that owner and name: contents:read by default, actions:read only for
+the operator's CI-history backfill. It is not logged. Missing or unusable
+credentials do not call the network. This is not a write token and it is not a
+user bearer.
 """
 
 import asyncio
@@ -32,8 +34,10 @@ from flakepilot.integrations.application.ports import (
 API = "https://api.github.com"
 TIMEOUT = 10.0
 MAX_JSON_BYTES = 64 * 1024
-_TOKEN = re.compile(r"[A-Za-z0-9._-]{8,255}")
+# GitHub installation tokens are ~390 characters (observed live, 2026-10-25).
+_TOKEN = re.compile(r"[A-Za-z0-9._-]{8,1024}")
 _APP_ID = re.compile(r"[1-9][0-9]{0,19}")
+SCOPES = frozenset({"contents", "actions"})  # always requested as read
 
 Transport = Callable[[urllib.request.Request, int], tuple[int, bytes]]
 
@@ -75,7 +79,7 @@ def app_id_ok(value: str) -> bool:
 
 
 class InstallationMinter:
-    """Mints one contents:read token. The value stays in this object until it expires."""
+    """Mints one `scope`:read token. The value stays in this object until it expires."""
 
     def __init__(
         self,
@@ -84,9 +88,13 @@ class InstallationMinter:
         private_key_pem: str,
         transport: Transport = urllib_transport,
         clock: Callable[[], datetime] | None = None,
+        scope: str = "contents",
     ) -> None:
         if not app_id_ok(app_id):
             raise ValueError("invalid_key")
+        if scope not in SCOPES:
+            raise ValueError("invalid_scope")
+        self._scope = scope
         self._app_id = app_id
         try:
             self._key = _load(private_key_pem)
@@ -125,7 +133,7 @@ class InstallationMinter:
         self, installation_id: int, name: str, now: datetime
     ) -> tuple[str, datetime]:
         body = json.dumps(
-            {"permissions": {"contents": "read"}, "repositories": [name]},
+            {"permissions": {self._scope: "read"}, "repositories": [name]},
             separators=(",", ":"),
         ).encode()
         status, payload = await self._exchange(
@@ -135,7 +143,7 @@ class InstallationMinter:
                 body,
             )
         )
-        if status != 200:
+        if status not in (200, 201):  # GitHub answers 201 Created
             raise CodeHostError("source_unverified", unavailable=status >= 500)
         data = _object(payload)
         minted = data.get("token")

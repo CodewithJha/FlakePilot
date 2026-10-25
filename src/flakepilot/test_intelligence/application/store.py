@@ -36,15 +36,20 @@ class ProcessedUpload:
 
 @dataclass(frozen=True)
 class NewUpload:
+    """A CI upload has a token; an operator backfill has none and names the
+    original run's URL instead (`provenance` says which)."""
+
     upload_id: str
     org_id: str
     repo_id: str
-    token_id: str
+    token_id: str | None
     metadata: UploadMetadata
     content_sha256: bytes
     size_bytes: int
     content_type: str
     artifact_key: str
+    provenance: str = "ci_upload"
+    origin_run_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -172,7 +177,11 @@ class TiStore(Protocol):
         commit_sha: str,
         environment: str,
         summary: RunSummary,
-    ) -> None: ...
+        ci_completed_at: datetime | None = None,
+    ) -> None:
+        """`ci_completed_at` is set only for a backfilled run: the code host's
+        completion time for the original CI run. Receipt time is always now."""
+        ...
 
     async def add_results(
         self,
@@ -207,6 +216,9 @@ class TiStore(Protocol):
         """Histories of at most `max_tests` identities with activity at or before
         `cutoff`, the most recently active first. Histories include only runs at
         or before the cutoff (the leakage guard for prioritization).
+
+        A run's time here is its CI time: the original completion time for a
+        backfilled run, receipt time for every other run.
         """
         ...
 
@@ -220,9 +232,10 @@ class TiStore(Protocol):
         bucket: str,
         limit: int,
     ) -> tuple[TrendBucket, ...]:
-        """CI-upload runs with `start < received_at <= end`, counted per UTC
+        """CI-upload runs with `start < CI time <= end`, counted per UTC
         `bucket` ("day" or "week") and environment, oldest bucket first, at
-        most `limit` cells. Plain `date_trunc`: no extension required."""
+        most `limit` cells. CI time is as in `repo_history`. Plain
+        `date_trunc`: no extension required."""
         ...
 
     async def run_report(

@@ -142,3 +142,51 @@ def _assert_signed(token: str) -> None:
 
 def _b64decode(value: str) -> bytes:
     return base64.urlsafe_b64decode(value)
+
+
+def test_the_backfill_scope_asks_for_actions_read_only() -> None:
+    script = _Script([(200, b'{"id": 42}'), (200, _token_body())])
+    minter = InstallationMinter(
+        app_id="12345",
+        private_key_pem=PEM,
+        transport=script,
+        clock=lambda: NOW,
+        scope="actions",
+    )
+    assert asyncio.run(minter.token(owner="acme", name="web")) == MINTED
+    created = script.requests[1]
+    assert isinstance(created.data, bytes)
+    assert json.loads(created.data) == {
+        "permissions": {"actions": "read"},
+        "repositories": ["web"],
+    }
+
+
+def test_an_unknown_scope_is_refused_before_any_call() -> None:
+    with pytest.raises(ValueError, match="invalid_scope"):
+        InstallationMinter(app_id="12345", private_key_pem=PEM, scope="contents_write")
+
+
+def test_github_answers_a_created_token_with_201() -> None:
+    script = _Script([(200, b'{"id": 42}'), (201, _token_body())])
+    assert asyncio.run(_minter(script).token(owner="acme", name="web")) == MINTED
+
+
+def test_current_length_installation_tokens_are_accepted() -> None:
+    long_token = "ghs_" + "A1b2.c-d_" * 43  # 391 characters, the live shape
+    body = json.dumps({"expires_at": "2026-10-21T16:00:00Z", "token": long_token})
+    script = _Script([(200, b'{"id": 42}'), (201, body.encode())])
+    minter = _minter(script)
+    assert asyncio.run(minter.token(owner="acme", name="web")) == long_token
+    host_calls: list[urllib.request.Request] = []
+
+    def host_transport(
+        request: urllib.request.Request, limit: int
+    ) -> tuple[int, bytes]:
+        del limit
+        host_calls.append(request)
+        return 200, f'{{"sha":"{SHA}"}}'.encode()
+
+    host = GitHubCodeHost(None, host_transport, tokens=minter)
+    asyncio.run(host.confirm_commit(owner="acme", name="web", claimed_sha=SHA))
+    assert host_calls[0].get_header("Authorization") == f"Bearer {long_token}"

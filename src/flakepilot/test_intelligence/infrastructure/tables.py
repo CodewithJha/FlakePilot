@@ -37,6 +37,7 @@ NAMING_CONVENTION = {
 metadata = MetaData(schema="ti", naming_convention=NAMING_CONVENTION)
 
 UPLOAD_STATES = ("received", "processing", "processed", "rejected", "processing_failed")
+PROVENANCES = ("ci_upload", "github_actions_backfill")
 KEY_COLUMNS = ("org_id", "repo_id", "ci_source", "ci_run_id", "ci_attempt", "job_name")
 
 
@@ -58,7 +59,7 @@ uploads = Table(
     _id("id"),
     _id("org_id"),
     _id("repo_id"),
-    _id("token_id"),
+    _id("token_id", nullable=True),  # null exactly for an operator backfill
     Column("state", Text, nullable=False),
     Column("reject_reason", Text),
     Column("ci_source", Text),
@@ -75,9 +76,19 @@ uploads = Table(
     Column("content_type", Text),
     Column("artifact_key", Text),
     _time("received_at"),
+    Column("provenance", Text, nullable=False, server_default=text("'ci_upload'")),
+    Column("origin_run_url", Text),
     PrimaryKeyConstraint("id"),
     UniqueConstraint("org_id", "repo_id", "id", name="uq_uploads_scope_id"),
     CheckConstraint(_in("state", UPLOAD_STATES), name="state"),
+    CheckConstraint(_in("provenance", PROVENANCES), name="provenance"),
+    CheckConstraint(
+        "(provenance = 'ci_upload') = (token_id IS NOT NULL)", name="token_provenance"
+    ),
+    CheckConstraint(
+        "(provenance = 'github_actions_backfill') = (origin_run_url IS NOT NULL)",
+        name="origin_run_url",
+    ),
     CheckConstraint(
         "(state = 'rejected') = (reject_reason IS NOT NULL)", name="reject_reason"
     ),
@@ -121,6 +132,8 @@ runs = Table(
     Column("failed", Integer, nullable=False),
     Column("errored", Integer, nullable=False),
     Column("skipped", Integer, nullable=False),
+    # The code host's completion time for a backfilled CI run; null otherwise.
+    _time("ci_completed_at", nullable=True),
     PrimaryKeyConstraint("id"),
     UniqueConstraint("upload_id"),
     UniqueConstraint("org_id", "repo_id", "id", name="uq_runs_scope_id"),
@@ -132,6 +145,10 @@ runs = Table(
     CheckConstraint(
         _in("revision_status", ("unchecked", "verified", "unverified_revision")),
         name="revision_status",
+    ),
+    CheckConstraint(
+        "ci_completed_at IS NULL OR ci_completed_at <= received_at",
+        name="ci_completed_at",
     ),
 )
 

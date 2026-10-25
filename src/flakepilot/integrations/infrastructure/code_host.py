@@ -35,7 +35,7 @@ MAX_ARCHIVE_BYTES = 5 * 1024 * 1024
 MAX_JSON_BYTES = 64 * 1024
 
 Transport = Callable[[urllib.request.Request, int], tuple[int, bytes]]
-_BEARER = re.compile(r"[A-Za-z0-9._-]{1,255}")
+_BEARER = re.compile(r"[A-Za-z0-9._-]{1,1024}")  # installation tokens are ~390
 
 
 class TokenSource(Protocol):
