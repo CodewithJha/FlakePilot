@@ -125,6 +125,10 @@ class MemoryDiag:
     async def record_request(self, request: object) -> None:
         del request
 
+    async def sent_request_count_today(self, *, org_id: str, day_start: object) -> int:
+        del org_id, day_start
+        return 0
+
     async def finish_request(self, request: object) -> None:
         del request
 

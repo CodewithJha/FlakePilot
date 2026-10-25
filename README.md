@@ -13,9 +13,9 @@ Evidence-based investigation and verification of recurring test failures. See [P
   repository, and are answered 503 `auth_not_configured` when sign-in is not
   configured, like the other session routes.
 - **CI upload tokens are issued only by the operator CLI** (`issue-ci-upload-token`, see the demo journey below). No HTTP route exists for them yet.
-- **Classification has no JSON API.** Each test's verdict — deterministic rule set `ti-classification/1`, with the evidence it was computed from — is rendered in the two session run views and in the operator CLI's `ci-run-report`, but there is no HTTP endpoint returning classifications as data.
+- **Classification verdicts are also data.** Besides the two session run views and the operator CLI's `ci-run-report`, `GET /orgs/{org_id}/runs/{run_id}/classification` returns a signed-in member's run's `ti-classification/1` verdicts (with their evidence) as one JSON document — same authorization chain as the HTML view, same non-disclosing denials.
 - **Parsing is synchronous.** Reports are parsed inside the upload request. A separate worker process runs durable jobs and delivers outbox rows to the audit log. No retention or stage job is registered. See [DURABLE-JOBS](docs/operations/DURABLE-JOBS.md).
-- **No quotas or rate limits.** AI spend is not checked either (ADR-014).
+- **Cost controls (2026-10-25).** Ingest is rate-limited per CI token: more than `FLAKEPILOT_INGEST_RATE_LIMIT` (default 120) processed uploads in `FLAKEPILOT_INGEST_RATE_WINDOW_SECONDS` (default 3600) answers 429 `rate_limited`, and every refusal is a recorded, audited `rate_limited` rejection — never a silent drop. An org with an enabled AI policy that reaches `FLAKEPILOT_AI_DAILY_REQUEST_CAP` (default 500) provider-bound assist requests in a UTC day gets no model call that day (`ai_daily_cap`; the evidence path and policy are unchanged). Both bounds are set in [`.env.example`](.env.example).
 - **AI assist is off unless an org admin enables it**, through the operator command `set-ai-policy` (no HTTP route). It runs only inside the investigation route below, through a model the operator configured (a local endpoint or hosted Gemma); with none configured the process wires `NullAiAssist` and assist answers `unavailable`. See ADR-014.
 - **Hosted providers are opt-in; five are live-verified locally, and Gemma, SerpApi and ElevenLabs also run on the deployment.** Gemma (Gemini API), SerpApi, Browserbase, ElevenLabs and TabPFN adapters are wired only when their keys are set (see [Hosted providers](#hosted-providers-adr-017)); no key exists in this repository. The Gemma, SerpApi, ElevenLabs and Sentry adapters were run against the real services from a developer machine on 2026-10-24, and TabPFN (synthetic rows only; no evaluation on real history) on 2026-10-25; Browserbase has not been. On 2026-10-25 a real Auth0 token went through the opt-in agent investigation route (in-process; the code-host standing was a stand-in), one real investigation produced a Gemma hypothesis, the MongoDB Atlas export ran live (adapter round trip, and `export-reports-atlas` on one real backfilled run, both cleaned up), `backfill-ci-history` imported FlakePilot's own CI run, and the Temporal proof of concept ran against a real local Temporal dev server, not Temporal Cloud ([SPONSOR-IMPLEMENTATION-MAP](docs/operations/SPONSOR-IMPLEMENTATION-MAP.md#live-verification-record-2026-10-24)).
 - **Artifacts are not encrypted at rest, and never cleaned up.** Raw reports are plain files under `FLAKEPILOT_ARTIFACT_DIR`, and there is no retention job.
@@ -228,6 +228,8 @@ Settings come from environment variables only (see [`.env.example`](.env.example
 | `FLAKEPILOT_ATLAS_URI` / `FLAKEPILOT_ATLAS_DATABASE` | no | — | MongoDB Atlas, together, read only by `export-reports-atlas` (a write-only copy; PostgreSQL stays the system of record and Atlas is never read back). The URI must keep TLS on; `tls=false` and `tlsInsecure`-style options are refused. One without the other refuses startup |
 | `FLAKEPILOT_TEMPORAL_ADDRESS` / `FLAKEPILOT_TEMPORAL_NAMESPACE` | no | — | Temporal `host:port` and namespace, together, read only by the `temporal-*` proof-of-concept commands. The API process and the default worker never connect |
 | `FLAKEPILOT_TEMPORAL_API_KEY` | no | — | Temporal Cloud API key; turns TLS on. Refused without the address |
+| `FLAKEPILOT_INGEST_RATE_LIMIT` / `FLAKEPILOT_INGEST_RATE_WINDOW_SECONDS` | no | 120 / 3600 | Ingest cost control: the processed uploads one CI token may cause in the pair over the trailing window, in seconds. Over the limit: 429 `rate_limited` (the refusal is a recorded, audited rejection). Duplicates count, so a retry loop is not a free pass |
+| `FLAKEPILOT_AI_DAILY_REQUEST_CAP` | no | 500 | AI spend control: the provider-bound assist requests one org may make per UTC day when its policy is enabled. Reached: the model is not called (`ai_daily_cap`); the evidence path and policy are unchanged. ADR-014's "no quota store" concern does not apply: the count is the org's own `diag.ai_requests` rows |
 
 ### GitHub App sign-in
 
@@ -350,6 +352,18 @@ uv run python -m flakepilot.interface.composition_root reliability-trend \
 uv run python -m flakepilot.interface.composition_root evaluate-prioritization \
   --org-id $ORG_ID --repo-id $REPO_ID --train-cutoff 2026-10-01T00:00:00+00:00 \
   --horizon-days 7 [--k 10] [--with-tabpfn]
+```
+
+`backlog-status` counts durable work that is not done: per outbox (`iam`, `ti`,
+`diag`, `exec`, `repo`) the undelivered rows (`published_at` null, not dead),
+the dead rows (`dead_at` set) and the oldest undelivered row's age in seconds,
+plus `orch.jobs` by state with the oldest scheduled job's age. Counts and ages
+only — never event names, correlation IDs or payloads — so the output is safe
+to paste into a ticket. Exit code is 0 even with backlogged rows: the number
+is the message; alerting decides.
+
+```sh
+uv run python -m flakepilot.interface.composition_root backlog-status
 ```
 
 `reliability-trend` compares failure and flaky rates per bucket and environment with the previous window (exact arithmetic, `incomplete` when a read hits its bound). `evaluate-prioritization` scores a candidate against the shipped prioritization baseline on a temporal split that never lets a feature see the label window; without `--with-tabpfn` (and its key) the candidate is reported `blocked`, never invented. Both read a run's CI time: the original completion time for a backfilled run, receipt time otherwise.

@@ -1,5 +1,7 @@
 """Diagnosis PostgreSQL store. Runs inside a caller's transaction and never commits."""
 
+from datetime import datetime
+
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -72,6 +74,22 @@ class SqlDiagStore:
                 created_at=func.now(),
             )
         )
+
+    async def sent_request_count_today(
+        self, *, org_id: str, day_start: datetime
+    ) -> int:
+        """Provider-bound assist requests this org has already made today: every
+        `ai_requests` row for the org is one provider-bound attempt (rows are
+        written only when the policy is enabled). The in-flight row this check
+        precedes makes concurrent requests count themselves."""
+        count = await self._session.scalar(
+            select(func.count())
+            .select_from(ai_requests)
+            .where(
+                ai_requests.c.org_id == org_id, ai_requests.c.created_at >= day_start
+            )
+        )
+        return int(count or 0)
 
     async def finish_request(self, request: AiRequestRecord) -> None:
         statement = (

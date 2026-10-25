@@ -162,6 +162,14 @@ class TiStore(Protocol):
 
     async def record_rejection(self, upload: RejectedUpload) -> None: ...
 
+    async def processed_count_since(
+        self, *, org_id: str, repo_id: str, token_id: str, since: datetime
+    ) -> int:
+        """How many processed uploads this token caused in the pair since
+        `since` — the ingest rate limit's trailing-window count. Duplicates
+        count: a retry loop is not a free pass around the limit."""
+        ...
+
     async def ensure_identities(
         self, *, org_id: str, repo_id: str, identities: Sequence[TestIdentity]
     ) -> dict[TestIdentity, str]: ...

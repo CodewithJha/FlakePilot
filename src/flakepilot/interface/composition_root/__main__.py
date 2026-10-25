@@ -16,7 +16,8 @@ MongoDB Atlas (opt-in, write-only); `... temporal-worker |
 temporal-run-investigation | temporal-cancel-investigation --help` are the
 opt-in Temporal proof of concept (never the default worker);
 `... provider-status | reliability-trend |
-evaluate-prioritization --help` are read-only analytics (JSON)."""
+evaluate-prioritization --help` are read-only analytics (JSON);
+`... backlog-status --help` counts outbox and job-queue backlogs (read-only)."""
 
 import asyncio
 import os
@@ -33,7 +34,7 @@ _USAGE = (
     "issue-ci-upload-token | ci-run-report | backfill-ci-history | "
     "export-reports-atlas | temporal-worker | temporal-run-investigation | "
     "temporal-cancel-investigation | provider-status | reliability-trend | "
-    "evaluate-prioritization | worker]"
+    "evaluate-prioritization | backlog-status | worker]"
 )
 
 
@@ -128,6 +129,10 @@ def main() -> None:
             "evaluate-prioritization": analytics.run_evaluate_prioritization,
         }[args[0]]
         sys.exit(command(settings, args[1:]))
+    if args[:1] == ["backlog-status"]:
+        from flakepilot.interface.composition_root.backlog import run_backlog_status
+
+        sys.exit(run_backlog_status(settings, args[1:]))
     if args == ["worker"]:
         from flakepilot.interface.composition_root.worker import run_worker
 

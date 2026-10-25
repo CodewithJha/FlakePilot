@@ -17,6 +17,7 @@ import logging
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 
 from flakepilot.identity.application.iam import CiUploadPrincipal
 from flakepilot.integrations.application.ports import (
@@ -63,6 +64,7 @@ TOO_LARGE = "too_large"
 UNSUPPORTED_MEDIA_TYPE = "unsupported_media_type"
 INVALID_METADATA = "invalid_metadata"
 IDEMPOTENCY_CONFLICT = "idempotency_conflict"
+RATE_LIMITED = "rate_limited"
 
 
 class IngestionNotConfigured(Exception):
@@ -141,11 +143,19 @@ class _Attempt:
 
 class Ingestion:
     def __init__(
-        self, unit_of_work: UnitOfWork, artifacts: ArtifactStore, parser: ReportParser
+        self,
+        unit_of_work: UnitOfWork,
+        artifacts: ArtifactStore,
+        parser: ReportParser,
+        *,
+        rate_limit: int = 120,
+        rate_window_seconds: int = 3600,
     ) -> None:
         self._unit_of_work = unit_of_work
         self._artifacts = artifacts
         self._parser = parser
+        self._rate_limit = rate_limit
+        self._rate_window = rate_window_seconds
 
     async def ingest(
         self,
@@ -169,6 +179,12 @@ class Ingestion:
         try:
             if body is None:
                 raise UploadRejected(TOO_LARGE)
+            # Cost control (2026-10-25): the per-token trailing-window limit.
+            # Inside the recorded path, so a refusal is a `rejected` row plus
+            # `ti.upload.rejected` — never a silent 429.
+            if await self._recent_processed_count(principal) >= self._rate_limit:
+                _logger.warning("upload rate-limited")
+                raise UploadRejected(RATE_LIMITED)
             media_type = (content_type or "").split(";", 1)[0].strip().lower()
             if media_type not in CONTENT_TYPES or content_encoding not in (
                 None,
@@ -214,6 +230,22 @@ class Ingestion:
             raise
         assert metadata is not None and body is not None
         return await self._accept(attempt, metadata, media_type, body, results)
+
+    async def _recent_processed_count(self, principal: CiUploadPrincipal) -> int:
+        """Processed uploads this token has already caused inside the window.
+
+        The trailing window is `now - rate_window_seconds`; the SQL counts the
+        token's processed uploads in that range (indexed enough at MVP scale —
+        one bounded query per upload). Duplicates count too: a tight retry loop
+        must not be a free pass around the limit.
+        """
+        async with self._unit_of_work() as store:
+            return await store.processed_count_since(
+                org_id=principal.org_id,
+                repo_id=principal.repo_id,
+                token_id=principal.token_id,
+                since=datetime.now(UTC) - timedelta(seconds=self._rate_window),
+            )
 
     async def _accept(
         self,

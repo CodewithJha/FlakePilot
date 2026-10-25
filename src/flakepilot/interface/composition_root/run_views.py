@@ -123,6 +123,18 @@ class RunViews:
             code_host=verified.standing,
         )
 
+    async def classification_json(
+        self, *, access: OrgAccess, org_id: str, run_id: str
+    ) -> ClassifiedRunReport:
+        """The classification data as JSON (`ti-classification/1` verdicts as
+        data, goal B9). Exactly the same authorization chain as `classified`:
+        the org and run in the URL are lookup keys, the principal's code-host
+        standing on the run's canonical repository is verified first, and every
+        denial is the same non-disclosing 404. The HTML view stays the
+        browser-facing surface; this method exists so the route and the view
+        can never diverge in what they are allowed to show."""
+        return await self.classified(access=access, org_id=org_id, run_id=run_id)
+
     async def runs_index(
         self, *, access: OrgAccess, org_id: str, repo_id: str, limit: int
     ) -> RunIndexReport:

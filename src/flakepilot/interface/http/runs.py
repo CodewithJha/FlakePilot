@@ -23,11 +23,11 @@ external resource and are never framed), and the middleware adds
 """
 
 import html
-from typing import Annotated
+from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
 # The pages' own policy: no external resource may load, no script may run
 # (default-src 'none' denies script-src and every other fallback too), the
@@ -231,6 +231,91 @@ router.add_api_route(
     methods=["GET"],
     status_code=200,
     summary="Read-only run view for the signed-in user",
+)
+
+
+def _classification_payload(report: ClassifiedRunReport) -> dict[str, Any]:
+    """The run's `ti-classification/1` verdicts as JSON data.
+
+    Exactly the domain verdicts the HTML view renders and the operator CLI
+    prints: rule version, failure class, reason, target revision and evidence
+    per case, plus the run summary and commit SHA. No artifact key, no raw
+    report body, no upload metadata beyond the run's own identity. Every
+    stored string is data, not markup — the JSON encoder escapes nothing and
+    needs no escaping.
+    """
+
+    def verdict(case: Any) -> dict[str, Any]:
+        classification = case.classification
+        if classification is None:
+            return {
+                "classname": case.case.classname,
+                "name": case.case.name,
+                "attempts": list(case.case.attempts),
+                "classification": None,
+            }
+        return {
+            "classname": case.case.classname,
+            "name": case.case.name,
+            "attempts": list(case.case.attempts),
+            "classification": {
+                "failure_class": classification.failure_class.value,
+                "reason": (
+                    classification.reason.value if classification.reason else None
+                ),
+                "target_sha": classification.target_sha,
+                "rule_version": classification.rule_version,
+                "evidence": dict(classification.evidence),
+            },
+        }
+
+    return {
+        "schema": "flakepilot.classification/1",
+        "rule_version": "ti-classification/1",
+        "run_id": report.run.run_id,
+        "org_id": report.run.org_id,
+        "repo_id": report.run.repo_id,
+        "commit_sha": report.run.commit_sha,
+        "environment": report.run.environment,
+        "revision_status": report.run.revision_status,
+        "summary": {
+            "tests": report.run.summary.tests,
+            "attempts": report.run.summary.attempts,
+            "passed": report.run.summary.passed,
+            "failed": report.run.summary.failed,
+            "errored": report.run.summary.errored,
+            "skipped": report.run.summary.skipped,
+        },
+        "cases": [verdict(case) for case in report.cases],
+    }
+
+
+async def run_classification_json(
+    org_id: UUID,
+    run_id: str,
+    request: Request,
+    access: Annotated[OrgAccess, Depends(org_access)],
+) -> JSONResponse:
+    """`ti-classification/1` verdicts as data, for the signed-in user.
+
+    The authorization chain is the HTML run view's own (session -> IAM's
+    records -> verified code-host standing on this pair -> `repo.view`); a
+    denial is the same non-disclosing 404. The response is a JSON document —
+    machine-readable classification for tooling — with the same content the
+    HTML view shows and nothing more.
+    """
+    report = await request.app.state.run_views.classification_json(
+        access=access, org_id=str(org_id), run_id=run_id
+    )
+    return JSONResponse(_classification_payload(report))
+
+
+router.add_api_route(
+    "/orgs/{org_id}/runs/{run_id}/classification",
+    run_classification_json,
+    methods=["GET"],
+    status_code=200,
+    summary="The run's ti-classification/1 verdicts as JSON",
 )
 
 

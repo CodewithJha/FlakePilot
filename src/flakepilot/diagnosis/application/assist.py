@@ -16,6 +16,7 @@ import uuid
 from collections.abc import Callable, Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from flakepilot.diagnosis.application.store import (
     IN_FLIGHT,
@@ -66,6 +67,11 @@ class AssistRejected(Exception):
         self.reason = reason
 
 
+AI_DAILY_CAP = "ai_daily_cap"
+"""The per-org provider-bound daily cap. An org that reached it keeps its policy
+and its evidence path; the model is simply not called that UTC day."""
+
+
 @dataclass(frozen=True)
 class UntrustedPart:
     """Caller-supplied evidence text. It is delimited and never treated as instructions."""
@@ -87,9 +93,16 @@ class AssistResult:
 
 
 class Assist:
-    def __init__(self, unit_of_work: UnitOfWork, port: AiAssistPort) -> None:
+    def __init__(
+        self,
+        unit_of_work: UnitOfWork,
+        port: AiAssistPort,
+        *,
+        daily_request_cap: int | None = None,
+    ) -> None:
         self._unit_of_work = unit_of_work
         self._port = port
+        self._daily_cap = daily_request_cap
 
     async def set_policy(
         self, access: OrgAccess, *, org_id: str, policy: AiPolicy, origin: Origin
@@ -145,6 +158,22 @@ class Assist:
         async with self._unit_of_work() as store:
             policy = await store.policy(org_id)
             enabled = policy.level is not DataPolicy.DISABLED
+            if enabled and self._daily_cap is not None:
+                # Spend control before any provider contact and before the
+                # in-flight row: the day's count for this org. A cap of 0 is
+                # impossible (Settings bounds it at 1), so the comparison is
+                # `>=` on an already-reached cap.
+                sent_today = await store.sent_request_count_today(
+                    org_id=org_id,
+                    day_start=datetime.now(UTC).replace(
+                        hour=0, minute=0, second=0, microsecond=0
+                    ),
+                )
+                if sent_today >= self._daily_cap:
+                    _logger.warning(
+                        "assist denied: org daily AI cap reached (%d)", sent_today
+                    )
+                    raise AssistRejected(AI_DAILY_CAP)
             if enabled:
                 provider = self._port.describe().provider
                 await store.record_request(

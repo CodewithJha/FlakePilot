@@ -170,6 +170,22 @@ class SqlTiStore:
             )
         )
 
+    async def processed_count_since(
+        self, *, org_id: str, repo_id: str, token_id: str, since: datetime
+    ) -> int:
+        count = await self._session.scalar(
+            select(func.count())
+            .select_from(uploads)
+            .where(
+                uploads.c.org_id == org_id,
+                uploads.c.repo_id == repo_id,
+                uploads.c.token_id == token_id,
+                uploads.c.state == "processed",
+                uploads.c.received_at >= since,
+            )
+        )
+        return int(count or 0)
+
     async def ensure_identities(
         self, *, org_id: str, repo_id: str, identities: Sequence[TestIdentity]
     ) -> dict[TestIdentity, str]:

@@ -124,6 +124,13 @@ class Settings:
     temporal_address: str | None = None
     temporal_namespace: str | None = None
     temporal_api_key: Secret | None = None
+    # Cost controls (2026-10-25): the ingest rate limit is per (org, repo,
+    # token) processed uploads over the trailing window; the AI cap is per-org
+    # provider-bound assist requests per UTC day (schema-writes only; the
+    # provider is never contacted for a denied request).
+    ingest_rate_limit: int = 120
+    ingest_rate_window_seconds: int = 3600
+    ai_daily_request_cap: int = 500
 
     @classmethod
     def from_environ(cls, environ: Mapping[str, str]) -> "Settings":
@@ -246,6 +253,15 @@ class Settings:
             temporal_address=temporal_address,
             temporal_namespace=temporal_namespace,
             temporal_api_key=temporal_api_key,
+            ingest_rate_limit=_bounded(
+                environ, "FLAKEPILOT_INGEST_RATE_LIMIT", 120, 1, 10_000
+            ),
+            ingest_rate_window_seconds=_bounded(
+                environ, "FLAKEPILOT_INGEST_RATE_WINDOW_SECONDS", 3600, 60, 86_400
+            ),
+            ai_daily_request_cap=_bounded(
+                environ, "FLAKEPILOT_AI_DAILY_REQUEST_CAP", 500, 1, 100_000
+            ),
         )
 
 

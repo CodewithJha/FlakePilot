@@ -34,6 +34,7 @@ PAYLOAD_TOO_LARGE = "payload_too_large"  # 413: request body over the limit
 UNSUPPORTED_MEDIA_TYPE = "unsupported_media_type"  # 415: content type or encoding
 INVALID_REPORT = "invalid_report"  # 422: report refused, with a `reason` code
 INGESTION_NOT_CONFIGURED = "ingestion_not_configured"  # 503: no artifact storage
+RATE_LIMITED = "rate_limited"  # 429: too many processed uploads in the window
 SPEECH_NOT_CONFIGURED = "speech_not_configured"  # 503: no speech provider
 SPEECH_UNAVAILABLE = (
     "speech_unavailable"  # 503: speech provider refused, with a `reason`

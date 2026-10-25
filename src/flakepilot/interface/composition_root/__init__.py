@@ -210,9 +210,21 @@ def create_app(
         diag, ti = diag_unit_of_work(engine), ti_unit_of_work(engine)
         # Advisory assist (ADR-017): NullAiAssist unless a model is configured;
         # the ADR-014 org policy gate applies either way.
-        app.state.assist = Assist(diag, providers.assist)
+        app.state.assist = Assist(
+            diag,
+            providers.assist,
+            daily_request_cap=settings.ai_daily_request_cap,
+        )
         app.state.ingestion = (
-            Ingestion(ti, artifacts, JUnitParser()) if artifacts is not None else None
+            Ingestion(
+                ti,
+                artifacts,
+                JUnitParser(),
+                rate_limit=settings.ingest_rate_limit,
+                rate_window_seconds=settings.ingest_rate_window_seconds,
+            )
+            if artifacts is not None
+            else None
         )
         app.state.reproductions = Reproductions(engine, settings)
         verifier = access_verifier(engine, settings)

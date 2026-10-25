@@ -101,6 +101,12 @@ class FakeTiStore:
     async def record_rejection(self, upload: Any) -> None:
         del upload
 
+    async def processed_count_since(
+        self, *, org_id: str, repo_id: str, token_id: str, since: object
+    ) -> int:
+        del org_id, repo_id, token_id, since
+        return 0
+
     async def ensure_identities(self, **kwargs: Any) -> dict[Any, Any]:
         del kwargs
         return {}

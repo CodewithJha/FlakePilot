@@ -1,6 +1,7 @@
 """Diagnosis persistence port. The SQL adapter never commits."""
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Protocol
 
 from flakepilot.diagnosis.domain.output import DataPolicy, DiagnosisOutcome
@@ -55,6 +56,14 @@ class DiagStore(Protocol):
     async def set_policy(self, org_id: str, policy: AiPolicy) -> None: ...
 
     async def record_request(self, request: AiRequestRecord) -> None: ...
+
+    async def sent_request_count_today(
+        self, *, org_id: str, day_start: datetime
+    ) -> int:
+        """Provider-bound assist requests this org has already made today — the
+        AI spend cap's counter. A row counts once it is written; the in-flight
+        row written right after this check makes concurrent requests safe."""
+        ...
 
     async def finish_request(self, request: AiRequestRecord) -> None:
         """Overwrite the in-flight row with the same id and org; raises when

@@ -60,6 +60,9 @@ class Memory:
     async def record_request(self, request: AiRequestRecord) -> None:
         self.requests.append(request)
 
+    async def sent_request_count_today(self, *, org_id: str, day_start: object) -> int:
+        return sum(1 for row in self.requests if row.org_id == org_id)
+
     async def finish_request(self, request: AiRequestRecord) -> None:
         [index] = [
             i
