@@ -90,6 +90,8 @@ HEADERS = {
     "started_at": "x-flakepilot-started-at",
     "finished_at": "x-flakepilot-finished-at",
 }
+# The operator backfill's `ci_source`; a CI upload may not claim it.
+BACKFILL_CI_SOURCE = "github_actions_backfill"
 SHA = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 _FORMATS = {
     "ci_source": re.compile(r"[a-z][a-z0-9_-]{0,31}"),

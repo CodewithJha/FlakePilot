@@ -506,6 +506,29 @@ def test_undecodable_encodings_and_repeated_headers_are_audited_rejections(
     run(url, scenario)
 
 
+def test_a_ci_upload_cannot_claim_the_backfill_source(
+    url: str, artifact_dir: Path
+) -> None:
+    async def scenario(engine: AsyncEngine) -> None:
+        async with client(url, artifact_dir) as api:
+            status, error = await api.upload(
+                TOKEN_A,
+                report(("c", "t", "")),
+                metadata(ci_source="github_actions_backfill"),
+            )
+        assert (status, error["error"]["code"]) == (422, "validation_error")
+        assert error["error"]["fields"] == [
+            {"loc": ["header", HEADERS["ci_source"]], "type": "invalid"}
+        ]
+        rows = await sql(
+            engine,
+            "SELECT state FROM ti.uploads WHERE ci_source = 'github_actions_backfill'",
+        )
+        assert rows == []
+
+    run(url, scenario)
+
+
 def test_an_oversized_body_is_refused_while_streaming(
     url: str, artifact_dir: Path
 ) -> None:

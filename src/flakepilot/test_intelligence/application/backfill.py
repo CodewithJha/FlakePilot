@@ -44,6 +44,7 @@ from flakepilot.test_intelligence.application.store import (
     UnitOfWork,
 )
 from flakepilot.test_intelligence.domain.results import (
+    BACKFILL_CI_SOURCE,
     HEADERS,
     InvalidMetadata,
     Outcome,
@@ -54,7 +55,7 @@ from flakepilot.test_intelligence.domain.results import (
     parse_metadata,
 )
 
-BACKFILL_SOURCE = "github_actions_backfill"
+BACKFILL_SOURCE = BACKFILL_CI_SOURCE
 ARCHIVE_CONTENT_TYPE = "application/zip"
 ARTIFACT_OWNER = "ti"
 MAX_URL_CHARS = 300

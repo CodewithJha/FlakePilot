@@ -40,6 +40,7 @@ from flakepilot.test_intelligence.application.store import (
     UnitOfWork,
 )
 from flakepilot.test_intelligence.domain.results import (
+    BACKFILL_CI_SOURCE,
     HEADERS,
     InvalidMetadata,
     Outcome,
@@ -178,11 +179,14 @@ class Ingestion:
                 if len(values) > 1:
                     raise UploadRejected(INVALID_METADATA, name)
             try:
-                metadata = parse_metadata(
+                claimed = parse_metadata(
                     {name: values[0] for name, values in headers.items() if values}
                 )
             except InvalidMetadata as exc:
                 raise UploadRejected(INVALID_METADATA, exc.header) from None
+            if claimed.ci_source == BACKFILL_CI_SOURCE:
+                raise UploadRejected(INVALID_METADATA, HEADERS["ci_source"])
+            metadata = claimed
             try:
                 parsed = await asyncio.to_thread(self._parser.parse, body)
                 results = merge_results(

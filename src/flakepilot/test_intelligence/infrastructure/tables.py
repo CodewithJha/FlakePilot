@@ -90,6 +90,11 @@ uploads = Table(
         name="origin_run_url",
     ),
     CheckConstraint(
+        "(provenance = 'github_actions_backfill') = "
+        "(ci_source IS NOT DISTINCT FROM 'github_actions_backfill')",
+        name="backfill_ci_source",
+    ),
+    CheckConstraint(
         "(state = 'rejected') = (reject_reason IS NOT NULL)", name="reject_reason"
     ),
     CheckConstraint(
