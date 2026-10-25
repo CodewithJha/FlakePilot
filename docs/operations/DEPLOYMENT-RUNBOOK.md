@@ -253,6 +253,34 @@ limited to the two cost controls, both on by default (120 uploads/hour per
 token, 500 AI requests/day per org) and both overridable by environment
 variable without a deploy. Owner actions are unchanged.
 
+**Production verification via one-off jobs (2026-10-25, revision `7e759da`
+live — deploy `dep-dbetqpijnfac73e56l2g`, confirmed with
+`render deploys list srv-dbeqd88ae00c73e0hr2g`):**
+
+- `backlog-status` **VERIFIED** on the production database: one-off job
+  `job-dbeuk967bikc73bi7qpg` succeeded, all five outboxes 0 pending / 0
+  dead, `orch.jobs` empty. One-off jobs do not mount the artifact disk, so
+  the command must be run as
+  `env -u FLAKEPILOT_ARTIFACT_DIR python -m flakepilot.interface.composition_root backlog-status`
+  (the same quirk as the pre-deploy command above; the bare form fails
+  startup, job `job-dbeuj6gae00c73e631k0`).
+- `provider-status` **VERIFIED** on the deployment: job
+  `job-dbeuku4s728c73dgog50` printed `ai_assist=gemini_api`,
+  `research=serpapi`, `speech=elevenlabs`, `error_reporting=sentry`,
+  `agent_token_issuer=auth0`, `browser=none`, `prioritization_candidate=none`
+  — the production configuration, from the production environment itself.
+- Sentry delivery **VERIFIED** at the HTTP layer: job
+  `job-dbev31jrjlhs7390euhg` built one allow-listed event through
+  `SentryEnvelopeTransport` with the deployment's own DSN and exited 0, which
+  by that transport's contract happens only when the envelope endpoint
+  accepts the delivery (a rejection raises; `urllib_post` returns nothing on
+  success). Two probe events were sent on 2026-10-25 (the delivery probe and
+  the earlier `configure_error_reporting` verification event, logger
+  `flakepilot.verification`). Confirming the event renders in the Sentry
+  project dashboard remains an owner step (the CLI cannot read the
+  dashboard), but the transport round trip from the production environment
+  is now proven, not assumed.
+
 ## What this runbook does not claim
 
 - `docker build` was never run locally; the image is verified only by Render's
