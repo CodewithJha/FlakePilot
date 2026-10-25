@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 from actions_support import ActionsApi, FakeRun, FakeTokens, junit, zip_of
+from atlas_support import MemorySink
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -34,8 +35,13 @@ from flakepilot.interface.composition_root.database import create_engine, transa
 from flakepilot.interface.composition_root.operator import backfill_ci_history
 from flakepilot.repository.application.source import new_binding
 from flakepilot.repository.infrastructure.store import SqlRepoDirectory
+from flakepilot.shared_kernel.events import Channel, Origin
 from flakepilot.test_intelligence.application.backfill import Backfill
 from flakepilot.test_intelligence.application.evaluation import Evaluation, Status
+from flakepilot.test_intelligence.application.report_export import (
+    ExportStatus,
+    ReportExport,
+)
 from flakepilot.test_intelligence.application.store import NewUpload
 from flakepilot.test_intelligence.domain.results import UploadMetadata
 from flakepilot.test_intelligence.infrastructure.store import SqlTiStore
@@ -298,3 +304,41 @@ def test_a_ci_upload_without_a_token_is_refused_by_the_schema(url: str) -> None:
     with pytest.raises(IntegrityError, match="ck_uploads_token_provenance"):
         run(url, scenario)
 
+
+def test_backfilled_reports_export_once_with_verdicts_and_no_names(url: str) -> None:
+    sink = MemorySink()
+
+    async def scenario(engine: AsyncEngine) -> Any:
+        owner = f"acme-{uuid.uuid4().hex[:8]}"
+        org_id, repo_id = await _bind(engine, owner)
+        await _backfill(engine, _api(owner), org_id, repo_id)
+        export = ReportExport(ti_unit_of_work(engine), sink)
+        origin = Origin(Channel.CLI, str(uuid.uuid4()))
+        first = await export.export(
+            org_id=org_id, repo_id=repo_id, limit=50, origin=origin
+        )
+        again = await export.export(
+            org_id=org_id, repo_id=repo_id, limit=50, origin=origin
+        )
+        exported = await _scalar(
+            engine,
+            "SELECT count(*) FROM ti.outbox WHERE org_id = :org"
+            " AND name = 'ti.report.exported'",
+            org=org_id,
+        )
+        return first, again, exported
+
+    first, again, exported = run(url, scenario)
+    assert [o.status for o in first] == [ExportStatus.INSERTED] * 6
+    assert [o.status for o in again] == [ExportStatus.UNCHANGED] * 6
+    assert exported == 12
+    assert len(sink.documents) == 6
+    rendered = json.dumps(list(sink.documents.values()))
+    assert "test_flaky" not in rendered and "tests.a" not in rendered
+    classes = {
+        result["classification"]["failure_class"]
+        for document in sink.documents.values()
+        for result in document["results"]  # type: ignore[attr-defined]
+        if result["classification"]
+    }
+    assert "flaky" in classes

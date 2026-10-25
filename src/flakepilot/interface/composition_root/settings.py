@@ -9,6 +9,10 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from flakepilot.integrations.infrastructure.artifact_store import root_problem
+from flakepilot.integrations.infrastructure.atlas import (
+    database_ok as atlas_database_ok,
+)
+from flakepilot.integrations.infrastructure.atlas import uri_ok as atlas_uri_ok
 from flakepilot.integrations.infrastructure.browserbase import allowlist_ok
 from flakepilot.integrations.infrastructure.elevenlabs import (
     MODELS as ELEVENLABS_MODELS,
@@ -112,6 +116,9 @@ class Settings:
     elevenlabs_voice_id: str | None = None
     elevenlabs_model: str = "eleven_flash_v2_5"
     tabpfn_api_key: Secret | None = None
+    # Opt-in write-only report export (goal 4), read only by `export-reports-atlas`.
+    atlas_uri: Secret | None = None
+    atlas_database: str | None = None
 
     @classmethod
     def from_environ(cls, environ: Mapping[str, str]) -> "Settings":
@@ -181,6 +188,7 @@ class Settings:
             )
         browserbase_api_key, browser_allowlist = _browserbase(environ)
         elevenlabs_api_key, elevenlabs_voice_id, elevenlabs_model = _elevenlabs(environ)
+        atlas_uri, atlas_database = _atlas(environ)
         return cls(
             Secret(database_url),
             log_level=log_level,
@@ -227,6 +235,8 @@ class Settings:
             elevenlabs_voice_id=elevenlabs_voice_id,
             elevenlabs_model=elevenlabs_model,
             tabpfn_api_key=_provider_key(environ, "FLAKEPILOT_TABPFN_API_KEY"),
+            atlas_uri=atlas_uri,
+            atlas_database=atlas_database,
         )
 
 
@@ -439,6 +449,22 @@ def _elevenlabs(
             f"FLAKEPILOT_ELEVENLABS_MODEL must be one of {sorted(ELEVENLABS_MODELS)}"
         )
     return _provider_key(environ, names[0]), environ[names[1]], model
+
+
+def _atlas(environ: Mapping[str, str]) -> tuple[Secret | None, str | None]:
+    names = ("FLAKEPILOT_ATLAS_URI", "FLAKEPILOT_ATLAS_DATABASE")
+    if not _together(environ, *names):
+        return None, None
+    if not atlas_uri_ok(environ[names[0]]):
+        raise SettingsError(
+            "FLAKEPILOT_ATLAS_URI must be a mongodb+srv:// or mongodb:// URI that "
+            "keeps TLS on and certificate checks enabled"
+        )
+    if not atlas_database_ok(environ[names[1]]):
+        raise SettingsError(
+            "FLAKEPILOT_ATLAS_DATABASE must be 1-63 letters, digits, _ or -"
+        )
+    return Secret(environ[names[0]]), environ[names[1]]
 
 
 def _artifact_dir(value: str) -> Path:

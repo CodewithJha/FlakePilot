@@ -577,3 +577,48 @@ def test_the_local_endpoint_and_gemini_are_mutually_exclusive() -> None:
                 "FLAKEPILOT_GEMINI_MODEL": PROVIDERS["FLAKEPILOT_GEMINI_MODEL"],
             }
         )
+
+
+ATLAS_URI = "mongodb+srv://usr_x1:atlas-pw-CCCC3333@cluster0.example.mongodb.net/"
+
+
+def test_atlas_is_opt_in_and_the_uri_stays_secret() -> None:
+    assert Settings.from_environ({"FLAKEPILOT_DATABASE_URL": DSN}).atlas_uri is None
+    settings = Settings.from_environ(
+        {
+            "FLAKEPILOT_DATABASE_URL": DSN,
+            "FLAKEPILOT_ATLAS_URI": ATLAS_URI,
+            "FLAKEPILOT_ATLAS_DATABASE": "flakepilot",
+        }
+    )
+    assert settings.atlas_uri is not None
+    assert settings.atlas_uri.reveal() == ATLAS_URI
+    assert settings.atlas_database == "flakepilot"
+    assert "atlas-pw" not in repr(settings) + str(settings)
+
+
+@pytest.mark.parametrize(
+    ("environ", "message"),
+    [
+        ({"FLAKEPILOT_ATLAS_URI": ATLAS_URI}, "must be set together"),
+        ({"FLAKEPILOT_ATLAS_DATABASE": "flakepilot"}, "must be set together"),
+        (
+            {
+                "FLAKEPILOT_ATLAS_URI": ATLAS_URI + "?tls=false",
+                "FLAKEPILOT_ATLAS_DATABASE": "flakepilot",
+            },
+            "keeps TLS on",
+        ),
+        (
+            {"FLAKEPILOT_ATLAS_URI": ATLAS_URI, "FLAKEPILOT_ATLAS_DATABASE": "a b"},
+            "FLAKEPILOT_ATLAS_DATABASE",
+        ),
+    ],
+)
+def test_a_half_or_weak_atlas_configuration_refuses_startup(
+    environ: dict[str, str], message: str
+) -> None:
+    with pytest.raises(SettingsError, match=message) as error:
+        Settings.from_environ({"FLAKEPILOT_DATABASE_URL": DSN, **environ})
+    assert "atlas-pw" not in str(error.value)
+

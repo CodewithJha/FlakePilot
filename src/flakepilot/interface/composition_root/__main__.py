@@ -11,6 +11,8 @@ and the code-host access verifier;
 `... issue-ci-upload-token --help` issues a CI token; `... ci-run-report --help`
 renders a stored run; `... backfill-ci-history --help` imports a registered
 repository's GitHub Actions JUnit artifacts with their original CI time;
+`... export-reports-atlas --help` copies a pair's classified run reports to
+MongoDB Atlas (opt-in, write-only);
 `... provider-status | reliability-trend |
 evaluate-prioritization --help` are read-only analytics (JSON)."""
 
@@ -27,7 +29,8 @@ _USAGE = (
     "[bootstrap-org | register-repo | add-member | grant | revoke | show-access | "
     "set-ai-policy | bind-agent | unbind-agent | list-runs | verify-github-app | "
     "issue-ci-upload-token | ci-run-report | backfill-ci-history | "
-    "provider-status | reliability-trend | evaluate-prioritization | worker]"
+    "export-reports-atlas | provider-status | reliability-trend | "
+    "evaluate-prioritization | worker]"
 )
 
 
@@ -88,6 +91,12 @@ def main() -> None:
         )
 
         sys.exit(run_backfill_ci_history(settings, args[1:]))
+    if args[:1] == ["export-reports-atlas"]:
+        from flakepilot.interface.composition_root.atlas_export import (
+            run_export_reports_atlas,
+        )
+
+        sys.exit(run_export_reports_atlas(settings, args[1:]))
     if args[:1] and args[0] in (
         "provider-status",
         "reliability-trend",

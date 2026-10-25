@@ -2,6 +2,7 @@
 
 import enum
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
@@ -301,6 +302,25 @@ class SpeechProvider(Protocol):
     def describe(self) -> AiCapabilities: ...
 
     async def speak(self, request: SpeechRequest) -> SpeechAudio: ...
+
+
+class ReportSinkError(Exception):
+    """An export write failed. `reason` is a short code; driver text, hosts and
+    credentials are never carried."""
+
+    def __init__(self, reason: str) -> None:
+        _code(reason, "reason")
+        super().__init__(reason)
+        self.reason = reason
+
+
+class ReportSink(Protocol):
+    """A write-only copy of finished reports outside PostgreSQL (goal 4). Never
+    read back for a decision. `upsert` writes `document` under `key` only when
+    no document has that key: True when it was written, False when it was
+    already there (unchanged)."""
+
+    async def upsert(self, key: str, document: Mapping[str, object]) -> bool: ...
 
 
 _SHA = re.compile(r"[0-9a-f]{40}")
