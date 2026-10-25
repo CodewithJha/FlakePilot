@@ -42,6 +42,7 @@ version_locations = [
     "flakepilot.audit.infrastructure:migrations",
     "flakepilot.repository.infrastructure:migrations",
     "flakepilot.execution.infrastructure:migrations",
+    "flakepilot.interface.composition_root:ops_migrations",
 ]
 
 [tool.ruff.lint]

@@ -17,7 +17,10 @@ temporal-run-investigation | temporal-cancel-investigation --help` are the
 opt-in Temporal proof of concept (never the default worker);
 `... provider-status | reliability-trend |
 evaluate-prioritization --help` are read-only analytics (JSON);
-`... backlog-status --help` counts outbox and job-queue backlogs (read-only)."""
+`... backlog-status --help` counts outbox and job-queue backlogs (read-only);
+`... verify-run --help` runs a target command as evidenced subprocess (records
+the real exit code into ops.verification_runs; Render one-off job `status` is
+not evidence); `... verify-fetch --help` reads that record back (read-only)."""
 
 import asyncio
 import os
@@ -34,7 +37,8 @@ _USAGE = (
     "issue-ci-upload-token | ci-run-report | backfill-ci-history | "
     "export-reports-atlas | temporal-worker | temporal-run-investigation | "
     "temporal-cancel-investigation | provider-status | reliability-trend | "
-    "evaluate-prioritization | backlog-status | worker]"
+    "evaluate-prioritization | backlog-status | verify-run | verify-fetch | "
+    "worker]"
 )
 
 
@@ -133,6 +137,14 @@ def main() -> None:
         from flakepilot.interface.composition_root.backlog import run_backlog_status
 
         sys.exit(run_backlog_status(settings, args[1:]))
+    if args[:1] and args[0] in ("verify-run", "verify-fetch"):
+        from flakepilot.interface.composition_root import verification_evidence
+
+        command = {
+            "verify-run": verification_evidence.run_verify_run,
+            "verify-fetch": verification_evidence.run_verify_fetch,
+        }[args[0]]
+        sys.exit(command(settings, args[1:]))
     if args == ["worker"]:
         from flakepilot.interface.composition_root.worker import run_worker
 
