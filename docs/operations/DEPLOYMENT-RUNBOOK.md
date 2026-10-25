@@ -3,9 +3,9 @@
 Companion to [RENDER-DEPLOYMENT-ARCHITECTURE](RENDER-DEPLOYMENT-ARCHITECTURE.md)
 (the shape and its reasoning) and [ADR-017](../adr/ADR-017-sponsor-capability-phase.md).
 This page is the operator's step list: what to create, what to set, how to
-check it, how to undo it. **Nothing here has been run.** No account, service,
-database, domain or credential exists; every step is an owner action and every
-Render-specific behavior is vendor documentation, not tested here.
+check it, how to undo it, and the record of the one deployment that exists
+([Deployed state](#deployed-state-2026-10-25)). Render behavior this page does
+not list as observed there is vendor documentation, not tested here.
 
 Execution stays closed on every service this runbook creates: the image has no
 container runtime, the worker runs `ClosedSandbox` / `UnavailableIsolation` /
@@ -16,11 +16,11 @@ this page changes that. A Render service is not an execution host.
 
 | File | What it is | Status |
 |---|---|---|
-| `Dockerfile` | One image for API and worker: digest-pinned `python:3.12-slim` and `uv` 0.11.23, `uv sync --frozen --no-dev --no-editable`, non-root user `flakepilot` (uid 10001), binds `0.0.0.0:10000`, no secrets, no repository code beyond `src/` | **NOT VERIFIED** — no local Docker daemon was running, so `docker build` was not executed. The wheel build (`uv build --wheel`) was verified to ship every migration directory and `script.py.mako` |
+| `Dockerfile` | One image for API and worker: digest-pinned `python:3.12-slim` and `uv` 0.11.23, `uv sync --frozen --no-dev --no-editable`, non-root user `flakepilot` (uid 10001), binds `0.0.0.0:10000`, no secrets, no repository code beyond `src/` | **VERIFIED** — built by Render on every deploy since 2026-10-25 (never built locally: no Docker daemon) |
 | `.dockerignore` | Allow-list: `pyproject.toml`, `uv.lock`, `README.md`, `LICENSE`, `src/` only | Present |
-| `render.yaml` | Blueprint: web service `flakepilot-api`, worker `flakepilot-worker`, Postgres 16 `flakepilot-db` (private network only) | Parses as YAML; **not validated by Render** (no account) |
+| `render.yaml` | Blueprint: web service `flakepilot-api`, worker `flakepilot-worker`, Postgres 16 `flakepilot-db` (private network only), all in `singapore` | Matches the deployed services; the resources were created through the Render API, so **Blueprint sync itself is NOT VERIFIED** |
 
-## Costs (vendor list prices, 2026-10-24, NOT VERIFIED by purchase)
+## Costs (vendor list prices; deployed at these plans, no invoice checked)
 
 | Resource | Plan | List price |
 |---|---|---|
@@ -31,16 +31,16 @@ this page changes that. A Render service is not an execution host.
 | Hobby workspace | 2 custom domains, 5 GB bandwidth included | USD 0 |
 | **Total** | | **≈ USD 20.25/month** + bandwidth beyond 5 GB |
 
-## Owner decisions that must exist first
+## Owner decisions
 
-These are the gates; none can be made by an agent.
+None can be made by an agent. All four were made for the 2026-10-25 deployment.
 
-1. **D-HOST-1/2/5: approve Render hosting and the ≈ USD 20/month spend.**
-2. **D-HOST-3: pick the region.** `render.yaml` says `oregon` for all three
-   resources; region is immutable after creation — edit before the first sync.
-3. **Domain** (optional for a first smoke, required for sign-in on a real
-   name): see [DOT-TECH-DOMAIN-STRATEGY](DOT-TECH-DOMAIN-STRATEGY.md).
-4. **GitHub App** registration for that origin (sign-in and code-host
+1. **D-HOST-1/2/5: Render hosting and the ≈ USD 20/month spend** — approved.
+2. **D-HOST-3: region** — `singapore` for all three resources; region is
+   immutable after creation.
+3. **Domain**: `app.flakepilot.tech`, see
+   [DOT-TECH-DOMAIN-STRATEGY](DOT-TECH-DOMAIN-STRATEGY.md).
+4. **GitHub App** with callbacks for that origin (sign-in and code-host
    verification); without it sign-in answers 503 and session views answer 404 —
    both fail closed, so a first deploy without it is safe.
 
@@ -53,7 +53,8 @@ These are the gates; none can be made by an agent.
    Note: Render prompts for these only at Blueprint creation; later additions are
    set by hand on each service's Environment page.
 3. Apply. Render creates the database, builds the image, runs the API's
-   pre-deploy command `alembic upgrade head` on separate compute, then starts
+   pre-deploy command `env -u FLAKEPILOT_ARTIFACT_DIR alembic upgrade head` on
+   separate compute, then starts
    both services. On the very first deploy the worker may start before the
    migration finishes; it then exits on the missing tables and Render restarts
    it (no work exists yet, nothing is lost).
@@ -100,12 +101,16 @@ claimed jobs are leased, so the effect is delayed work, never lost work.
   encrypts disks at rest at the platform layer; that is not the product's
   encryption at rest), never cleaned up, and snapshotted daily by Render for 7
   days. Retention remains a human decision outside this repository.
-- **NOT VERIFIED:** the ownership of a fresh Render disk mount. The API start
-  command creates `/var/data/artifacts` with mode 700 as the non-root user;
-  if the mount root is not writable by uid 10001, `mkdir` fails and the API
-  does not start. Fallback: remove `FLAKEPILOT_ARTIFACT_DIR` from the API (and
-  the `mkdir` from `dockerCommand`) — the API then starts with ingestion
-  answering 503 `ingestion_not_configured` — and raise it with Render support.
+- **VERIFIED (2026-10-25):** a fresh Render disk mount is writable by the
+  non-root user: the API start command created `/var/data/artifacts` with
+  mode 700 and two JUnit uploads were stored there. If a future mount is not
+  writable, `mkdir` fails and the API does not start; the fallback is to
+  remove `FLAKEPILOT_ARTIFACT_DIR` from the API (and the `mkdir` from
+  `dockerCommand`), which leaves ingestion answering 503
+  `ingestion_not_configured`.
+- The disk is not mounted during the pre-deploy command, so migrations run
+  with `FLAKEPILOT_ARTIFACT_DIR` unset (`env -u`); otherwise settings
+  validation would refuse the missing artifact root.
 
 ## Environment variables
 
@@ -123,17 +128,17 @@ configured (not checked at runtime): …` or run `provider-status` in the shell.
 | `FLAKEPILOT_LOG_LEVEL` | both | no | `INFO` | Parsed, wired |
 | `FLAKEPILOT_EXECUTION_MODE` | both | no | `closed` (also the default) | Parsed; worker runs closed only |
 | `FLAKEPILOT_ARTIFACT_DIR` | API | no | `/var/data/artifacts` on the disk | Parsed, wired |
-| `FLAKEPILOT_PUBLIC_ORIGIN` | API | no | `https://<domain>` exactly as browsers send `Origin` | Parsed, wired |
-| `FLAKEPILOT_GITHUB_CLIENT_ID` / `_CLIENT_SECRET` | API | secret: yes | GitHub App | Parsed, wired (sign-in) |
-| `FLAKEPILOT_GITHUB_APP_ID` / `_APP_PRIVATE_KEY` | API | key: yes | GitHub App | Parsed, wired (code-host verification); live minting **NOT VERIFIED** |
-| `FLAKEPILOT_SENTRY_DSN` | API | yes | Sentry project DSN (`https://<key>@<host>/<project>`) | Parsed, wired (opt-in reporter) |
-| `FLAKEPILOT_AUTH0_DOMAIN` / `_AUDIENCE` | API | no | Auth0 tenant host / API identifier | Parsed; verifier exists, **no route uses it** |
-| `FLAKEPILOT_AI_ENDPOINT` / `_AI_MODEL` / `_AI_API_KEY` | API | key: yes | operator model endpoint | Parsed, wired (`LocalEndpointAssist`) |
-| `FLAKEPILOT_GEMINI_API_KEY` / `_GEMINI_MODEL` | API | key: yes | Google AI Studio key + `gemma-4-31b-it` or `gemma-4-26b-a4b-it`; not with `FLAKEPILOT_AI_ENDPOINT` | Parsed, wired opt-in (hypothesize stage); live **NOT VERIFIED** |
-| `FLAKEPILOT_SERPAPI_API_KEY` | API | yes | SerpApi | Parsed, wired opt-in (research stage); live **NOT VERIFIED** |
-| `FLAKEPILOT_BROWSERBASE_API_KEY` / `FLAKEPILOT_BROWSER_ALLOWLIST` | API | key: yes | Browserbase key + comma-separated public host names | Parsed, wired opt-in (browse stage); live **NOT VERIFIED** |
-| `FLAKEPILOT_ELEVENLABS_API_KEY` / `_VOICE_ID` (`_MODEL`) | API | key: yes | ElevenLabs | Parsed, wired opt-in (spoken brief route); live **NOT VERIFIED** |
-| `FLAKEPILOT_TABPFN_API_KEY` | API (operator shell) | yes | Prior Labs | Parsed, used only by `evaluate-prioritization --with-tabpfn`; live **NOT VERIFIED** |
+| `FLAKEPILOT_PUBLIC_ORIGIN` | API | no | `https://app.flakepilot.tech` (in `render.yaml`), exactly as browsers send `Origin` | Parsed, wired; set on the deployment |
+| `FLAKEPILOT_GITHUB_CLIENT_ID` / `_CLIENT_SECRET` | API | secret: yes | GitHub App | Parsed, wired (sign-in); set; live sign-in **VERIFIED** 2026-10-25 |
+| `FLAKEPILOT_GITHUB_APP_ID` / `_APP_PRIVATE_KEY` | API | key: yes | GitHub App | Parsed, wired (code-host verification); set; the session-view verifier **VERIFIED** live 2026-10-25 (run view loaded) |
+| `FLAKEPILOT_SENTRY_DSN` | API | yes | Sentry project DSN (`https://<key>@<host>/<project>`) | Parsed, wired (opt-in reporter); set; no event from the deployment observed |
+| `FLAKEPILOT_AUTH0_DOMAIN` / `_AUDIENCE` | API | no | Auth0 tenant host / API identifier | Parsed, wired: mounts the agent route; set (startup log `agent_token_issuer=auth0`); the route is **NOT VERIFIED** on the deployment |
+| `FLAKEPILOT_AI_ENDPOINT` / `_AI_MODEL` / `_AI_API_KEY` | API | key: yes | operator model endpoint | Parsed, wired (`LocalEndpointAssist`); not set |
+| `FLAKEPILOT_GEMINI_API_KEY` / `_GEMINI_MODEL` | API | key: yes | Google AI Studio key + `gemma-4-31b-it` or `gemma-4-26b-a4b-it`; not with `FLAKEPILOT_AI_ENDPOINT` | Parsed, wired opt-in (hypothesize stage); set; **VERIFIED** on the deployment 2026-10-25 (hypothesize `produced`) |
+| `FLAKEPILOT_SERPAPI_API_KEY` | API | yes | SerpApi | Parsed, wired opt-in (research stage); set; **VERIFIED** on the deployment 2026-10-25 |
+| `FLAKEPILOT_BROWSERBASE_API_KEY` / `FLAKEPILOT_BROWSER_ALLOWLIST` | API | key: yes | Browserbase key + comma-separated public host names | Parsed, wired opt-in (browse stage); not set; live **NOT VERIFIED** |
+| `FLAKEPILOT_ELEVENLABS_API_KEY` / `_VOICE_ID` (`_MODEL`) | API | key: yes | ElevenLabs | Parsed, wired opt-in (spoken brief route); set; **VERIFIED** on the deployment 2026-10-25 |
+| `FLAKEPILOT_TABPFN_API_KEY` | API (operator shell) | yes | Prior Labs | Parsed, used only by `evaluate-prioritization --with-tabpfn`; not set on the deployment |
 
 Never set `FLAKEPILOT_ALLOW_INSECURE_COOKIES=true` on Render (TLS is served;
 `__Host-` + `Secure` stay on). Never give the worker GitHub, session, provider or
@@ -180,11 +185,65 @@ audit or outbox rows.
 - **Full stop:** suspend both services (billing stops for compute; database
   and disk persist and still bill).
 
+## Deployed state (2026-10-25)
+
+One Render workspace, region `singapore`, resources created through the Render
+API to match `render.yaml` (IDs and connection strings are not recorded here).
+The custom domain `app.flakepilot.tech` is verified and sign-in starts at
+`https://app.flakepilot.tech/auth/github/login`.
+
+| Resource | Plan | Notes |
+|---|---|---|
+| `flakepilot-db` | PostgreSQL 16, `0.1c-256mb`, 1 GB | `ipAllowList: []` (no public connections); opened to one `/32` only for operator commands, then closed and re-checked |
+| `flakepilot-api` | `0.5c-512mb`, 1 GB disk at `/var/data` | health check `/health/live`, pre-deploy migrations, `autoDeployTrigger: checksPass`; holds the GitHub App, Gemini, SerpApi, ElevenLabs, Sentry and Auth0 variables |
+| `flakepilot-worker` | `0.5c-512mb` | only `FLAKEPILOT_DATABASE_URL`, `FLAKEPILOT_LOG_LEVEL`, `FLAKEPILOT_EXECUTION_MODE=closed`; no provider, GitHub or session secret |
+
+Estimated cost ≈ USD 20.25/month (7 + 7 + 6 + 0.25 at list prices; no invoice
+checked). Execution stays closed: the worker logs
+`runtime reaper: runtime_reaper_unavailable`, and no repository code runs.
+
+**Two `render.yaml` defects found by the first deploy, both fixed:**
+
+1. `dockerCommand: sh -c '…'` — Render passes the single quotes through, so
+   `sh` looked for a program literally named `mkdir -p -m 700 … && exec …`
+   and the API exited 127 (`not found`). Fixed by Render's documented
+   unquoted form `/bin/sh -c mkdir -p -m 700 /var/data/artifacts && exec python -m flakepilot.interface.composition_root`.
+2. `preDeployCommand: alembic upgrade head` — the migration environment loads
+   the full settings, which validate `FLAKEPILOT_ARTIFACT_DIR`, and the disk
+   is not mounted during pre-deploy. Found in the source and avoided before it
+   failed (so the failure itself is **NOT VERIFIED**); fixed with
+   `env -u FLAKEPILOT_ARTIFACT_DIR alembic upgrade head`, which has completed
+   on every deploy since.
+
+**Smoke results (VERIFIED, 2026-10-25):**
+
+- Health: `/health/live` 200 `{"status":"ok"}` with `X-Request-ID`;
+  `/health/ready` 200. Migrations at head, `alembic check` clean.
+- Before GitHub configuration, every session route answered 503
+  `auth_not_configured`.
+- Ingestion over HTTPS with an operator-issued token: two uploads 201, an
+  exact replay 200 `duplicate: true`, the same key with other content 409
+  `idempotency_conflict`; missing and bad tokens 401. `list-runs` and
+  `ci-run-report` (JSON and HTML) rendered the stored runs.
+- Worker: no restarts; published every outbox row within about 2 s
+  (8 published, 0 dead, 8 audit events at the time).
+- After GitHub configuration: the owner signed in with GitHub on
+  `app.flakepilot.tech` and the run view loaded (the session-view code-host
+  verifier's first live check). `POST /orgs/{org}/runs/{run}/investigation`
+  returned 200 `complete` (SerpApi research produced 5 sources, browse
+  `provider_absent`, hypothesize `policy_disabled`), and
+  `POST …/investigation/brief` returned 200 `audio/mpeg`.
+- Gemma on the deployment: after `set-ai-policy --level evidence_only` (run
+  as an operator command against the deployed database, owner-approved data
+  flow), one investigation from the signed-in browser returned 200
+  `complete`: collect, research (5 sources), hypothesize and prioritize
+  `produced`, browse skipped `provider_absent`; assist `produced` with 2
+  evidence-linked claims, 0 unverified, 0 contradicted (about 111 s).
+
 ## What this runbook does not claim
 
-- No deploy, account, or spend has happened; nothing above is **VERIFIED** on
-  Render.
-- `docker build` was **NOT VERIFIED** (no Docker daemon running locally).
+- `docker build` was never run locally; the image is verified only by Render's
+  builds.
 - No isolation, encryption-at-rest, or production-readiness claim: Render
   hosting changes none of the evidence levels in
   [PRODUCTION-READINESS-ASSESSMENT](PRODUCTION-READINESS-ASSESSMENT.md).

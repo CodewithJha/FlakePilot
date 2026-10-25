@@ -66,7 +66,8 @@ hold for that second role, and this design avoids every one of them:
   run came from a `verified_read` stand-in, because the seeded repository is
   not a real GitHub repository. Code-host verification by the GitHub App is
   **NOT VERIFIED** on this path.
-- Nothing is deployed. No sidecar process runs in `render.yaml`.
+- The sidecar is not deployed: no sidecar process runs in `render.yaml`
+  (the control plane alone is deployed, since 2026-10-25).
 
 ## What Mastra is (verified 2026-10-24)
 

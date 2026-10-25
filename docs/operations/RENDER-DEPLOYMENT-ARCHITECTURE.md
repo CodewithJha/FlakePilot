@@ -1,20 +1,21 @@
 # Render deployment architecture
 
 Companion to [ADR-017](../adr/ADR-017-sponsor-capability-phase.md) and sponsor
-goal 10 (Render). Documentation of the deployment shape a Render-hosted
-FlakePilot would take — two services, one database, an explicit migration
-step, health checks, and an operator-owned artifact disk. **No deploy has
-happened**: hosting is an owner decision behind the D-HOST gates
-([INFRASTRUCTURE-DECISIONS](INFRASTRUCTURE-DECISIONS.md)), and every
-provider-specific claim below is derived from the product's own verified
-configuration surface, not from a live Render test. Nothing is purchased or
-provisioned; the released local-only candidate posture is unchanged.
+goal 10 (Render). The deployment shape of Render-hosted FlakePilot — two
+services, one database, an explicit migration step, health checks, and an
+operator-owned artifact disk. **Deployed 2026-10-25** in `singapore` after the
+owner approved hosting and spend (D-HOST-1..5,
+[INFRASTRUCTURE-DECISIONS](INFRASTRUCTURE-DECISIONS.md)): `flakepilot-api`
+(`0.5c-512mb`, 1 GB disk), `flakepilot-worker` (`0.5c-512mb`) and
+`flakepilot-db` (PostgreSQL 16, `0.1c-256mb`, no public connections), about
+USD 20.25/month at list prices, served at `https://app.flakepilot.tech`.
+Execution stays closed on both services.
 
-The deployable artifacts now exist in the repository root — `Dockerfile`,
+The deployable artifacts are in the repository root — `Dockerfile`,
 `.dockerignore` and the `render.yaml` Blueprint — with the operator steps,
-environment table, smoke tests and rollback in
-[DEPLOYMENT-RUNBOOK](DEPLOYMENT-RUNBOOK.md). The image build itself is
-**NOT VERIFIED** (no Docker daemon was available when they were written).
+environment table, smoke results, the two defects the first deploy exposed,
+and rollback in [DEPLOYMENT-RUNBOOK](DEPLOYMENT-RUNBOOK.md). Render builds the
+image on every deploy; it has never been built locally (no Docker daemon).
 
 ## The shape: two services, one system of record
 
@@ -62,10 +63,12 @@ migration step is the API service's `preDeployCommand`, which runs on separate
 compute after the build and before the new build starts (a failure stops the
 deploy). Pre-deploy commands are available on paid instance types only. The
 image keeps `pyproject.toml` in its working directory because Alembic reads
-`[tool.alembic]` from it:
+`[tool.alembic]` from it. The disk is not mounted during pre-deploy, so the
+artifact directory is unset for the migration (settings validation would
+otherwise refuse the missing root):
 
 ```
-alembic upgrade head
+env -u FLAKEPILOT_ARTIFACT_DIR alembic upgrade head
 ```
 
 Only the API runs it: two concurrent upgrades could race on `alembic_version`.
@@ -150,10 +153,10 @@ service environment (encrypted at rest by the platform), including:
   `FLAKEPILOT_AI_API_KEY` — all optional; unset keeps the `NullAiAssist`
   no-provider posture (ADR-017 decision 3),
 - `FLAKEPILOT_ARTIFACT_DIR` (API only, on the disk mount),
-- `FLAKEPILOT_SENTRY_DSN` (both; optional, opt-in error reporting per
+- `FLAKEPILOT_SENTRY_DSN` (API only; optional, opt-in error reporting per
   [SENTRY-OBSERVABILITY-BOUNDARY](SENTRY-OBSERVABILITY-BOUNDARY.md)),
-- `FLAKEPILOT_AUTH0_DOMAIN` + `FLAKEPILOT_AUTH0_AUDIENCE` (API; optional,
-  parsed but not yet used by any route).
+- `FLAKEPILOT_AUTH0_DOMAIN` + `FLAKEPILOT_AUTH0_AUDIENCE` (API; optional;
+  both set mounts the agent investigation route).
 
 The full table, including placeholder names for the provider keys, is in
 [DEPLOYMENT-RUNBOOK](DEPLOYMENT-RUNBOOK.md).
@@ -163,10 +166,12 @@ Values marked secret in [README](../../README.md)'s table are never logged
 — Render serves TLS, so the `__Host-` cookie prefix and `Secure` flag stay
 on (the next document's subject too).
 
-## Smoke checklist (owner-run, only if hosting is ever approved)
+## Smoke checklist
 
-The expanded, command-level version is in
-[DEPLOYMENT-RUNBOOK](DEPLOYMENT-RUNBOOK.md); this list is its summary.
+The expanded, command-level version and the 2026-10-25 results are in
+[DEPLOYMENT-RUNBOOK](DEPLOYMENT-RUNBOOK.md); this list is its summary. Items
+1–4 and 6 passed on the deployment; item 5 was not exercised (no job existed
+to claim, so only outbox delivery was observed).
 
 1. Both services start; `curl /health/live` and `/health/ready` answer.
 2. Migrations ran once (`alembic upgrade head`), then `alembic check` agrees.
@@ -181,16 +186,13 @@ The expanded, command-level version is in
 
 ## What this document does not claim
 
-- **No deploy, no spend, no account.** D-HOST-5's zero-budget constraint
-  stands until the owner changes it; D-HOST-3's region question is
-  unanswered and blocks provisioning; D-HOST-1/2 make hosting a recorded
-  preference, not a decision.
-- **No Render-specific behavior is verified.** Product behavior above is
-  verified in source; Render platform behavior (disks, TLS, shutdown
-  timing) is the vendor's documentation speaking, not independent proof.
+- **Only the observed Render behavior is verified**: builds, pre-deploy
+  migrations, the disk mount being writable by the non-root user, the
+  `/health/live` check, `dockerCommand` passing quotes through literally, and
+  TLS on the custom domain. Shutdown timing, disk snapshots and point-in-time
+  recovery are the vendor's documentation speaking, not independent proof.
 - **No isolation claim.** A Render service runs `ClosedSandbox` — execution
   stays disabled; nothing here changes the evidence ladder or the
   fail-closed inventory ([EXECUTION](EXECUTION.md)).
 
-Status: **architecture documented, Blueprint and image written (not built,
-not deployed), deployment owner-gated**.
+Status: **deployed 2026-10-25** (control plane only; execution closed).

@@ -102,4 +102,5 @@ the session route's pre-workflow refusals.
 - **Stand-in, not evidence:** in those tests the delegator's code-host
   standing comes from a `verified_read` stand-in. The GitHub App verifier on
   this path is **NOT VERIFIED**.
-- Nothing is deployed.
+- The route is mounted on the Render deployment since 2026-10-25 (startup log
+  `agent_token_issuer=auth0`) but has not been exercised there.

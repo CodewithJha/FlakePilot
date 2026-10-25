@@ -1,9 +1,10 @@
 # Tinker evaluation
 
 Companion to [ADR-017](../adr/ADR-017-sponsor-capability-phase.md) decision 5
-and sponsor goal 13 (Tinker). Read-only evaluation: no account, no key, no
-adapter. Verdict authority stays with the deterministic `ti-classification/1`
-rule set.
+and sponsor goal 13 (Tinker). No adapter and no dependency in this
+repository; one live experiment ran outside it on 2026-10-25 on **synthetic**
+data ([below](#live-experiment-2026-10-25-synthetic-data)). Verdict authority
+stays with the deterministic `ti-classification/1` rule set.
 
 ## What Tinker is (vendor docs, read 2026-10-24)
 
@@ -52,8 +53,8 @@ attempt outcomes, so a model could only match or degrade it.
    failure text (which can contain paths, hostnames, and secrets) to a third
    party. That needs owner approval, a field-level data-flow review, and a
    redaction step — none exist.
-4. **Access is paid and owner-gated.** A prepaid balance and a key are owner
-   actions; this phase has no spending.
+4. **Access is paid and owner-gated.** The owner funded a key for the
+   synthetic experiment below; any use on real data needs its own budget.
 5. **The advisory path already exists.** `Assist` + an operator-run endpoint
    (goal 1) can answer zero-shot today; fine-tuning only matters once (a) in
    the objective above is measured and found wanting.
@@ -72,4 +73,41 @@ download the LoRA weights, and serve them from the operator's own endpoint
 through the existing local-endpoint adapter — the product would never call
 Tinker at runtime.
 
-Status: **not justified this phase**; no adapter exists by design.
+## Live experiment (2026-10-25, synthetic data)
+
+Run from the owner's machine in a scratch directory outside this repository
+with the owner's Tinker key; no repository code, report, or customer data was
+sent. It tests whether the Tinker training and sampling plumbing works and
+whether a small LoRA learns the task — **not** the failure-reason objective
+above, for which no data exists.
+
+- **Data (SYNTHETIC):** 270 training and 50 test examples (54 / 10 per
+  class), each a generated CI history for one test identity (commit,
+  environment, source, attempt outcomes) plus a failure excerpt drawn
+  independently of the label. Labels are the output of the real
+  `ti-classification/1` `classify()` (5 classes: `flaky`,
+  `deterministic_regression`, and three `inconclusive` reasons), so the rule
+  set scores 1.0 by construction.
+- **Setup:** `Qwen/Qwen3-8B`, rank-8 LoRA, learning rate 3e-4, batch 30,
+  3 epochs (27 steps, about 147 s of training), `tinker` SDK 0.35.0
+  (Apache-2.0). Training loss 1.01 → 0.14.
+
+| Model on the 50 test examples | Accuracy | Macro-F1 | Mean latency per prediction |
+|---|---|---|---|
+| Majority class | 0.20 | 0.067 | — |
+| Qwen3-8B zero-shot | 0.28 | 0.177 | 2.3 s |
+| Qwen3-8B + LoRA | 0.70 | 0.705 | 7.4 s |
+| `ti-classification/1` (the labels' source) | 1.00 | 1.00 | deterministic, local |
+
+- **Cost:** about 354K tokens (315K train, 38.5K prefill, 590 sampled),
+  estimated USD 0.15 at list prices; Tinker's billing endpoint had not yet
+  reported the charge, so the amount is **NOT VERIFIED**. A sampler
+  checkpoint remains stored on Tinker (storage is billed per GB-month) until
+  the owner deletes it.
+- **Reading:** fine-tuning helped a lot over zero-shot, but the tuned model
+  is still wrong on 30% of cases the rule set gets exactly right, and is
+  slower. Reproducing `ti-classification/1` is not a useful objective, and
+  this result does not measure one that is.
+
+Status: **evaluated live on synthetic data; not adopted as authority**. No
+adapter exists by design; the revisit triggers above still apply.

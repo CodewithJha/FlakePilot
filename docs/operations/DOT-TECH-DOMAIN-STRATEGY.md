@@ -1,12 +1,26 @@
 # .TECH domain strategy
 
 Companion to [ADR-017](../adr/ADR-017-sponsor-capability-phase.md) and sponsor
-goal 16 (`.TECH` domain). Read-only strategy: what buying a `.TECH` hostname
-would and would not change, and the exact code-level contract the hostname
-must satisfy. **No domain is registered**; purchase and DNS ownership are
-owner actions, and the zero-budget constraint (D-HOST-5) stands. The product
-today runs correctly with no domain at all — `FLAKEPILOT_PUBLIC_ORIGIN` unset
-means sign-in answers 503 and every other capability is unaffected.
+goal 16 (`.TECH` domain). What a `.TECH` hostname changes and does not
+change, the exact code-level contract it must satisfy, and the
+[registered state](#registered-state-2026-10-25). The owner registered
+`flakepilot.tech` on 2026-10-25 and the deployment serves
+`https://app.flakepilot.tech`. The product still runs correctly with no domain
+at all — `FLAKEPILOT_PUBLIC_ORIGIN` unset means sign-in answers 503 and every
+other capability is unaffected.
+
+## Registered state (2026-10-25)
+
+| Item | Value | Status |
+|---|---|---|
+| Domain | `flakepilot.tech`, registered by the owner through get.tech (registrar of record Namify Domains Inc) on 2026-10-25, expiring 2027-10-25; nameservers `tech-domains.{venus,mars,earth,mercury}.orderbox-dns.com` | **VERIFIED** (RDAP; NS via DNS-over-HTTPS) |
+| Record | `CNAME app → flakepilot-api.onrender.com` (TTL 14400) | **VERIFIED** (DNS-over-HTTPS) |
+| Render custom domain | `app.flakepilot.tech` on `flakepilot-api`, verified 2026-10-25 | **VERIFIED** (Render API) |
+| Certificate | issued by Google Trust Services (`WE1`), subject and SAN `app.flakepilot.tech`, valid 2026-10-25 to 2027-01-23; Render renews it | **VERIFIED** (TLS handshake) |
+| Origin | `FLAKEPILOT_PUBLIC_ORIGIN=https://app.flakepilot.tech`; GitHub App callback `https://app.flakepilot.tech/auth/github/callback` and homepage `https://app.flakepilot.tech` | **VERIFIED**: the owner signed in through it on 2026-10-25 |
+
+Sign-in starts at `https://app.flakepilot.tech/auth/github/login`. The
+renewal price was not checked; renewal is an owner action.
 
 ## The one rule: no hostname lives in code
 
@@ -56,7 +70,7 @@ Price and renewal terms were **not** checked (registrar-specific; `.TECH`
 renewals are typically far above first-year promotional prices — read the
 renewal line before buying).
 
-## DNS records for Render (vendor documentation, NOT VERIFIED)
+## DNS records for Render (the subdomain row is in use; the others are vendor documentation, NOT VERIFIED)
 
 Add the custom domain on the API service first (Settings → Custom Domains);
 Render then shows the target `<service>.onrender.com` and verifies the record.
@@ -75,7 +89,7 @@ compares the browser's `Origin` exactly. A subdomain avoids the apex/`www`
 ambiguity entirely, so `https://app.flakepilot.tech` is the recommended
 `FLAKEPILOT_PUBLIC_ORIGIN`. Hobby workspaces include two custom domains.
 
-## Registration checklist (owner actions, in order)
+## Registration checklist (owner actions, in order; all done 2026-10-25)
 
 1. **Decide the domain and buy it** (registrar of choice; `.TECH` pricing and
    renewal terms are the buyer's — recorded here as a decision, not a
@@ -108,5 +122,5 @@ ambiguity entirely, so `https://app.flakepilot.tech` is the recommended
 - **It does not change the evidence posture.** No host, domain, or
   certificate advances any isolation or production-readiness claim.
 
-Status: **strategy documented, purchase owner-gated**. Local-only operation
-without any domain remains fully supported and unchanged.
+Status: **registered and live 2026-10-25** (`app.flakepilot.tech`). Local-only
+operation without any domain remains fully supported and unchanged.

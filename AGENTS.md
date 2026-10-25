@@ -43,9 +43,9 @@ root before claiming a feature is wired.
 ## Fail-closed inventory (what production actually uses)
 
 Verified against `interface/composition_root/` at `145ebc93`; the AI and
-hosted-provider bullets re-verified at `ae81fcf`, and the agent-route, Atlas
+hosted-provider bullets re-verified at `ae81fcf`, the agent-route, Atlas
 and Temporal bullets at `4c1bf81` (`reproduction.py` and `worker.py`
-unchanged since):
+unchanged since), and the deployment bullet against Render at `2a3c744`:
 
 - `_sandbox` returns `ClosedSandbox` — no container, no repository code, ever,
   in the default composition.
@@ -72,14 +72,23 @@ unchanged since):
   verification (local, 2026-10-24: Gemma, SerpApi, ElevenLabs, Sentry;
   2026-10-25: TabPFN on synthetic rows, the Auth0 agent route, one Gemma
   hypothesis through a real investigation; not Browserbase) is recorded in
-  [SPONSOR-IMPLEMENTATION-MAP](docs/operations/SPONSOR-IMPLEMENTATION-MAP.md);
-  nothing is deployed.
+  [SPONSOR-IMPLEMENTATION-MAP](docs/operations/SPONSOR-IMPLEMENTATION-MAP.md).
+- Deployed (2026-10-25): only the control plane, on Render (`render.yaml`,
+  region singapore) at `https://app.flakepilot.tech` — the API (GitHub App,
+  Gemini, SerpApi, ElevenLabs, Sentry, Auth0 configured; not Browserbase or
+  TabPFN), the worker (database URL, log level and `closed` execution mode
+  only; no provider keys) and PostgreSQL 16 with an empty IP allow-list.
+  Execution stays closed there exactly as above. Live on the deployment:
+  GitHub sign-in, the run view, the investigation (SerpApi; Gemma after
+  `set-ai-policy`) and the spoken brief
+  ([DEPLOYMENT-RUNBOOK](docs/operations/DEPLOYMENT-RUNBOOK.md#deployed-state-2026-10-25)).
 - The Auth0 agent route (`POST /agent/orgs/{org}/runs/{run}/investigation`)
   is mounted only when `FLAKEPILOT_AUTH0_DOMAIN`/`_AUDIENCE` are set; unset,
   the path is an unknown route. A token is never authority: an org admin's
   binding (`bind-agent`) is, re-derived per request from that admin's live
   grants and verified code-host standing (stand-in only in tests; the GitHub
-  App verifier on this path is not live-verified).
+  App verifier on this path is not live-verified). Mounted on the deployment,
+  not exercised there.
 - MongoDB Atlas is an opt-in, write-only copy: only the `export-reports-atlas`
   operator command builds the client (`FLAKEPILOT_ATLAS_URI`/`_DATABASE`); the
   API process and the worker never import the driver, and nothing reads Atlas
@@ -121,8 +130,9 @@ them to the worker or the composition root.
   addition) on the one repository registered for the pair. No token carries
   both, and none carries a write permission. Minting was live-checked on
   2026-10-25 (one commit confirmation, the backfill's run/artifact listings
-  and one artifact download); the session-view verifier and
-  verify-github-app were not run live — say so, do not claim them.
+  and one artifact download), and the session-view verifier was
+  live-checked on the deployment on 2026-10-25 (the owner's run view loaded);
+  verify-github-app was not run live — say so, do not claim it.
 - A green test suite is not proof of security, isolation, or encryption.
 
 ## Development workflow and Git conventions
