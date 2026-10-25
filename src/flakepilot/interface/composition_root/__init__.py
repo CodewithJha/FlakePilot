@@ -63,6 +63,7 @@ from flakepilot.interface.http import (
     health,
     ingestion,
     investigations,
+    landing,
     reproductions,
     runs,
 )
@@ -275,6 +276,7 @@ def create_app(
     errors.register_error_handlers(app)
     register_database_error_handler(app)
     app.include_router(health.router)
+    app.include_router(landing.router)
     app.include_router(auth.router)
     app.include_router(ingestion.router)
     app.include_router(reproductions.router)
