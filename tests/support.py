@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import uuid
@@ -106,29 +107,220 @@ async def admin_execute(url: str, statement: str) -> None:
 
 @contextmanager
 def throwaway_database(migrate: bool = False) -> Iterator[str]:
-    """A fresh database next to FLAKEPILOT_TEST_DATABASE_URL, always dropped afterwards."""
+    """A fresh database next to FLAKEPILOT_TEST_DATABASE_URL, always dropped afterwards.
+
+    With FLAKEPILOT_TEST_SHARED_DATABASE=1, the database at
+    FLAKEPILOT_TEST_DATABASE_URL itself is used instead (see `shared_database`) —
+    for hosts that refuse CREATE DATABASE, such as Tiger Cloud's managed `tsdb`.
+    """
+    if _shared_mode_enabled():
+        with shared_database(migrate) as url:
+            yield url
+        return
     admin_url = os.environ["FLAKEPILOT_TEST_DATABASE_URL"]
     name = f"flakepilot_test_{uuid.uuid4().hex[:12]}"
     asyncio.run(admin_execute(admin_url, f'CREATE DATABASE "{name}"'))
     url = make_url(admin_url).set(database=name).render_as_string(hide_password=False)
     try:
         if migrate:
-            environ = {
-                k: v for k, v in os.environ.items() if not k.startswith("FLAKEPILOT_")
-            }
-            subprocess.run(
-                [sys.executable, "-m", "alembic", "upgrade", "head"],
-                cwd=Path(__file__).resolve().parents[1],
-                env={**environ, "FLAKEPILOT_DATABASE_URL": url},
-                capture_output=True,
-                timeout=120,
-                check=True,
-            )
+            _run_alembic_upgrade(url)
         yield url
     finally:
         asyncio.run(
             admin_execute(admin_url, f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
         )
+
+
+# Every schema the migrations create (and only those). `_shared_tables` reads the
+# tables that exist from the server itself, so new migration tables join this list
+# without an edit here; anything else in the database (public, TimescaleDB internals,
+# tsdb_admin, an owner's own tables) is never listed and never truncated.
+SHARED_SCHEMAS = (
+    "aud",
+    "diag",
+    "exec",
+    "iam",
+    "int_secrets",
+    "ops",
+    "orch",
+    "repo",
+    "ti",
+)
+
+SHARED_DATABASE_ENV = "FLAKEPILOT_TEST_SHARED_DATABASE"
+_shared_gate_done = False  # the suite-start safety gate runs once per test session
+_shared_migrated = False  # as does the shared database's `alembic upgrade head`
+
+
+def _shared_mode_enabled() -> bool:
+    """Never on by accident: only an explicit `=1` selects the shared database."""
+    return os.environ.get(SHARED_DATABASE_ENV) == "1"
+
+
+def _quote_ident(identifier: str) -> str:
+    """Quote a plain identifier, refusing anything else (fail closed)."""
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", identifier):
+        raise RuntimeError(f"shared mode: refusing irregular identifier {identifier!r}")
+    return f'"{identifier}"'
+
+
+async def _tables(url: str) -> list[str]:
+    """Qualified whitelisted table names, with every irregular name refused."""
+    engine = create_engine(url, isolation_level="AUTOCOMMIT")
+    try:
+        async with engine.connect() as connection:
+            rows = await connection.execute(
+                text(
+                    "SELECT table_schema, table_name FROM information_schema.tables "
+                    "WHERE table_type = 'BASE TABLE' "
+                    "AND table_schema = ANY(:schemas) ORDER BY 1, 2"
+                ),
+                {"schemas": list(SHARED_SCHEMAS)},
+            )
+            return [
+                f"{_quote_ident(row.table_schema)}.{_quote_ident(row.table_name)}"
+                for row in rows
+            ]
+    finally:
+        await engine.dispose()
+
+
+async def _gate(url: str) -> None:
+    """One connection: list, empty-table counts, and the external-FK check."""
+    engine = create_engine(url, isolation_level="AUTOCOMMIT")
+    try:
+        async with engine.connect() as connection:
+            rows = await connection.execute(
+                text(
+                    "SELECT table_schema, table_name FROM information_schema.tables "
+                    "WHERE table_type = 'BASE TABLE' "
+                    "AND table_schema = ANY(:schemas) ORDER BY 1, 2"
+                ),
+                {"schemas": list(SHARED_SCHEMAS)},
+            )
+            tables = [
+                f"{_quote_ident(row.table_schema)}.{_quote_ident(row.table_name)}"
+                for row in rows
+            ]
+            empties = [
+                target
+                for target in tables
+                if (
+                    await connection.execute(text(f"SELECT count(*) FROM {target}"))
+                ).scalar_one()
+            ]
+            outside = [
+                f"{row.foreign_table} -> {row.referenced_schema}"
+                for row in await connection.execute(
+                    text(
+                        "SELECT DISTINCT fk_ns.nspname || '.' || fk_tbl.relname AS foreign_table, "
+                        "ref_ns.nspname AS referenced_schema "
+                        "FROM pg_constraint con "
+                        "JOIN pg_class fk_tbl ON fk_tbl.oid = con.conrelid "
+                        "JOIN pg_namespace fk_ns ON fk_ns.oid = fk_tbl.relnamespace "
+                        "JOIN pg_class ref_tbl ON ref_tbl.oid = con.confrelid "
+                        "JOIN pg_namespace ref_ns ON ref_ns.oid = ref_tbl.relnamespace "
+                        "WHERE con.contype = 'f' AND fk_ns.nspname <> ALL(:schemas) "
+                        "AND ref_ns.nspname = ANY(:schemas) ORDER BY 1"
+                    ),
+                    {"schemas": list(SHARED_SCHEMAS)},
+                )
+            ]
+        if empties:
+            raise RuntimeError(
+                "shared test database refused: these migration tables are not empty "
+                f"(possibly unrelated data): {', '.join(empties)}"
+            )
+        if outside:
+            raise RuntimeError(
+                "shared test database refused: tables outside the whitelist hold "
+                f"foreign keys into it: {', '.join(outside)}"
+            )
+    finally:
+        await engine.dispose()
+
+
+def _assert_shared_tables_empty(url: str) -> None:
+    """The suite-start safety gate: refuse a database that still holds data.
+
+    Truncation after a test is only ever safe when we can prove everything it
+    truncates accumulated during THIS suite run. Two hard preconditions:
+    every whitelisted table is empty before the suite starts, and nothing
+    outside the whitelist references the whitelist (TRUNCATE CASCADE is
+    deliberately never used — it would silently truncate such tables).
+    """
+    asyncio.run(_gate(url))
+
+
+def _truncate_shared_tables(url: str) -> None:
+    """One atomic TRUNCATE of all whitelisted tables — never CASCADE, never
+    RESTART IDENTITY (keys are UUIDs generated client-side), never any other
+    schema (public's `alembic_version`, extension and owner objects untouched)."""
+
+    async def run() -> None:
+        engine = create_engine(url, isolation_level="AUTOCOMMIT")
+        try:
+            async with engine.connect() as connection:
+                rows = await connection.execute(
+                    text(
+                        "SELECT table_schema, table_name FROM information_schema.tables "
+                        "WHERE table_type = 'BASE TABLE' "
+                        "AND table_schema = ANY(:schemas)"
+                    ),
+                    {"schemas": list(SHARED_SCHEMAS)},
+                )
+                targets = [
+                    f"{_quote_ident(row.table_schema)}.{_quote_ident(row.table_name)}"
+                    for row in rows
+                ]
+                if targets:
+                    await connection.execute(
+                        text(f"TRUNCATE TABLE {', '.join(targets)}")
+                    )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(run())
+
+
+@contextmanager
+def shared_database(migrate: bool = False) -> Iterator[str]:
+    """The database at FLAKEPILOT_TEST_DATABASE_URL itself, for a host without
+    CREATE DATABASE (Tiger Cloud's `tsdb`): instead of creating a fresh database
+    per test, every whitelisted table is TRUNCATEd when the fixture exits, which
+    restores exactly the state the throwaway-per-test fixture hands out: an
+    empty database where no test can see another test's rows.
+
+    Fail-closed: on first use the gate refuses while anything whitelisted is
+    non-empty or externally referenced (`_assert_shared_tables_empty`), so an
+    owner database with real data stops the suite instead of being truncated.
+    """
+
+    global _shared_gate_done, _shared_migrated
+    url = os.environ["FLAKEPILOT_TEST_DATABASE_URL"]
+    if not _shared_gate_done:
+        _assert_shared_tables_empty(url)
+        _shared_gate_done = True
+    if migrate and not _shared_migrated:
+        _run_alembic_upgrade(url)
+        _shared_migrated = True
+    try:
+        yield url
+    finally:
+        _truncate_shared_tables(url)
+
+
+def _run_alembic_upgrade(url: str) -> None:
+    """`alembic upgrade head` in a subprocess against the given URL (once)."""
+    environ = {k: v for k, v in os.environ.items() if not k.startswith("FLAKEPILOT_")}
+    subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        cwd=Path(__file__).resolve().parents[1],
+        env={**environ, "FLAKEPILOT_DATABASE_URL": url},
+        capture_output=True,
+        timeout=120,
+        check=True,
+    )
 
 
 class FakeEngine:

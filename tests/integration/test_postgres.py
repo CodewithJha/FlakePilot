@@ -57,9 +57,16 @@ def test_commit_is_visible_and_failures_roll_back(database_url: str) -> None:
                     await asyncio.sleep(5)
             async with transaction(engine) as session:
                 rows = await session.execute(text("SELECT id FROM items ORDER BY id"))
-                return list(rows.scalars())
+                result: list[int] = list(rows.scalars())
         finally:
-            await engine.dispose()
+            # The suite may run against one persistent database (shared mode),
+            # and this table lives outside the migration schemas; clean it up.
+            try:
+                async with transaction(engine) as session:
+                    await session.execute(text("DROP TABLE IF EXISTS items"))
+            finally:
+                await engine.dispose()
+        return result
 
     assert asyncio.run(scenario()) == [1]
 

@@ -29,13 +29,23 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
 
 @pytest.fixture
 def database_url() -> Iterator[str]:
-    """An empty throwaway database for one test (integration tests only)."""
+    """A throwaway database for one test (integration tests only).
+
+    With FLAKEPILOT_TEST_SHARED_DATABASE=1 this is FLAKEPILOT_TEST_DATABASE_URL
+    itself instead (for hosts that refuse CREATE DATABASE, e.g. Tiger Cloud):
+    the shared database must be empty of migration-schema data up front and is
+    TRUNCATEd back to empty after each test; see tests.support.shared_database.
+    """
     with throwaway_database() as url:
         yield url
 
 
 @pytest.fixture(scope="module")
 def migrated_database_url() -> Iterator[str]:
-    """A throwaway database at `alembic upgrade head`, shared by one test module."""
+    """A throwaway database at `alembic upgrade head`, shared by one test module.
+
+    Shared mode (FLAKEPILOT_TEST_SHARED_DATABASE=1) as above, plus the migration
+    upgrade runs once per test session in that mode.
+    """
     with throwaway_database(migrate=True) as url:
         yield url

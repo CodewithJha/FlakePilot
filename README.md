@@ -494,6 +494,7 @@ uv run pip-licenses --python .venv-runtime/bin/python
 - Both gates read one `allow-only` list. On 2026-10-25 the owner added `ISC` (dnspython, required by pymongo) and `3-Clause BSD License` (protobuf's spelling of BSD-3-Clause, required by temporalio) to it. That is a change to the list, not an exception.
 - Tests marked `integration` need PostgreSQL and are skipped unless `FLAKEPILOT_TEST_DATABASE_URL` is set. When `CI` is set (GitHub Actions), a missing URL fails the run instead; CI provides a PostgreSQL service.
 - Integration tests create and drop a throwaway database for each test or module next to `FLAKEPILOT_TEST_DATABASE_URL`, so that role needs `CREATEDB`. **Never point it at a real database.**
+- On a host that refuses `CREATE DATABASE` (Tiger Cloud's managed `tsdb`), set `FLAKEPILOT_TEST_SHARED_DATABASE=1` instead: the tests then run against `FLAKEPILOT_TEST_DATABASE_URL` itself. Fail-closed: the session refuses to start while any migration-schema table holds rows (possibly unrelated data) or is referenced from outside the migration schemas, and each fixture `TRUNCATE`s only the schemas the migrations create (`aud`, `diag`, `exec`, `iam`, `int_secrets`, `ops`, `orch`, `repo`, `ti`) — never `public`'s `alembic_version`, extensions, or owner tables. The tests under `tests/integration/test_shared_database_postgres.py` pin this behavior.
 
 ## Security
 
