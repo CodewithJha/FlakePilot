@@ -11,7 +11,9 @@ dependencies = [
     "asyncpg>=0.32.0",
     "cryptography>=50.0.2",
     "fastapi>=0.153.0",
+    "pymongo>=4.19.0,<5",
     "sqlalchemy[asyncio]>=2.1.5",
+    "temporalio>=1.34.0,<2",
     "uvicorn>=0.54.0",
 ]
 
@@ -68,6 +70,8 @@ markers = [
 #   cryptography (Apache-2.0 OR BSD-3-Clause): Apache-2.0
 # "MIT AND PSF-2.0" (greenlet) is conjunctive: both licences apply and both are permissive.
 # "MIT-0" (cffi) is MIT No Attribution.
+# "ISC" (dnspython, via pymongo) and "3-Clause BSD License" (protobuf's spelling of
+# BSD-3-Clause, via temporalio) were added by the project owner, 2026-10-25.
 # Exceptions apply only to the dev-environment gate, as `--ignore-packages <name>:<version>`
 # (a version change fails the gate and forces re-review). The runtime-environment gate applies none.
 #   pathspec 1.1.1 | MPL-2.0 | dev-only transitive dependency of mypy; never shipped in
@@ -75,7 +79,7 @@ markers = [
 [tool.pip-licenses]
 from = "mixed"
 with-system = true
-allow-only = "Apache-2.0;Apache-2.0 OR BSD-2-Clause;Apache-2.0 OR BSD-3-Clause;BSD License;BSD-2-Clause;BSD-3-Clause;MIT;MIT AND PSF-2.0;MIT License;MIT-0;PSF-2.0"
+allow-only = "3-Clause BSD License;Apache-2.0;Apache-2.0 OR BSD-2-Clause;Apache-2.0 OR BSD-3-Clause;BSD License;BSD-2-Clause;BSD-3-Clause;ISC;MIT;MIT AND PSF-2.0;MIT License;MIT-0;PSF-2.0"
 
 # Boundary contracts (ADR-010 TQ-4; DEPENDENCY-RULES §1, §3.1, §5).
 [tool.importlinter]
@@ -182,6 +186,8 @@ forbidden_modules = [
     "botocore",
     "playwright",
     "opentelemetry",
+    "pymongo",
+    "temporalio",
 ]
 
 [[tool.importlinter.contracts]]
@@ -205,6 +211,8 @@ forbidden_modules = [
     "botocore",
     "playwright",
     "opentelemetry",
+    "pymongo",
+    "temporalio",
 ]
 
 # One contract per row of DEPENDENCY-RULES §3.1, forbidding every non-edge (74 of 110 pairs).
