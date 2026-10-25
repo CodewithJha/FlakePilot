@@ -77,12 +77,27 @@ _logger = logging.getLogger("flakepilot.diagnosis")
 
 UnitOfWork = Callable[[], AbstractAsyncContextManager[DiagStore]]
 
+# The shape `diagnosis.domain.output.validate_output` accepts, shown to the model
+# verbatim; `<test_id>` stands for an ID copied from the evidence.
+EXAMPLE_OUTPUT = (
+    '{"hypotheses": [{"summary": "The test waits on a network call that '
+    'sometimes exceeds its timeout.", "cause": "network_timeout", '
+    '"citations": [{"evidence_id": "<test_id>"}], "confidence": 0.6}]}'
+)
+
 INSTRUCTIONS = (
     "You are assisting an automated CI investigation. The deterministic "
     "classification is authoritative and never overridden; your claims are "
-    "advisory only. Reply as JSON: hypotheses: [{summary, cause, citations, "
-    "confidence}]. Emit evidence_id citations that refer only to the IDs you "
-    "are given as evidence."
+    "advisory only. Answer with exactly one JSON object and nothing else: no "
+    "prose, no Markdown. Its only key is hypotheses, a list of at most three "
+    "objects with exactly these keys: summary (one plain sentence, at most 300 "
+    "characters), cause (a short code of lowercase letters, digits and "
+    "underscores that starts with a letter, at most 40 characters, e.g. "
+    "network_timeout or shared_fixture_state), citations (a list of objects, "
+    'each exactly {"evidence_id": <a test_id value copied character for '
+    "character from the evidence>}), and confidence (a number from 0 to 1). "
+    "Cite only test_id values that appear in the evidence. If the evidence "
+    'supports nothing, answer {"hypotheses": []}. Example: ' + EXAMPLE_OUTPUT
 )
 
 MAX_QUERY_BYTES = 512

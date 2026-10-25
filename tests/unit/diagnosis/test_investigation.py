@@ -16,8 +16,10 @@ from typing import Any, cast
 
 import pytest
 
-from flakepilot.diagnosis.application.assist import Assist
+from flakepilot.diagnosis.application.assist import MAX_INSTRUCTIONS, Assist
 from flakepilot.diagnosis.application.investigation import (
+    EXAMPLE_OUTPUT,
+    INSTRUCTIONS,
     Investigation,
     InvestigationBudget,
     StageName,
@@ -25,7 +27,12 @@ from flakepilot.diagnosis.application.investigation import (
     StoppingCondition,
 )
 from flakepilot.diagnosis.application.store import AiPolicy
-from flakepilot.diagnosis.domain.output import DataPolicy
+from flakepilot.diagnosis.domain.output import (
+    ClaimStatus,
+    DataPolicy,
+    check_citations,
+    validate_output,
+)
 from flakepilot.identity.application.authorization import (
     CodeHostAccess,
     Grant,
@@ -533,3 +540,31 @@ def test_a_delegated_agent_run_attributes_the_delegator_with_the_agent_code() ->
     event = uow.store.events[-1]
     assert event.actor.type is ActorType.USER and event.actor.id == ACTOR
     assert event.payload["via_agent"] == "helper"
+
+
+def test_the_prompt_example_is_exactly_what_the_validator_accepts() -> None:
+    assert INSTRUCTIONS.endswith(EXAMPLE_OUTPUT)
+    assert len(INSTRUCTIONS) <= MAX_INSTRUCTIONS
+    test_id = "3f2b8c1e-5d4a-4e6f-9a7b-1c2d3e4f5a6b"
+    validation = validate_output(EXAMPLE_OUTPUT.replace("<test_id>", test_id))
+    assert validation.ok, validation.reason
+    [hypothesis] = validation.hypotheses
+    assert hypothesis.cause == "network_timeout"
+    claims = check_citations(validation.hypotheses, frozenset({test_id}))
+    assert [c.status for c in claims] == [ClaimStatus.EVIDENCE_LINKED]
+    assert validate_output('{"hypotheses": []}').ok
+    for stated in ("summary", "cause", "citations", "evidence_id", "confidence"):
+        assert stated in INSTRUCTIONS
+
+
+def test_the_shapes_real_gemma_produced_before_the_fix_are_refused() -> None:
+    free_text_cause = (
+        '{"hypotheses": [{"summary": "s", "cause": "Network timeout", '
+        '"citations": [], "confidence": 0.5}]}'
+    )
+    bare_citation = (
+        '{"hypotheses": [{"summary": "s", "cause": "network_timeout", '
+        '"citations": ["3f2b8c1e-5d4a-4e6f-9a7b-1c2d3e4f5a6b"]}]}'
+    )
+    for output in (free_text_cause, bare_citation):
+        assert validate_output(output).reason == "invalid_hypothesis"
