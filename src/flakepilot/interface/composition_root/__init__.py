@@ -26,6 +26,10 @@ from flakepilot.identity.infrastructure.store import SqlIamStore
 from flakepilot.integrations.infrastructure.artifact_store import LocalFsArtifactStore
 from flakepilot.integrations.infrastructure.github import GitHubIdentityProvider
 from flakepilot.integrations.infrastructure.junit import JUnitParser
+from flakepilot.interface.composition_root.agent_investigations import (
+    AgentInvestigations,
+    binding_unit_of_work,
+)
 from flakepilot.interface.composition_root.database import (
     CONNECT_TIMEOUT,
     EngineFactory,
@@ -53,6 +57,7 @@ from flakepilot.interface.composition_root.settings import (
     SettingsError,
 )
 from flakepilot.interface.http import (
+    agent_investigations,
     auth,
     errors,
     health,
@@ -212,20 +217,26 @@ def create_app(
         app.state.reproductions = Reproductions(engine, settings)
         verifier = access_verifier(engine, settings)
         app.state.run_views = RunViews(ti, verifier, app.state.iam.login)
-        app.state.investigations = Investigations(
-            Investigation(
-                runs=RunViewer(ti),
-                assist=app.state.assist,
-                reliability=Reliability(ti),
-                unit_of_work=diag,
-                research=providers.research,
-                browser=providers.browser,
-            ),
-            ti,
-            verifier,
-            app.state.iam.login,
-            providers.speech,
+        workflow = Investigation(
+            runs=RunViewer(ti),
+            assist=app.state.assist,
+            reliability=Reliability(ti),
+            unit_of_work=diag,
+            research=providers.research,
+            browser=providers.browser,
         )
+        app.state.investigations = Investigations(
+            workflow, ti, verifier, app.state.iam.login, providers.speech
+        )
+        if providers.agent_tokens is not None:
+            app.state.agent_investigations = AgentInvestigations(
+                tokens=providers.agent_tokens,
+                bindings=binding_unit_of_work(engine),
+                workflow=workflow,
+                runs=ti,
+                verifier=verifier,
+                login_reader=app.state.iam.login,
+            )
         app.state.ready = True
         try:
             yield
@@ -257,4 +268,8 @@ def create_app(
     app.include_router(reproductions.router)
     app.include_router(runs.router)
     app.include_router(investigations.router)
+    app.state.public_origin = settings.public_origin
+    # Unconfigured Auth0: the agent route does not exist (an unknown-route 404).
+    if providers.agent_tokens is not None:
+        app.include_router(agent_investigations.router)
     return app

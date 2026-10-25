@@ -4,15 +4,17 @@ Times come from PostgreSQL (`now()`), so expiry and idle checks agree across pro
 """
 
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from sqlalchemy import ColumnElement, delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from flakepilot.identity.application.agent_bindings import AgentBinding
 from flakepilot.identity.application.iam import CiUploadPrincipal
 from flakepilot.identity.domain.access import Grant, OrgAccess
 from flakepilot.identity.infrastructure.tables import (
+    agent_bindings,
     ci_upload_tokens,
     memberships,
     orgs,
@@ -310,6 +312,90 @@ class SqlIamStore:
             .returning(sessions.c.user_id)
         )
         return len(revoked.all())
+
+    async def create_agent_binding(
+        self,
+        *,
+        binding_id: str,
+        org_id: str,
+        repo_id: str,
+        delegator_id: str,
+        agent_id: str,
+        grants: frozenset[Grant],
+        subject_hash: bytes,
+        ttl: timedelta,
+    ) -> datetime | None:
+        # Arbitrates on the partial unique index: an unrevoked binding for this
+        # (org, subject) makes this a no-op returning None.
+        created = await self._session.execute(
+            insert(agent_bindings)
+            .values(
+                id=binding_id,
+                org_id=org_id,
+                delegator_id=delegator_id,
+                repo_id=repo_id,
+                subject_hash=subject_hash,
+                agent_id=agent_id,
+                grants=sorted(grant.value for grant in grants),
+                created_at=func.now(),
+                expires_at=func.now() + ttl,
+            )
+            .on_conflict_do_nothing(
+                index_elements=[agent_bindings.c.org_id, agent_bindings.c.subject_hash],
+                index_where=agent_bindings.c.revoked_at.is_(None),
+            )
+            .returning(agent_bindings.c.expires_at)
+        )
+        expires_at: datetime | None = created.scalar_one_or_none()
+        return expires_at
+
+    async def revoke_agent_binding(
+        self, *, org_id: str, subject_hash: bytes
+    ) -> str | None:
+        revoked = await self._session.execute(
+            update(agent_bindings)
+            .where(
+                agent_bindings.c.org_id == org_id,
+                agent_bindings.c.subject_hash == subject_hash,
+                agent_bindings.c.revoked_at.is_(None),
+            )
+            .values(revoked_at=func.now())
+            .returning(agent_bindings.c.id)
+        )
+        binding_id: str | None = revoked.scalar_one_or_none()
+        return binding_id
+
+    async def active_agent_binding(
+        self, *, org_id: str, subject_hash: bytes
+    ) -> AgentBinding | None:
+        found = await self._session.execute(
+            select(
+                agent_bindings.c.id,
+                agent_bindings.c.org_id,
+                agent_bindings.c.repo_id,
+                agent_bindings.c.delegator_id,
+                agent_bindings.c.agent_id,
+                agent_bindings.c.grants,
+                agent_bindings.c.expires_at,
+            ).where(
+                agent_bindings.c.org_id == org_id,
+                agent_bindings.c.subject_hash == subject_hash,
+                agent_bindings.c.revoked_at.is_(None),
+                agent_bindings.c.expires_at > func.now(),
+            )
+        )
+        row = found.first()
+        if row is None:
+            return None
+        return AgentBinding(
+            binding_id=row.id,
+            org_id=row.org_id,
+            repo_id=row.repo_id,
+            delegator_id=row.delegator_id,
+            agent_id=row.agent_id,
+            grants=frozenset(Grant(value) for value in row.grants),
+            expires_at=row.expires_at,
+        )
 
     async def active_ci_upload_token(
         self, *, token_hash: bytes

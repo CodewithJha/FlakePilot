@@ -24,7 +24,7 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 
 # Same convention in every context's metadata (tests/architecture checks they match).
 NAMING_CONVENTION = {
@@ -142,6 +142,46 @@ ci_upload_tokens = Table(
     CheckConstraint("octet_length(token_hash) = 32", name="token_hash_length"),
     CheckConstraint("char_length(display_prefix) = 8", name="display_prefix_length"),
     Index(None, "org_id", "repo_id"),
+)
+
+# Goal 9: an Auth0 client's delegation from one org admin. Only the token
+# subject's SHA-256 is stored. At most one unrevoked binding per (org, subject).
+agent_bindings = Table(
+    "agent_bindings",
+    metadata,
+    _id("id", primary_key=True),
+    _id("org_id", nullable=False),
+    _id("delegator_id", nullable=False),
+    _id("repo_id", nullable=False),
+    Column("subject_hash", LargeBinary, nullable=False),
+    Column("agent_id", Text, nullable=False),
+    Column("grants", ARRAY(Text), nullable=False),
+    _time("created_at"),
+    _time("expires_at"),
+    _time("revoked_at", nullable=True),
+    ForeignKeyConstraint(
+        ["org_id", "delegator_id"],
+        [memberships.c.org_id, memberships.c.user_id],
+        ondelete="CASCADE",
+    ),
+    CheckConstraint("octet_length(subject_hash) = 32", name="subject_hash_length"),
+    CheckConstraint("agent_id ~ '^[a-z][a-z0-9_]{0,39}$'", name="agent_id"),
+    CheckConstraint(
+        "cardinality(grants) BETWEEN 1 AND 2 "
+        "AND grants <@ ARRAY['repo.view', 'repo.investigate']::text[]",
+        name="grants",
+    ),
+    CheckConstraint(
+        "expires_at > created_at AND expires_at <= created_at + interval '8 hours'",
+        name="ttl",
+    ),
+    Index(
+        "uq_agent_bindings_active_subject",
+        "org_id",
+        "subject_hash",
+        unique=True,
+        postgresql_where=text("revoked_at IS NULL"),
+    ),
 )
 
 # ADR-012: IAM's event envelopes, appended in the same transaction as the change.

@@ -2,6 +2,8 @@
 `... bootstrap-org --help` onboards an org; `... register-repo | add-member | grant |
 revoke | show-access | set-ai-policy --help` administer members, bindings, grants and
 the org AI policy (operator trust);
+`... bind-agent | unbind-agent --help` bind or revoke an Auth0 agent's
+delegation from an org admin (operator trust);
 `... list-runs --help` lists a repository's stored runs (read-only);
 `... verify-github-app --help` runs the read-only staging check of the GitHub App
 and the code-host access verifier;
@@ -23,7 +25,7 @@ from flakepilot.interface.composition_root import Settings, SettingsError, creat
 _USAGE = (
     "Usage: python -m flakepilot.interface.composition_root "
     "[bootstrap-org | register-repo | add-member | grant | revoke | show-access | "
-    "set-ai-policy | list-runs | verify-github-app | "
+    "set-ai-policy | bind-agent | unbind-agent | list-runs | verify-github-app | "
     "issue-ci-upload-token | ci-run-report | backfill-ci-history | "
     "provider-status | reliability-trend | evaluate-prioritization | worker]"
 )
@@ -52,6 +54,14 @@ def main() -> None:
         )
 
         sys.exit(run_administration(settings, args))
+    if args[:1] and args[0] in ("bind-agent", "unbind-agent"):
+        from flakepilot.interface.composition_root.agent_binding_commands import (
+            run_bind_agent,
+            run_unbind_agent,
+        )
+
+        bind = run_bind_agent if args[0] == "bind-agent" else run_unbind_agent
+        sys.exit(bind(settings, args[1:]))
     if args[:1] == ["verify-github-app"]:
         from flakepilot.interface.composition_root.staging_verification import (
             run_staging_verification,

@@ -49,7 +49,7 @@ def test_full_settings_build_every_adapter_and_report_codes_only() -> None:
         "browser": "browserbase",
         "speech": "elevenlabs",
         "error_reporting": "sentry",
-        "agent_token_issuer": "auth0_not_wired",
+        "agent_token_issuer": "auth0",
         "prioritization_candidate": "tabpfn_operator_only",
     }
     rendered = repr(providers) + str(providers.status())

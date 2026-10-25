@@ -129,6 +129,45 @@ def authorize_agent(
     raise PermissionDenied
 
 
+def check_delegation(
+    delegator: OrgAccess,
+    *,
+    org_id: str,
+    repo_id: str,
+    code_host: CodeHostAccess,
+    scopes: frozenset[Grant] | set[Grant],
+    agent_id: str,
+    ttl: timedelta,
+) -> frozenset[Grant]:
+    """Every delegation rule, before anything exists: the delegator holds
+    `repo.investigate` (the highest authority an agent can inherit), the
+    scope is a non-empty subset of `{view, investigate}` and of the
+    delegator's effective grants, the name is a short code, and the TTL is
+    within the cap. Returns the requested grants."""
+    authorize(
+        delegator,
+        Grant.INVESTIGATE,
+        org_id=org_id,
+        repo_id=repo_id,
+        code_host=code_host,
+    )
+    requested = frozenset(scopes)
+    if Grant.APPROVE in requested or Grant.CONFIGURE in requested:
+        raise AgentRefused("scope_refused")
+    if not requested <= _AGENT_SCOPES:
+        raise AgentRefused("scope_refused")
+    if not requested:
+        raise AgentRefused("empty_scope")
+    effective = effective_grants(delegator, repo_id, code_host) & _AGENT_SCOPES
+    if not requested <= effective:
+        raise AgentRefused("scope_exceeded")
+    if not AGENT_NAME.fullmatch(agent_id):
+        raise AgentRefused("name_refused")
+    if ttl <= timedelta(0) or ttl > MAX_TTL:
+        raise AgentRefused("ttl_refused")
+    return requested
+
+
 class Delegate:
     """Mints a delegated agent from a verified delegator — audited once."""
 
@@ -149,31 +188,18 @@ class Delegate:
         origin: Origin,
     ) -> AgentAccess:
         """The delegation itself: anchored to one repo, bounded by the
-        delegator's grants and the TTL cap, and recorded in IAM's outbox
-        in the same transaction discipline as every identity event.
-        Requires `repo.investigate` from the delegator — the highest
-        authority an agent can inherit."""
-        authorize(
+        delegator's grants and the TTL cap (`check_delegation`), and recorded
+        in IAM's outbox in the same transaction discipline as every identity
+        event."""
+        requested = check_delegation(
             delegator,
-            Grant.INVESTIGATE,
             org_id=org_id,
             repo_id=repo_id,
             code_host=code_host,
+            scopes=scopes,
+            agent_id=agent_id,
+            ttl=ttl,
         )
-        requested = frozenset(scopes)
-        if Grant.APPROVE in requested or Grant.CONFIGURE in requested:
-            raise AgentRefused("scope_refused")
-        if not requested <= _AGENT_SCOPES:
-            raise AgentRefused("scope_refused")
-        if not requested:
-            raise AgentRefused("empty_scope")
-        effective = effective_grants(delegator, repo_id, code_host) & _AGENT_SCOPES
-        if not requested <= effective:
-            raise AgentRefused("scope_exceeded")
-        if not AGENT_NAME.fullmatch(agent_id):
-            raise AgentRefused("name_refused")
-        if ttl <= timedelta(0) or ttl > MAX_TTL:
-            raise AgentRefused("ttl_refused")
         expires_at = now + ttl
         access = AgentAccess(
             principal_id=delegator.principal_id,  # attribution: the human

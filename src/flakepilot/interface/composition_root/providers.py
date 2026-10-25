@@ -13,6 +13,7 @@ import logging
 from dataclasses import dataclass
 
 from flakepilot.integrations.infrastructure.ai import NullAiAssist
+from flakepilot.integrations.infrastructure.auth0 import Auth0TokenVerifier
 from flakepilot.integrations.infrastructure.browserbase import BrowserbaseEvidence
 from flakepilot.integrations.infrastructure.elevenlabs import ElevenLabsSpeech
 from flakepilot.integrations.infrastructure.gemma import GemmaAssist
@@ -34,8 +35,8 @@ class HostedProviders:
     # Used only by the `evaluate-prioritization` operator command.
     prioritization_candidate: TabPfnPredictor | None
     error_reporting: bool
-    # Parsed, but no route verifies agent tokens yet.
-    agent_token_issuer: bool
+    # Verifies bearer tokens on the agent investigation route only.
+    agent_tokens: Auth0TokenVerifier | None
 
     def status(self) -> dict[str, str]:
         def code(provider: object | None, name: str) -> str:
@@ -47,9 +48,7 @@ class HostedProviders:
             "browser": code(self.browser, "browserbase"),
             "speech": code(self.speech, "elevenlabs"),
             "error_reporting": "sentry" if self.error_reporting else "none",
-            "agent_token_issuer": (
-                "auth0_not_wired" if self.agent_token_issuer else "none"
-            ),
+            "agent_token_issuer": code(self.agent_tokens, "auth0"),
             "prioritization_candidate": code(
                 self.prioritization_candidate, "tabpfn_operator_only"
             ),
@@ -112,7 +111,13 @@ def _build(settings: Settings) -> HostedProviders:
             else None
         ),
         error_reporting=settings.sentry_dsn is not None,
-        agent_token_issuer=settings.auth0_domain is not None,
+        agent_tokens=(
+            Auth0TokenVerifier(
+                domain=settings.auth0_domain, audience=settings.auth0_audience
+            )
+            if settings.auth0_domain is not None and settings.auth0_audience is not None
+            else None
+        ),
     )
 
 
