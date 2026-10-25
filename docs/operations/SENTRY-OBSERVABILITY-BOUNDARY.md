@@ -4,8 +4,9 @@ Companion to [ADR-017](../adr/ADR-017-sponsor-capability-phase.md) and sponsor
 goal 7 (Sentry). Read-only boundary statement: what observability already
 exists in the product, what would and would not ever leave the boundary if an
 error-tracking service were adopted, and the opt-in reporter that now
-implements it. No SDK is installed and no account exists; without
-`FLAKEPILOT_SENTRY_DSN` no telemetry leaves the machine.
+implements it. No SDK is installed. Without
+`FLAKEPILOT_SENTRY_DSN` no telemetry leaves the machine; the DSN is
+deployment configuration held by the platform, never repository content.
 
 ## What the product already provides (Verified in source)
 
@@ -114,11 +115,27 @@ exception, then keep the allow-list rules above as its `before_send`.
 
 ## What remains owner-gated
 
-- Creating the Sentry account/project and its DSN (vendor terms, data
-  residency, retention on Sentry's side).
+- ~~Creating the Sentry account/project and its DSN~~ **Done by the owner
+  (2026-10-25)**: a DSN is configured on the deployed API (its startup log
+  shows `error_reporting=sentry`). The vendor terms, residency and retention
+  choices on that project are the owner's, made outside this repository.
 - The egress review: on a default-deny-egress host, the Sentry ingest host
   must be explicitly allowed.
 
+## Verified where, and not verified where
+
+- **Live-verified locally (2026-10-24):** one synthetic allow-listed event
+  posted by this exact reporter was accepted by the real ingest endpoint
+  (HTTP 200, same event id echoed) — plumbing and field shape only.
+- **Deployed (2026-10-25):** the reporter is configured on
+  `app.flakepilot.tech`'s API process. **No error event from the deployment
+  has been observed** — expected while no ERROR/CRITICAL has occurred there,
+  not evidence either way about delivery from Render's egress. First
+  real event, or the smoke-test check #12 (a known 500 in staging only),
+  is what would verify the deployment path.
+
 Status: **opt-in reporter implemented and tested with a capturing transport
-(Tested with mocks); no live Sentry event sent; SDK not adopted (licence
-gate)**. The invariants above remain non-negotiable for any future change.
+(Tested with mocks); envelope transport live-verified locally 2026-10-24;
+configured on the deployment, no event from it observed yet; SDK not adopted
+(licence gate)**. The invariants above remain non-negotiable for any future
+change.

@@ -1,5 +1,21 @@
 # FlakePilot — local-only release candidate
 
+> **2026-10-25 update — the deployment boundary below has moved.** The owner
+> approved Render hosting and made the D-HOST decisions, and since
+> 2026-10-25 the **control plane** (API, worker, PostgreSQL 16 — not
+> execution) runs on Render at `https://app.flakepilot.tech`; see
+> [DEPLOYMENT-RUNBOOK](DEPLOYMENT-RUNBOOK.md) for the deployed state and
+> smoke record, and the current sponsor evidence in
+> [SPONSOR-IMPLEMENTATION-MAP](SPONSOR-IMPLEMENTATION-MAP.md). Everything
+> this page says about execution posture is unchanged there: the worker runs
+> `ClosedSandbox` / `UnavailableIsolation` / `control_plane_reaper()` /
+> `RefusedHostHandoff` and no repository code executes in any configuration.
+> The sections below describe the release candidate **as closed at
+> `395982a`** (verified at `2508bd4`); they are kept as the boundary record
+> that the deployment upgraded from, not re-edited. The upgrade criteria
+> this page once listed for "hosted deployment" are now partially met and
+> recorded in the runbook instead.
+
 The release statement for what the evidence supports today: a **local-only
 release candidate**. Its code evidence is taken from commit `2508bd4` (CI
 run `40069275296` success there), and every command and test total below was
@@ -67,6 +83,12 @@ CI run `40069275296` success. Integration tests create and drop throwaway
 databases; the role needs `CREATEDB`. A green suite is not proof of
 security, isolation, or encryption — the standing rule in
 [AGENTS.md](../../AGENTS.md).
+
+*Current counts, re-run at `ae2c6eb` (2026-10-25):* **1,237 passed, 160
+skipped** without a test database; with one, **1,381 passed, 16 skipped** —
+every skip is a credential-gated test in `tests/live/` (real providers,
+each skipped with the name of the missing variable), not an omission. CI
+run `40174033469` success.
 
 ## What the code paths implement (with access enforcement and tests)
 
@@ -139,10 +161,13 @@ error contract; audit/outbox delivery with retry classing.
   the sealed store exist, are unit-tested, but are not wired.
 
 **Unverified (no evidence either way):**
-- Live GitHub verification: no App ID/ private key exists anywhere; token
-  minting has never performed a real provider interaction. `verify-github-app`
-  reports LIVE VERIFICATION NOT PERFORMED without credentials and mutates
-  nothing.
+- Live GitHub verification: *as of closure no App ID/private key existed and
+  minting had never touched a provider.* Since then the owner created the
+  production GitHub App and the deployment's sign-in and session-view
+  verifier were **live-verified 2026-10-25** (per
+  [AGENTS.md](../../AGENTS.md) and the runbook); the operator backfill's
+  `actions:read` minting was live-checked 2026-10-25. `verify-github-app`
+  itself has still not been run live — say so, do not claim it.
 - Isolation: only `shared_kernel_container`-level evidence from
   non-eligible environments (laptop, hosted-runner probe). Not per-run
   microVM; satisfies no higher level.
@@ -168,9 +193,12 @@ error contract; audit/outbox delivery with retry classing.
 
 ## The release boundary
 
-**Local-only release candidate.** No hosted deployment, no claim of live
-GitHub verification, no production-execution or isolation claim of any kind.
-"Deployed" today only means: an operator runs uvicorn on their own machine.
+**Local-only release candidate.** *(Historical, as closed at `395982a` —
+see the 2026-10-25 update at the top of this page for what changed when the
+owner approved Render hosting; execution posture unchanged.)* No hosted
+deployment, no claim of live GitHub verification, no production-execution or
+isolation claim of any kind. "Deployed" today only means: an operator runs
+uvicorn on their own machine.
 
 ## What upgrading the claim would require
 

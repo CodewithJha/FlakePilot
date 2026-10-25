@@ -4,7 +4,7 @@ Evidence-based investigation and verification of recurring test failures. See [P
 
 ## Status
 
-**Pre-alpha. Not production-ready.** The backend foundations exist: sign-in, org bootstrap, CI upload tokens, JUnit ingestion and a failure classifier. The release statement, limitations, and upgrade criteria: [RELEASE-CANDIDATE](docs/operations/RELEASE-CANDIDATE.md) (local-only release candidate). Known gaps:
+**Pre-alpha. Not production-ready.** The backend foundations exist: sign-in, org bootstrap, CI upload tokens, JUnit ingestion and a failure classifier. The release statement, limitations, and upgrade criteria: [RELEASE-CANDIDATE](docs/operations/RELEASE-CANDIDATE.md) (closed as a local-only release candidate; the control plane has since been deployed on Render — see the update note there and [DEPLOYMENT-RUNBOOK](docs/operations/DEPLOYMENT-RUNBOOK.md)). Known gaps:
 
 - **No UI beyond two read-only pages.** The session-user runs listing (`GET
   /orgs/{org_id}/repos/{repo_id}/runs`) and run view

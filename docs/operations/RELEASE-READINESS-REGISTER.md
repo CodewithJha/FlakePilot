@@ -15,6 +15,17 @@ never a deployed service; a test with fakes is never a live integration.
 Verified against `2508bd4` (2026-10-24, closure). Nothing here was provisioned;
 no decision below was made by this repository's development process.
 
+> **2026-10-25 update.** The owner has since made the D-HOST-1/2/3/5
+> decisions (Render hosting, `singapore`, ≈ USD 20.25/month at list prices)
+> and the control plane is deployed — see
+> [DEPLOYMENT-RUNBOOK](DEPLOYMENT-RUNBOOK.md#deployed-state-2026-10-25).
+> The "hosted deployment" rows below now describe a **met** blocker for the
+> control plane only; every execution-host row (D-RUNTIME-1/5, the 10J
+> B-chain) stands unchanged, and untrusted repository code still executes
+> nowhere. Decision E is partially executed: the owner created the
+> production GitHub App and live sign-in was verified on the deployment;
+> `verify-github-app`'s ordered checks remain unrun.
+
 ## Local-only claim: closable without any owner decision
 
 | Item | Status | Evidence |
