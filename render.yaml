@@ -1,7 +1,7 @@
 # Render Blueprint for the FlakePilot control plane (sponsor goal 10).
-# NOT DEPLOYED. Syncing this file creates paid resources (~USD 20/month at the
-# plans below); that is an owner decision (D-HOST-1..5). Runbook and rationale:
-# docs/operations/DEPLOYMENT-RUNBOOK.md.
+# Deployed 2026-10-25 (singapore, ~USD 20.25/month at the plans below), with the
+# resources created through the Render API to match this file. Runbook and
+# rationale: docs/operations/DEPLOYMENT-RUNBOOK.md.
 #
 # Execution stays closed on every service: ClosedSandbox, UnavailableIsolation,
 # no container runtime in the image, no repository code ever runs here.
@@ -12,18 +12,20 @@ services:
   - type: web
     name: flakepilot-api
     runtime: docker
-    # D-HOST-3 (region/residency) is unanswered. Region is immutable after creation.
-    region: oregon
+    # Region is immutable after creation.
+    region: singapore
     # Paid plan required: persistent disks and preDeployCommand are paid-only.
     plan: 0.5c-512mb
     # Deploy a commit only after its GitHub checks (ci.yml gates) pass.
     autoDeployTrigger: checksPass
     # Migrations are an explicit step, never startup work (ADR-005). Runs on
-    # separate compute before each deploy; a failure stops the deploy.
-    preDeployCommand: alembic upgrade head
+    # separate compute before each deploy; a failure stops the deploy. The disk
+    # is not mounted there, so the artifact-root validation must not run.
+    preDeployCommand: env -u FLAKEPILOT_ARTIFACT_DIR alembic upgrade head
     # The artifact root must exist, be owned by the service user, and not be
     # group/world-writable (settings validation refuses startup otherwise).
-    dockerCommand: sh -c 'mkdir -p -m 700 /var/data/artifacts && exec python -m flakepilot.interface.composition_root'
+    # Unquoted: Render passes quotes through literally to `sh -c`.
+    dockerCommand: /bin/sh -c mkdir -p -m 700 /var/data/artifacts && exec python -m flakepilot.interface.composition_root
     # Liveness, not readiness: Render restarts an instance after 60 s of failed
     # checks, and a database outage must not restart the API. Deploys are still
     # gated on the database: uvicorn binds the port only after the lifespan's
@@ -46,9 +48,9 @@ services:
         value: INFO
       - key: FLAKEPILOT_EXECUTION_MODE
         value: closed
-      # https://<domain>, exactly as browsers send Origin. Empty: sign-in answers 503.
+      # Exactly as browsers send Origin. Unset: sign-in answers 503.
       - key: FLAKEPILOT_PUBLIC_ORIGIN
-        sync: false
+        value: https://app.flakepilot.tech
       - key: FLAKEPILOT_GITHUB_CLIENT_ID
         sync: false
       - key: FLAKEPILOT_GITHUB_CLIENT_SECRET
@@ -60,7 +62,7 @@ services:
       # Opt-in error reporting. Empty: nothing leaves the process.
       - key: FLAKEPILOT_SENTRY_DSN
         sync: false
-      # Auth0 agent-token verification (parsed, not yet routed). Both or neither.
+      # Auth0 agent tokens: both set mounts the agent investigation route. Both or neither.
       - key: FLAKEPILOT_AUTH0_DOMAIN
         sync: false
       - key: FLAKEPILOT_AUTH0_AUDIENCE
@@ -87,7 +89,7 @@ services:
   - type: worker
     name: flakepilot-worker
     runtime: docker
-    region: oregon
+    region: singapore
     plan: 0.5c-512mb
     autoDeployTrigger: checksPass
     dockerCommand: python -m flakepilot.interface.composition_root worker
@@ -110,7 +112,7 @@ databases:
   - name: flakepilot-db
     databaseName: flakepilot
     user: flakepilot
-    region: oregon
+    region: singapore
     plan: 0.1c-256mb
     # CI tests against PostgreSQL 16. Immutable after creation.
     postgresMajorVersion: "16"
