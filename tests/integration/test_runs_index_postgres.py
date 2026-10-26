@@ -363,7 +363,7 @@ def test_the_runs_index_authorizes_a_signed_in_member_over_real_tables(
         # Verified code-host read: the listing is served with the real run.
         granted, page = await fetch(path, ok_session)
         assert granted == 200, page
-        assert f'href="/orgs/{ORG}/runs/{run_id}"' in page
+        assert f'"href":"/orgs/{ORG}/runs/{run_id}"' in page
         assert "newest first" in page and "unchecked" in page
 
         # A bigger limit or a smaller one is a page size, nothing else.
