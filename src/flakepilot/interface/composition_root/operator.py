@@ -78,10 +78,10 @@ from flakepilot.interface.http.ui import (
 )
 
 # The operator report file is viewed offline (its own <style> block, no
-# network, no fonts payload): it shares the exact token set and page CSS with
-# the app's served pages, so the visual system has one source of truth. Only
-# the layout wrapper is report-specific. Font tokens fall back to system
-# faces here because the @font-face rules ride the served /ui.css.
+# network, no font files). It shares the token set and report CSS with
+# `/ui.css`. The served pages use the same palette from the React build.
+# Font tokens name Fraunces, Literata and Fragment Mono and fall back to
+# Georgia and a system monospace when those faces are not installed.
 OFFLINE_REPORT_CSS = (
     DESIGN_TOKENS_CSS
     + PAGE_CSS

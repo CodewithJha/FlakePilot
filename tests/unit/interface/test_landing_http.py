@@ -1,8 +1,8 @@
-"""The landing page (`GET /`): static, unauthed, database-free, and the only
-page a visitor of the public origin reaches before any authentication. It must
-always exist (any deployment, any settings), render with the same no-script /
-no-frame security headers as the other pages, and point at the sign-in route
-the auth router really mounts."""
+"""The landing page (`GET /`): unauthed, database-free, and the only page a
+visitor of the public origin reaches before any authentication. It must always
+exist (any deployment, any settings), render with the same framing denial as
+the other pages, load its script and styles only from this origin, and point
+at the sign-in route the auth router really mounts."""
 
 import asyncio
 
@@ -23,8 +23,12 @@ def test_landing_page_is_public_static_and_hardened() -> None:
     assert "text/html" in dict(headers)["content-type"]
     csp = dict(headers)["content-security-policy"]
     assert "default-src 'none'" in csp and "frame-ancestors 'none'" in csp
+    assert "script-src 'self'" in csp and "unsafe-inline" not in csp
+    assert "unsafe-eval" not in csp
     assert dict(headers)["x-frame-options"] == "DENY"
-    assert b"<script" not in body.lower().encode()
+    assert (
+        'src="/ui/assets/' in body and "http://" not in body and "https://" not in body
+    )
 
 
 def test_landing_page_links_to_the_real_sign_in_route() -> None:

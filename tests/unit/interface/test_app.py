@@ -99,7 +99,8 @@ def test_only_expected_routes_are_registered() -> None:
         "/orgs/{org_id}/reproductions/{execution_id}/artifacts/{kind}",
     }
     assert [getattr(r, "path", None) for r in app.routes if hasattr(r, "path")] == [
-        "/openapi.json"
+        "/openapi.json",
+        "/ui",
     ]
     assert get(app, "/openapi.json")[0] == 200
     assert get(app, "/docs")[0] == 404

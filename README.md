@@ -279,6 +279,15 @@ uv run python -m flakepilot.interface.composition_root
 
 If PostgreSQL is unreachable at startup, the process exits with code 3, so use a restart policy or wait on a database health check. Probes: `GET /health/live` and `GET /health/ready` (the latter includes a bounded database check).
 
+The public page (`/`) and the signed-in run pages are a React application in `web/`. The API serves the checked-in build under `src/flakepilot/interface/http/webdist/`; it does not run Node. After a frontend change, rebuild and commit that directory:
+
+```sh
+npm ci --prefix web
+npm run build --prefix web
+```
+
+With the API running, open `http://127.0.0.1:8000/` for the public page. Run pages need a signed-in session (`/auth/github/login`). Nothing in the UI executes repository code.
+
 Database timeouts are constants in `src/flakepilot/interface/composition_root/database.py`. Local-development defaults:
 - 30 s per statement;
 - 60 s idle in a transaction;
@@ -487,6 +496,8 @@ uv run lint-imports
 uv run pip-licenses --ignore-packages pathspec:1.1.1
 UV_PROJECT_ENVIRONMENT=.venv-runtime uv sync --locked --no-dev
 uv run pip-licenses --python .venv-runtime/bin/python
+npm ci --prefix web
+npm run build --prefix web
 ```
 
 - `pip-licenses` checks installed Python packages only. Shipped container images need the separate licence review in [ADR-007](docs/adr/ADR-007-implementation-stack-and-licensing.md) item 5.

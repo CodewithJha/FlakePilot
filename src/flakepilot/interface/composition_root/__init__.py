@@ -72,6 +72,7 @@ from flakepilot.interface.http.request_context import (
     RequestContextMiddleware,
     request_id_var,
 )
+from flakepilot.interface.http.shell import asset_mount
 from flakepilot.test_intelligence.application.ingestion import Ingestion
 from flakepilot.test_intelligence.application.reliability import Reliability
 from flakepilot.test_intelligence.application.run_view import RunViewer
@@ -278,6 +279,7 @@ def create_app(
     register_database_error_handler(app)
     app.include_router(health.router)
     app.include_router(ui.router)
+    app.mount("/ui", asset_mount())
     app.include_router(landing.router)
     app.include_router(auth.router)
     app.include_router(ingestion.router)

@@ -1,9 +1,8 @@
-"""The shared design system: the `/ui.css` stylesheet route and the page shell.
+"""The shared design tokens (`/ui.css`) and the React document shell.
 
-Serving one stylesheet from this origin (immutable cache, no secrets, no
-auth) is what lets the three HTML page builders share a single visual system
-without an inline `<style>` copy per response or any third-party font host.
-These tests pin the route's contract and that every HTML page references it.
+`/ui.css` is the operator report's palette, published same-origin with an
+immutable cache and no secrets. The HTML pages reference the built
+stylesheet and script under `/ui/assets/` instead of inlining either.
 """
 
 import asyncio
@@ -14,7 +13,6 @@ from support import FAKE_DSN, send_raw
 
 from flakepilot.interface.composition_root import Secret, Settings, create_app
 from flakepilot.interface.http.runs import _index_page, _page
-from flakepilot.interface.http.ui import UI_BUILD
 
 
 def _get(path: str) -> tuple[int, dict[str, str], str]:
@@ -33,17 +31,19 @@ def test_ui_css_is_public_cached_and_carries_the_system() -> None:
     assert status == 200
     assert headers["content-type"].startswith("text/css")
     assert headers["cache-control"] == "public, max-age=31536000, immutable"
-    # The design tokens and the self-hosted OFL fonts are all in there…
-    assert "--tangerine:#F36B3F" in text and "--ink:#28352A" in text
-    assert text.count("@font-face") == 3  # Bricolage variable + Plex Mono 400/600
-    assert "data:font/woff2;base64" in text
-    # …and it is static decoration: no script, honouring reduced motion.
+    assert "--vermilion:#E23D12" in text and "--ink:#1C1915" in text
+    assert "--lime:#E7FF3D" in text
+    assert "@font-face" not in text and "data:font" not in text
     assert "<script" not in text
     assert "prefers-reduced-motion" in text
 
 
-def test_landing_references_the_shared_stylesheet() -> None:
-    assert f'href="/ui.css?v={UI_BUILD}"' in _get("/")[2]
+def test_landing_references_the_built_assets() -> None:
+    body = _get("/")[2]
+    assert 'href="/ui/assets/' in body and body.index('href="/ui/assets/') < body.index(
+        ".css"
+    )
+    assert 'src="/ui/assets/' in body and ".js" in body
 
 
 class _RunShape:
@@ -65,13 +65,15 @@ class _RunShape:
     )
 
 
-def test_run_view_references_the_shared_stylesheet() -> None:
+def test_run_view_references_the_built_assets() -> None:
     report = SimpleNamespace(run=_RunShape(), cases=())
-    assert f'href="/ui.css?v={UI_BUILD}"' in _page(report)  # type: ignore[arg-type]
+    body = _page(report)  # type: ignore[arg-type]
+    assert 'src="/ui/assets/' in body and ".js" in body
 
 
-def test_runs_index_references_the_shared_stylesheet() -> None:
+def test_runs_index_references_the_built_assets() -> None:
     index = SimpleNamespace(
         org_id=_RunShape.org_id, repo_id=_RunShape.repo_id, entries=()
     )
-    assert f'href="/ui.css?v={UI_BUILD}"' in _index_page(index)  # type: ignore[arg-type]
+    body = _index_page(index)  # type: ignore[arg-type]
+    assert 'src="/ui/assets/' in body and ".js" in body

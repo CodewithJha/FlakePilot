@@ -179,8 +179,11 @@ def test_an_authorized_member_gets_the_listing_with_a_link_to_each_run() -> None
     text = body.decode()
     assert status == 200
     assert "FlakePilot runs" in text and "newest first" in text
-    assert "demo &amp; &lt;staging&gt;" in text  # environment values are escaped
-    assert f'href="/orgs/{ORG}/runs/{RUN}"' in text  # the one real route, linked
+    assert "demo & \\u003cstaging\\u003e" in text
+    assert "<staging>" not in text
+    assert f'href="/orgs/{ORG}/runs/{RUN}"' in text or (
+        f'"href":"/orgs/{ORG}/runs/{RUN}"' in text
+    )
     assert "unchecked" in text
     assert iam.authenticated == [SESSION] and iam.access_calls == [(USER, ORG)]
     assert store.index_calls == [(ORG, REPO, 50)]

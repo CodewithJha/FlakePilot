@@ -212,11 +212,14 @@ def test_an_authorized_member_gets_the_server_rendered_run_view() -> None:
     text = body.decode()
     assert status == 200
     assert "FlakePilot run view" in text
-    assert "test_login &amp; &lt;totals&gt;" in text  # the test name is escaped
-    assert "<td>failed &rarr; passed</td>" in text  # the attempt chain intact
+    # Stored text is JSON inside a script element: "<" cannot appear raw.
+    assert "test_login & \\u003ctotals\\u003e" in text
+    assert "<totals>" not in text
+    assert '"attempts":["failed","passed"]' in text
     assert "flaky" in text  # the real rule set's verdict, through the real viewer
     assert "rule ti-classification/1" in text
-    assert "run&lt;b&gt;" in text  # evidence values are escaped too
+    assert "run\\u003cb\\u003e" in text
+    assert "<b>" not in text
     # The chain went cookie -> session principal -> IAM's org records -> store.
     assert iam.authenticated == [SESSION]
     assert iam.access_calls == [(USER, ORG)]
@@ -366,12 +369,11 @@ def test_a_verified_write_standing_serves_the_view() -> None:
 
 
 def test_html_views_carry_the_browser_security_policy() -> None:
-    """The page response itself denies framing, script, and third-party resources.
+    """The page response denies framing and every origin but this one.
 
-    The redesign moved the shared stylesheet to a cached same-origin route and
-    embedded the OFL fonts as data; the policy allows exactly that plus the
-    data-URI favicon, while scripts, third-party origins, HTML-attribute base
-    URLs and framing stay fully denied.
+    Script, style and font files are same-origin build outputs. Inline scripts,
+    eval, third-party origins, HTML-attribute base URLs and framing stay denied.
+    The document is uncacheable because it carries that viewer's run.
     """
     store = FakeRunStore(report("x"))
     iam = FakeIam({SESSION: USER}, {(USER, ORG): [(REPO, Grant.VIEW)]})
@@ -379,9 +381,11 @@ def test_html_views_carry_the_browser_security_policy() -> None:
     policy = dict(headers)
     assert status == 200
     assert policy["content-security-policy"] == (
-        "default-src 'none'; style-src 'unsafe-inline' 'self'; img-src data:; "
-        "font-src data:; frame-ancestors 'none'; base-uri 'none'"
+        "default-src 'none'; script-src 'self'; style-src 'self'; "
+        "font-src 'self'; img-src 'self'; frame-ancestors 'none'; "
+        "base-uri 'none'; form-action 'self'"
     )
+    assert policy["cache-control"] == "private, no-store"
     assert policy["x-frame-options"] == "DENY"
 
 

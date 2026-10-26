@@ -24,6 +24,7 @@ artifacts/
 .idea/
 .vscode/
 .cursor/
+web/node_modules/
 # Local demo outputs from ops/demo/run-demo.sh (never commit these).
 flakepilot-demo-report.html
 flakepilot-demo-output/
