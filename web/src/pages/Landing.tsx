@@ -1,3 +1,4 @@
+import { FlowFigure } from "../components/FlowFigure";
 import { Shell } from "../components/Shell";
 
 const STAGES = [
@@ -18,23 +19,21 @@ export function Landing() {
   return (
     <Shell signIn>
       <section className="opener">
-        <div className="opener-title">
+        <div className="opener-lead">
           <h1>
             <span className="line">Flakes,</span>
-            <span className="line emph">filed.</span>
+            <span className="line">
+              <span className="emph">filed.</span>
+            </span>
           </h1>
-        </div>
-        <div className="opener-copy">
-          <p>
+          <p className="lede">
             FlakePilot ingests your CI test reports, reconstructs each run’s
             attempt chains, and classifies failures with the deterministic,
             versioned rule set <code>ti-classification/1</code> — never
             executing your repository’s code inside the control plane.
           </p>
-          <a className="signin signin-block" href="/auth/github/login">
-            Sign in with GitHub
-          </a>
         </div>
+        <FlowFigure />
       </section>
 
       <section className="sheet" aria-labelledby="docket-title">
